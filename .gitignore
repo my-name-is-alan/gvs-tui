@@ -1,0 +1,18 @@
+# build
+bin/
+dist/
+*.exe
+.build/
+
+# frontend
+node_modules/
+.vite/
+
+# logs / local
+*.log
+downloads/
+
+# secrets live in the user config dir, never commit copies
+tui.json
+.env
+.env.*
