@@ -17,15 +17,15 @@
 
 网关**不代下、不转发视频流**。直链过期后重新 `play` / `resolve`。
 
-当前进程拆分（可改，但先对齐）：
+当前结构：
 
 ```text
-src/Root.vue     Vue TermUI：只画 snapshot、转发按键
-cmd/tui          Go：状态机、HTTP、隧道、下载、扫码
-  --vue-bridge   stdin/stdout 一行一个 JSON
+src/Root.vue      Vue TermUI：只画 snapshot、转发按键
+src/runtime.ts    状态机、HTTP、隧道、下载、扫码（Bun 同进程）
+src/lib/          网关客户端 / ffmpeg / 命名
 ```
 
-Vue **不要** `fetch` 网关。新交互要同时改 Go snapshot / 按键。
+Vue **不要**自己 `fetch` 网关。新交互改 `runtime.ts` 的 snapshot / 按键。
 
 配置：用户目录 `gvs/tui.json`（Windows 一般是 `%APPDATA%\gvs\tui.json`）。
 
@@ -304,25 +304,17 @@ TMDB 是客户端直连 `api.themoviedb.org`，不经过网关。优酷/腾讯�
 
 ---
 
-## 10. Vue ↔ Go 桥（改 UI 必读）
+## 10. 画面协议（改 UI 必读）
 
-stdin 一行请求，stdout 一行 snapshot。
-
-请求：
-
-```ts
-{ type: 'key' | 'set' | 'quit'; name?: string; field?: string; value?: string; ctrl?: boolean; alt?: boolean; shift?: boolean }
-```
+`Root.vue` 调 `Bridge` → 同进程 `Runtime`。没有 stdin/stdout 子进程。
 
 `set` 的 field：`query` | `host` | `key` | `edit`。
 
-Snapshot：`src/bridge.ts` 的 `Snapshot`。场景：
+Snapshot：`src/types.ts`。场景：
 
 `setup` → `home` → `search` / 榜单 → `results` → `detail` → `quality` →（优酷/腾讯+TMDB）`tmdb` → `jobs`
 
 另有 `settings` `edit` `qr`。
-
-按键（Go 状态机）：
 
 | 场景 | 键 |
 |---|---|
@@ -336,7 +328,7 @@ Snapshot：`src/bridge.ts` 的 `Snapshot`。场景：
 | settings | j/k Enter/空格 |
 | qr | Esc 取消；2s 轮询 login check |
 
-输入框场景（setup/search/edit）不要把普通字符再转给 Go，会打两遍。只转发导航键。
+输入框场景（setup/search/edit）不要把普通字符再转给 Runtime，会打两遍。只转发导航键。
 
 ---
 
@@ -346,6 +338,6 @@ Snapshot：`src/bridge.ts` 的 `Snapshot`。场景：
 - 不要让网关代下视频。
 - 不要在客户端实现优酷/腾讯签名、ckey、号池。登录态只保存 `Yk-Sign` / Cookie。
 - 不要把多个平台合成一个「social」包。
-- 新功能（取消任务、海报、聚合搜、腾讯真实画质、HLS）要改 `cmd/tui` 的 snapshot 和下载管线，不能只改 `Root.vue`。
+- 新功能（取消任务、海报、聚合搜、腾讯真实画质、HLS）要改 `src/runtime.ts` 和 `src/lib/`，不能只改 `Root.vue`。
 
-栈：Vue 3 + vue-termui + OpenTUI。终端 UI，没有 DOM/CSS。组件基本是 `Box` / `Text` / `Input`。
+栈：Bun + Vue 3 + vue-termui + OpenTUI。终端 UI，没有 DOM/CSS。组件基本是 `Box` / `Text` / `Input`。不需要 Go。

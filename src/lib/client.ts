@@ -1,0 +1,87 @@
+import { truncate } from './util.ts'
+import type { FileConfig } from './config.ts'
+
+export type KeyInfo = {
+  id: string
+  name: string
+  prefix: string
+  scope: string[]
+  all: boolean
+  qps: number
+  daily: number
+  usedToday: number
+  expiresAt: string | null
+  permanent: boolean
+  daysLeft: number | null
+}
+
+type Envelope = { code: number; msg: string; data: unknown }
+
+export class GwClient {
+  host: string
+  key: string
+
+  constructor(host: string, key: string) {
+    this.host = host.replace(/\/+$/, '')
+    this.key = key
+  }
+
+  allows(scope: string[] | undefined, all: boolean, name: string): boolean {
+    if (all || !scope || scope.length === 0) return true
+    return scope.includes(name)
+  }
+
+  extra(cfg: FileConfig, provider: string): Record<string, string> {
+    const h: Record<string, string> = {}
+    if (provider === 'youku' && cfg.youkuSign) h['Yk-Sign'] = cfg.youkuSign
+    if (provider === 'tencent' && cfg.tencentCookie) h['Tx-Cookie'] = cfg.tencentCookie
+    return h
+  }
+
+  async invoke(
+    provider: string,
+    action: string,
+    input: Record<string, unknown>,
+    extra?: Record<string, string>,
+  ): Promise<Record<string, unknown>> {
+    const env = await this.request('POST', '/v1/invoke', { provider, action, input }, extra)
+    return (env.data ?? {}) as Record<string, unknown>
+  }
+
+  async keyInfo(): Promise<KeyInfo> {
+    const env = await this.request('GET', '/v1/key')
+    return (env.data ?? {}) as KeyInfo
+  }
+
+  private async request(
+    method: string,
+    path: string,
+    body?: unknown,
+    extra?: Record<string, string>,
+  ): Promise<Envelope> {
+    const headers: Record<string, string> = { Authorization: `Bearer ${this.key}` }
+    let payload: string | undefined
+    if (body !== undefined) {
+      headers['Content-Type'] = 'application/json'
+      payload = JSON.stringify(body)
+    }
+    if (extra) Object.assign(headers, extra)
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), 45_000)
+    let res: Response
+    try {
+      res = await fetch(`${this.host}${path}`, { method, headers, body: payload, signal: ac.signal })
+    } finally {
+      clearTimeout(timer)
+    }
+    const text = await res.text()
+    let env: Envelope
+    try {
+      env = JSON.parse(text) as Envelope
+    } catch {
+      throw new Error(`http ${res.status}: ${truncate(text, 180)}`)
+    }
+    if (env.code !== 0) throw new Error(env.msg || `http ${res.status}`)
+    return env
+  }
+}
