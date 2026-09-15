@@ -1,10 +1,10 @@
-import type { Audio, Quality } from '../types.ts'
+import type { Audio, Quality, VipProbe } from '../types.ts'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
 import { anyInt, asBool, asString, isObj } from './util.ts'
 import { hongguoItem } from './media.ts'
 
-export type StreamOptions = { qualities: Quality[]; audios: Audio[] }
+export type StreamOptions = { qualities: Quality[]; audios: Audio[]; vip?: VipProbe }
 
 /** Everything the picker needs: one entry per quality, one per audio track. */
 export async function probeOptions(
@@ -12,10 +12,11 @@ export async function probeOptions(
   cfg: FileConfig,
   provider: string,
   vid: string,
+  opts: { skipSign?: boolean } = {},
 ): Promise<StreamOptions> {
   switch (provider) {
     case 'hongguo': return { qualities: await probeHongguo(cli, vid), audios: [] }
-    case 'youku': return probeYouku(cli, cfg, vid)
+    case 'youku': return probeYouku(cli, cfg, vid, opts)
     case 'tencent': return { qualities: tencentQualityList(), audios: [] }
     case 'douyin': return { qualities: await probeDouyin(cli, vid), audios: [] }
     default: throw new Error('这个平台还没接画质列表')
@@ -92,8 +93,13 @@ async function probeDouyin(cli: GwClient, vid: string): Promise<Quality[]> {
  * `video_types[]` 把 stream_type 映射成人话（杜比/HDR10/SDR），
  * `audio_types[].default[]` 是可配音轨，`audio_tracks[]` 是已解析好的分片。
  */
-async function probeYouku(cli: GwClient, cfg: FileConfig, vid: string): Promise<StreamOptions> {
-  const data = await cli.invoke('youku', 'play', { vid, tier: 'multi', expand: '0' }, cli.extra(cfg, 'youku'))
+async function probeYouku(
+  cli: GwClient,
+  cfg: FileConfig,
+  vid: string,
+  opts: { skipSign?: boolean } = {},
+): Promise<StreamOptions> {
+  const data = await cli.invoke('youku', 'play', { vid, tier: 'multi', expand: '0' }, cli.extra(cfg, 'youku', opts.skipSign))
 
   const names = new Map<string, string>()
   if (Array.isArray(data.video_types)) {
@@ -107,51 +113,87 @@ async function probeYouku(cli: GwClient, cfg: FileConfig, vid: string): Promise<
 
   const seen = new Set<string>()
   const qualities: Quality[] = []
-  const media = Array.isArray(data.media) ? data.media : []
-  for (const m of media) {
-    if (!isObj(m)) continue
-    if (asString(m.type) && asString(m.type) !== 'video') continue
-    const st = asString(m.quality) || asString(m.stream_type)
-    if (!st || seen.has(st)) continue
+  /** 优酷 stream_type → 人话。4K 档用 video_types 给的名字（杜比/HDR10/SDR），
+   *  普通码按命名规则推断，因为 letterbox 过的真实高度（1608/808…）不能当档位名。 */
+  const label = (st: string, height: number): string => {
+    const named = names.get(st)
+    if (named) return named
+    const t = st.toLowerCase()
+    if (t.startsWith('hls5hd4') || t.includes('hd4')) return '4K'
+    if (t.includes('hd3')) return '1080P'
+    if (t.includes('hd2')) return '720P'
+    if (t === 'mp4hd' || t === 'mp5hd') return '480P'
+    if (t === 'flvhd' || t === 'mp5sd') return '360P'
+    return height > 0 ? `${height}P` : st.toUpperCase()
+  }
+  const add = (
+    st: string,
+    width: number,
+    height: number,
+    size: number,
+    codecRaw: string,
+    drm: string,
+  ): void => {
+    if (!st || seen.has(st)) return
     seen.add(st)
-    const h = anyInt(m.height) || anyInt(isObj(m.meta) ? m.meta.height : 0)
-    const w = anyInt(m.width) || anyInt(isObj(m.meta) ? m.meta.width : 0)
-    const codec = asString(m.codec) || asString(isObj(m.meta) ? m.meta.codecs : '')
-    const drm = asString(m.drm) || asString(isObj(m.meta) ? m.meta.drm : '')
+    const codec = (codecRaw.split('.')[0] ?? '').toUpperCase()
     qualities.push({
       id: st,
-      label: names.get(st) ?? (h > 0 ? `${h}P` : st),
+      label: label(st, height),
       title: st,
-      size: anyInt(m.size) || anyInt(isObj(m.meta) ? m.meta.size : 0),
-      width: w,
-      height: h,
-      codec: codec.split('.')[0]?.toUpperCase() || '—',
+      size,
+      width,
+      height,
+      codec: codec || '—',
       drm,
     })
   }
 
-  // Fallback for single-tier responses that only expose `streams[]`.
+  const media = Array.isArray(data.media) ? data.media : []
+  const streams = Array.isArray(data.streams) ? data.streams : []
+  // media[] 只带体积/编码这类元数据，能不能下取决于它有没有分片清单，
+  // 所以以 streams[] 为准（早先只按 media 列，列表里可能出现根本取不到流的档位）。
+  const mediaByStream = new Map<string, Record<string, unknown>>()
+  for (const m of media) {
+    if (!isObj(m)) continue
+    mediaByStream.set(asString(m.quality) || asString(m.stream_type), m)
+  }
+
+  for (const s of streams) {
+    if (!isObj(s)) continue
+    const kind = asString(s.media_type).toLowerCase()
+    if (kind === 'audio' || kind === 'subtitle') continue
+    const st = asString(s.stream_type)
+    if (!st || seen.has(st)) continue
+    if (!asString(s.playlist_url) && !asString(s.url)) continue // 没有真实分片 → 不列出来
+    const m = mediaByStream.get(st) ?? {}
+    const meta = isObj(m.meta) ? m.meta : {}
+    add(
+      st,
+      anyInt(s.width) || anyInt(m.width) || anyInt(meta.width),
+      anyInt(s.height) || anyInt(m.height) || anyInt(meta.height),
+      anyInt(s.size) || anyInt(m.size) || anyInt(meta.size),
+      asString(s.codecs) || asString(m.codec) || asString(meta.codecs) || (asBool(s.h265) ? 'H265' : ''),
+      asString(s.drm) || asString(m.drm) || asString(meta.drm),
+    )
+  }
+
+  // 兜底：有的片源只给 media[]，那就按 media 列（仍然要求有 url）。
   if (!qualities.length) {
-    const arr = Array.isArray(data.streams) ? data.streams : []
-    for (const s of arr) {
-      if (!isObj(s)) continue
-      const mt = asString(s.media_type).toLowerCase()
-      if (mt === 'audio' || mt === 'subtitle') continue
-      const st = asString(s.stream_type)
-      if (!st || seen.has(st)) continue
-      seen.add(st)
-      const codec = asBool(s.h265) ? 'H265' : asString(s.codecs).split('.')[0]?.toUpperCase() || 'H264'
-      const h = anyInt(s.height)
-      qualities.push({
-        id: st,
-        label: names.get(st) ?? (h > 0 ? `${h}P` : st.toUpperCase()),
-        title: st,
-        size: anyInt(s.size),
-        width: anyInt(s.width),
-        height: h,
-        codec,
-        drm: asString(s.drm),
-      })
+    for (const m of media) {
+      if (!isObj(m)) continue
+      const kind = asString(m.type).toLowerCase()
+      if (kind === 'audio' || kind === 'subtitle') continue
+      const meta = isObj(m.meta) ? m.meta : {}
+      if (!asString(m.url) && !asString(meta.playlist_url)) continue
+      add(
+        asString(m.quality) || asString(m.stream_type),
+        anyInt(m.width) || anyInt(meta.width),
+        anyInt(m.height) || anyInt(meta.height),
+        anyInt(m.size) || anyInt(meta.size),
+        asString(m.codec) || asString(meta.codecs),
+        asString(m.drm) || asString(meta.drm),
+      )
     }
   }
   if (!qualities.length && isObj(data.video)) {
@@ -160,11 +202,13 @@ async function probeYouku(cli: GwClient, cfg: FileConfig, vid: string): Promise<
     qualities.push({ id: st, label: h > 0 ? `${h}P` : st.toUpperCase(), title: st, size: 0, width: 0, height: h, codec: '', drm: '' })
   }
   if (!qualities.length) throw new Error('优酷没有画质列表')
+  // 高分辨率在前；同分辨率保持接口给的顺序（4K 杜比/HDR 在前，普通码在后）。
+  qualities.sort((a, b) => b.width * b.height - a.width * a.height || b.size - a.size)
 
   const audios: Audio[] = []
   const addAudio = (id: string, label: string, lang: string, codec: string, isDefault: boolean) => {
     if (!id || audios.some((a) => a.id === id)) return
-    audios.push({ id, label, lang, codec, isDefault })
+    audios.push({ id, label, lang, codec, isDefault, selected: isDefault })
   }
   const audioTypes = data.audio_types
   if (isObj(audioTypes)) {
@@ -190,5 +234,31 @@ async function probeYouku(cli: GwClient, cfg: FileConfig, vid: string): Promise<
   }
   audios.sort((a, b) => Number(b.isDefault) - Number(a.isDefault))
 
-  return { qualities, audios }
+  return { qualities, audios, vip: youkuVipProbe(data) }
+}
+
+/**
+ * 从 `play` 的响应里读「这个账号现在到底能不能放」。
+ *
+ * 这是唯一可信的会员判据：`account` 的那几个 mtop 会员接口要网页 Cookie，
+ * 扫码登录后必然报 SESSION_EXPIRED（≠ 掉登录），而 `play` 是真的取到了流，
+ * 服务端已经按 能力∩片源∩账号权益 裁过一次（`quality_gate` 就是这么写的）。
+ */
+export function youkuVipProbe(data: Record<string, unknown>): VipProbe {
+  const gate = isObj(data.quality_gate) ? data.quality_gate : {}
+  const canPlay = asBool(gate.can_play) || asBool(data.can_play)
+  const isVip = asBool(gate.is_vip) || asBool(data.is_vip)
+  const hasTrial = asBool(gate.has_trial)
+  const download = asString(gate.download_status) || asString(data.download_status)
+  const notes: string[] = []
+  if (hasTrial) notes.push('服务端只给试看档')
+  if (download.includes('svip_ahead')) notes.push('SVIP 抢先看池')
+  if (asBool(gate.low_res)) notes.push('被裁到低清')
+  return {
+    canPlay,
+    isVip,
+    hasTrial,
+    download,
+    note: notes.join(' · '),
+  }
 }

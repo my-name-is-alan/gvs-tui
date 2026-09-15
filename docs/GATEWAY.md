@@ -311,6 +311,82 @@ bun run scripts/probe-tunnel.ts
 
 启动 TUI 时加 `GVS_TRACE=<文件>` 可以把状态机轨迹写到文件（全屏界面从外面看不见）。
 
+### 客户端的两代协议
+
+TUI 先试 WebSocket；只有这一轮失败时才在同一轮里再试旧协议，**下一轮又从 WebSocket 开始**——
+所以一次抖动不会把整个会话永久降级到旧协议：
+
+| 网关 | 客户端行为 |
+| --- | --- |
+| WebSocket 版（当前源码） | `OPEN`，稳定 |
+| 旧版（裸 `Upgrade: tunnel` 劫持） | WS 握手失败 → 同轮回退旧协议 → 可用；**但走 Cloudflare 时约 1s 被 FIN**，所以旧版请让隧道域名灰云直连 |
+
+日志里 `tunnel UP` 后面带的传输方式就是当前用的哪条。
+
+### 每个 Key 只允许一条隧道
+
+网关 `internal/auth/limit.go` 对 `/v1/tunnel` 单独限流：**同一个 Key 只有一个活动隧道**，
+第二个连接一律 `429 TUNNEL_LIMITED`。于是：
+
+- 同一台机器同时开两个 TUI（或旧的没关又开一个），后开的会一直报错；
+- 两处用同一个 Key（台式机 + 笔记本）会互相顶掉；
+- 客户端现在显示 `隧道已被同一个 Key 的另一处占用（每 Key 只允许一条）` 并**退避 30 秒**再试，
+  不再每 3 秒撞一次。看到这句先确认没有第二个 TUI、没有别的机器在跑。
+
+如果同一账号需要多处同时用，这条规则得放宽（每 Key N 条），否则只能一机一号。
+
+### 发布 WS 网关后的自检
+
+按顺序跑，任何一步不对就别继续：
+
+```powershell
+# 1. 隧道本身：应打印 OPEN，且到结束仍是 open=true
+bun run scripts/probe-tunnel.ts
+
+# 2. 端到端：起一条真隧道，另开窗口让网关借本机 IP 发请求
+$env:PROBE_HOST='https://gvs.videohack.shop'
+bun run scripts/serve-tunnel.ts          # 期望 "tunnel UP"，不再回退
+bun run scripts/flow-check.ts            # 榜单 → 详情 → 取画质
+
+# 3. 界面自检：设置 → 隧道
+#    应显示 "已连接 · 优酷/腾讯走本机 IP · WebSocket"
+#    显示"旧协议"就说明线上还是老构建，或 WS 握手被反代挡了
+```
+
+判定标准：
+
+| 现象 | 含义 |
+| --- | --- |
+| `OPEN` 后一直保持 | 正确 |
+| `CLOSE code=1002 Missing websocket accept header` | 源站还是旧构建（或反代把升级头吃了） |
+| 连上后每 1~4 秒断一次 | 走的是旧协议且经过 Cloudflare |
+| 60 秒后掉线 | 客户端没回 pong（正常实现不会；Bun 会自动回） |
+
+实机验证记录（本地 `gateway-ws.exe` + 本机客户端）：握手 1ms `OPEN`，空跑 95s 不掉，
+`flow-check` 走隧道拿到 `2160P / AAC·guoyu`，网关侧 `tui tunnel attached` 每次会话只有一条。
+
+### 优酷登录态自检（别再靠猜 SESSION_EXPIRED）
+
+```powershell
+bun run scripts/probe-account.ts    # cred.info / account(session) / account(profile) 三段
+bun run scripts/check-sticky.ts 8   # 同一签名连打 8 次，看是不是"时好时坏"
+bun run scripts/check-detect.ts     # TUI 会怎么说（账号行 + 画质页权益）
+```
+
+判断表（**会员接口报错 ≠ 掉登录**）：
+
+| 现象 | 真实含义 |
+| --- | --- |
+| `cred info` 报 `yk_sign not found or revoked` | 本机签名不在网关凭证库里 → 必须重扫（`account` 还能答，那是网关全局会话） |
+| `play` 报 `invalid Yk-Sign`（`YOUKU_RELOGIN_REQUIRED`） | 同上；`ensureFreshRequestSession` 校验比 `account` 严 |
+| `account/profile` 里 `member_profile_get` 等报 `FAIL_SYS_SESSION_EXPIRED` | 只是**会员接口要网页 Cookie**，扫码登录必然如此，不代表掉登录 |
+| `session.logged_in=true` + `risk.level=none` | App 会话正常，能搜能放 |
+| `quality_gate.is_vip=true / can_play=true` | 会员权益真的生效（这是唯一的功能性判据） |
+
+`data/youku_creds/*.json`（或 `$YOUKU_CRED_DIR`）**必须落在持久化卷上**：网关重启/重新部署
+后签名消失，表现就是"刚扫完又说要重扫"。同一 Key 下 `cred info` 还认得、`play` 说不认识，
+说明流量在多个实例间轮询而凭证库没共享。
+
 ---
 
 ## 9. 本机配置 `gvs/tui.json`
@@ -334,6 +410,10 @@ bun run scripts/probe-tunnel.ts
 
 TMDB 是客户端直连 `api.themoviedb.org`，不经过网关。优酷/腾讯在填了 `tmdbKey` 时，下载前会刮削。
 
+`youkuSign` 过期时网关会在 0ms 内回 `invalid Yk-Sign`（`needs_relogin`）：取画质/下载会直接失败，
+而不是降级。TUI 遇到这个会**自动清掉本地死签名并重试一次**，仍失败就提示去「设置 → 优酷扫码」。
+手工修也可以：把 `youkuSign` 置空，或重新扫码。
+
 命名例：`NameDots.S01E02.1080p.YK.WEB-DL.H265-ADWeb.mkv`。红果/抖音短剧放在剧名目录下。
 
 ---
@@ -355,9 +435,9 @@ Snapshot：`src/types.ts`。场景：
 | 全局 | Ctrl+C 退出 |
 | home | j/k Enter；`q` 退出 |
 | search | ←→ 平台；Enter：抖音链接直接下载，否则搜 |
-| results | j/k Enter |
+| results | j/k 移动；光标到底再按 j 自动取下一页（网关 `hasMore`/`nextCursor`）；Enter 打开 |
 | detail | 方向键；空格勾选；`a` 全选；`c` 清空；Enter/`d` 下所选；`A`/`f` 整部 |
-| quality | j/k Enter |
+| quality | j/k 选档；←→ 切「画质 / 音轨」；空格 勾选音轨（可多选）；`a` 全选、`c` 清空；Enter 开始下载 |
 | tmdb | j/k Enter；Esc 跳过 |
 | settings | j/k Enter/空格 |
 | qr | Esc 取消；2s 轮询 login check |

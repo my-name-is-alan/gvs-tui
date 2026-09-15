@@ -1,18 +1,25 @@
 import { appendFileSync } from 'node:fs'
-import { loadConfig, saveConfig, type FileConfig } from './lib/config.ts'
-import { GwClient, type KeyInfo } from './lib/client.ts'
+import { clampThreads, loadConfig, saveConfig, type FileConfig } from './lib/config.ts'
+import { GwClient, ReloginRequired, type KeyInfo } from './lib/client.ts'
 import { JobHub, jobTitle, nextJobID, patchJob, type DlTask } from './lib/jobs.ts'
 import { probeOptions } from './lib/quality.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import { hostIsLocal, importYoukuCookie, pollYoukuQR, startYoukuQR } from './lib/youku-qr.ts'
+import {
+  accountSummary, loginSummary, ykAccount, ykLoginInfo, ykRefresh,
+  type YkAccount, type YkLogin,
+} from './lib/youku-session.ts'
 import { tmdbSearch } from './lib/tmdb.ts'
 import { clipTitle, extractDouyinURL } from './lib/link.ts'
 import { pickDouyinURL } from './lib/media.ts'
-import { dots } from './lib/name.ts'
-import { anyInt, asString, firstStr, isObj } from './lib/util.ts'
-import type { Audio, Detail, Episode, Job, OptionTab, Quality, Row, Scene, Snapshot, StatusKind, TMDBHit } from './types.ts'
+import { dots, tierHeight } from './lib/name.ts'
+import { anyInt, asBool, asString, firstStr, isObj } from './lib/util.ts'
+import type { Audio, Detail, Episode, Job, OptionTab, Quality, Row, Scene, Snapshot, StatusKind, TMDBHit, VipProbe } from './types.ts'
 
 const ALL_PROVIDERS = ['youku', 'tencent', 'hongguo', 'douyin']
+
+/** 网关说「这个签名我不认识」的几种说法。 */
+const SIGN_DEAD_RE = /not found|revoked|invalid Yk-Sign|yk_sign not found/i
 
 /**
  * Temporary diagnostic: `GVS_TRACE=<file>` appends a line per event, which is
@@ -53,6 +60,10 @@ export class Runtime {
   private hostFocused = true
   private keyFocused = false
   private rows: Row[] = []
+  /** 最后一个列表请求，用于翻页；more/cursor 来自网关返回。 */
+  private listSpec: { provider: string; action: string; input: Record<string, unknown> } | null = null
+  private listCursor = ''
+  private listMore = false
   private eps: Episode[] = []
   private qualities: Quality[] = []
   private audios: Audio[] = []
@@ -60,6 +71,14 @@ export class Runtime {
   private optionTab: OptionTab = 'quality'
   private probeFailed = false
   private detailInfo: Detail | null = null
+  /** 网关侧优酷登录态（按 Yk-Sign 维度）。 */
+  private ykLogin: YkLogin | null = null
+  /** 账号与会员真实状态（account/profile）。 */
+  private ykAcct: YkAccount | null = null
+  /** 最近一次取流带回来的权益真相（play 的 quality_gate）。 */
+  private vipProbe: VipProbe | null = null
+  /** 本机 Yk-Sign 已不在网关凭证库里（cred info 报 not found/revoked/invalid）。 */
+  private signMissing = false
   private tmdbHits: TMDBHit[] = []
   private jobs: Job[] = []
   private pending: DlTask[] = []
@@ -70,6 +89,7 @@ export class Runtime {
   private qrTicket = ''
   private tunnelOk = false
   private tunnelErr = ''
+  private tunnelTransport: 'ws' | 'legacy' | undefined
   private tunnelOn = false
   private readonly hub: JobHub
   private readonly listeners = new Set<Listener>()
@@ -187,10 +207,10 @@ export class Runtime {
   }
 
   private settingFields(): string[] {
-    const f = ['隧道', '网关', 'Key', '下载目录']
+    const f = ['隧道', '网关', 'Key', '下载目录', '下载线程']
     if (this.has('youku') || this.has('tencent') || this.has('hongguo')) f.push('发布组')
     if (this.has('youku') || this.has('tencent')) f.push('TMDB Key')
-    if (this.has('youku')) f.push('优酷扫码', '优酷 Cookie', 'Yk-Sign')
+    if (this.has('youku')) f.push('优酷扫码', '优酷 Cookie', '优酷登录')
     if (this.has('tencent')) f.push('腾讯 Cookie')
     if (this.has('hongguo')) f.push('红果合并', '红果 NFO', '红果封装')
     f.push('ffmpeg')
@@ -200,16 +220,23 @@ export class Runtime {
   private settingValue(f: string): string {
     switch (f) {
       case '隧道':
-        if (this.tunnelOk) return '已连接 · 优酷/腾讯走本机 IP'
+        if (this.tunnelOk) {
+          const via = this.tunnelTransport === 'legacy' ? '旧协议 · 走 CDN 会被掐' : 'WebSocket'
+          return `已连接 · 优酷/腾讯走本机 IP · ${via}`
+        }
         if (this.tunnelErr) return `断开  ${this.tunnelErr}`
         return '未连接'
       case '网关': return this.cfg.host
       case 'Key': return this.cfg.key.length > 12 ? `${this.cfg.key.slice(0, 12)}…` : this.cfg.key
       case '下载目录': return this.cfg.outDir
+      case '下载线程': return `${this.cfg.threads} 路并发`
       case '发布组': return this.cfg.releaseGroup || '未设'
       case 'TMDB Key': return this.cfg.tmdbKey ? '已配置' : '未配置'
       case '优酷 Cookie': return '粘贴浏览器 Cookie（含 P_sck）'
-      case 'Yk-Sign': return this.cfg.youkuSign ? '已登录' : '未登录'
+      case '优酷登录':
+        if (!this.cfg.youkuSign) return '未登录 · 回车扫码'
+        if (this.signMissing) return '本机签名已不在网关凭证库 · 回车重新扫码'
+        return this.ykAcct ? accountSummary(this.ykAcct, this.vipProbe ?? undefined) : (this.ykLogin ? loginSummary(this.ykLogin) : '检查中…（回车刷新）')
       case '腾讯 Cookie': return this.cfg.tencentCookie ? '已保存' : '空 · 回车粘贴'
       case '红果合并': return this.cfg.hongguoMerge ? '开' : '关'
       case '红果 NFO': return this.cfg.hongguoNfo ? '开' : '关'
@@ -224,6 +251,7 @@ export class Runtime {
       case '网关': return this.cfg.host
       case 'Key': return this.cfg.key
       case '下载目录': return this.cfg.outDir
+      case '下载线程': return String(this.cfg.threads)
       case '发布组': return this.cfg.releaseGroup
       case 'TMDB Key': return this.cfg.tmdbKey
       case '腾讯 Cookie': return this.cfg.tencentCookie
@@ -242,6 +270,25 @@ export class Runtime {
       busy: this.busy,
       tunnelOk: this.tunnelOk,
       tunnelError: this.tunnelErr || undefined,
+      tunnelTransport: this.tunnelTransport,
+      ykLogin: this.ykLogin
+        ? { ok: this.ykLogin.ok, summary: loginSummary(this.ykLogin), refreshable: this.ykLogin.refreshable }
+        : undefined,
+      ykAccount: this.ykAcct
+        ? {
+            loggedIn: this.ykAcct.loggedIn,
+            needsScan: this.ykAcct.needsScan,
+            nick: this.ykAcct.nick,
+            uid: this.ykAcct.uid,
+            method: this.ykAcct.method,
+            vipSource: this.ykAcct.vipSource,
+            isVip: this.ykAcct.isVip,
+            vipUntil: this.ykAcct.vipUntil,
+            riskLevel: this.ykAcct.riskLevel,
+            summary: accountSummary(this.ykAcct, this.vipProbe ?? undefined),
+          }
+        : undefined,
+      vipProbe: this.vipProbe ?? undefined,
       cursor,
       providerIndex: this.provIdx,
       qualityIndex: this.qIdx,
@@ -250,6 +297,7 @@ export class Runtime {
       providers: this.providers(),
       homeItems: this.homeItems(),
       rows: this.rows,
+      listMore: this.listMore,
       episodes: this.eps,
       qualities: this.qualities,
       audios: this.audios,
@@ -271,6 +319,85 @@ export class Runtime {
     }
   }
 
+  /**
+   * 启动时的优酷自检：先看本地凭证，再让网关续期（**不需要扫码**），最后查账号。
+   *
+   * 这里刻意不发任何「会话过期」的结论 —— 会员那几个 mtop 接口要网页 Cookie，
+   * 扫码登录后必然报 SESSION_EXPIRED，那是「查不到会员」，不是掉登录。
+   * 真正掉登录只有 `refresh` 说 `needs_relogin`，或者 `play` 报 ReloginRequired。
+   */
+  private async ensureYouku(): Promise<void> {
+    if (!this.cli || !this.cfg.youkuSign) return
+    try {
+      this.ykLogin = await ykLoginInfo(this.cli, this.cfg.youkuSign)
+    } catch {
+      // cred info 失败不影响后面
+    }
+    // `cred info` 是唯一会校验签名的只读接口：签名不在网关凭证库里时它直接报
+    // not found / revoked。这时候 `account` 还能从全局会话答出来（所以你看到
+    // 「已登录」），但 play/download 一律报 invalid Yk-Sign。
+    this.signMissing = !this.ykLogin?.ok && SIGN_DEAD_RE.test(this.ykLogin?.hint ?? '')
+    if (this.signMissing) {
+      this.say('本机 Yk-Sign 在网关凭证库里已经不在了（网关重启/重新部署常见）→ 设置 → 优酷扫码 重新登录', 'warn')
+    }
+    const stale = !this.ykLogin?.lastRefreshAt || Date.now() - this.ykLogin.lastRefreshAt > 20 * 60_000
+    if (stale && !this.signMissing) {
+      try {
+        const res = await ykRefresh(this.cli, this.cfg.youkuSign)
+        if (res.needsRelogin) {
+          this.say(`优酷登录态需要重新扫码：设置 → 优酷扫码（${res.hint || '网关续期被拒'}）`, 'warn')
+        } else if (res.refreshed) {
+          this.ykLogin = await ykLoginInfo(this.cli, this.cfg.youkuSign)
+        }
+      } catch (e) {
+        trace(`yk refresh failed: ${e instanceof Error ? e.message : e}`)
+      }
+    }
+    await this.checkYoukuAccount()
+  }
+
+  /** 查账号与会员状态（会打几个上游接口，只在启动和手动刷新时调）。 */
+  private async checkYoukuAccount(): Promise<void> {
+    if (!this.cli || !this.cfg.youkuSign) return
+    this.ykAcct = await ykAccount(this.cli, this.cfg.youkuSign)
+    // 签名不在库里 → 账号接口很可能答的是网关自己的全局会话，不能当本机登录态。
+    if (this.signMissing) this.ykAcct.needsScan = true
+    if (this.ykAcct.needsScan && !this.signMissing) {
+      this.say('优酷登录态不可用：设置 → 优酷扫码 重新登录（否则 VIP 片源只能看试看段）', 'warn')
+    }
+    this.emit()
+  }
+  /** 查网关侧优酷登录态；失败不影响其它流程。 */
+  private async checkYoukuLogin(): Promise<void> {
+    if (!this.cli || !this.cfg.youkuSign) return
+    this.ykLogin = await ykLoginInfo(this.cli, this.cfg.youkuSign)
+    this.emit()
+  }
+
+  /**
+   * 续期优酷登录态。网关能用 stoken/ptoken 自己续，**不需要重新扫码**；
+   * 只有它明确说 needs_relogin 时才真的要扫码。
+   */
+  private async renewYoukuLogin(): Promise<boolean> {
+    if (!this.cli || !this.cfg.youkuSign) return false
+    try {
+      const res = await this.work(() => ykRefresh(this.cli!, this.cfg.youkuSign))
+      this.ykLogin = await ykLoginInfo(this.cli, this.cfg.youkuSign)
+      if (res.needsRelogin) {
+        this.say(`优酷登录态需要重新扫码：${res.hint || '设置 → 优酷扫码'}`, 'warn')
+        this.emit()
+        return false
+      }
+      this.say(res.refreshed ? '优酷登录态已续期' : '优酷登录态正常，无需续期', 'ok')
+      this.emit()
+      return true
+    } catch (e) {
+      this.say(`优酷续期失败：${e instanceof Error ? e.message : e}`, 'err')
+      this.emit()
+      return false
+    }
+  }
+
   private async refreshKey(): Promise<void> {
     if (!this.cli) return
     await this.work(async () => {
@@ -279,6 +406,10 @@ export class Runtime {
         this.say(`${this.keyInfo.name}  scope=${this.keyInfo.all || !this.keyInfo.scope?.length ? '全部' : this.keyInfo.scope.join(',')}  ${
           this.keyInfo.permanent || !this.keyInfo.expiresAt ? '永不到期' : `剩 ${this.keyInfo.daysLeft ?? 0} 天`
         }`, 'ok')
+        // 有本地签名就问一下网关侧的登录态：能自己续期就不用重新扫码。
+        if (this.cfg.youkuSign) {
+          void this.ensureYouku()
+        }
         if (!this.tunnelOn && (this.has('youku') || this.has('tencent'))) {
           this.tunnelOn = true
           this.tunnelAbort = new AbortController()
@@ -287,9 +418,10 @@ export class Runtime {
           // only the first drop is announced, and recovery only after a real gap.
           let announcedDrop = false
           let downSince = 0
-          runTunnel(this.cfg.host, this.cfg.key, (ok, err) => {
+          runTunnel(this.cfg.host, this.cfg.key, (ok, err, transport) => {
             this.tunnelOk = ok
             this.tunnelErr = err
+            if (transport) this.tunnelTransport = transport
             if (ok) {
               if (downSince && Date.now() - downSince > 8000) this.say('隧道已恢复：优酷/腾讯走本机 IP', 'ok')
               downSince = 0
@@ -378,7 +510,14 @@ export class Runtime {
       return
     }
     if (k === 'esc') this.scene = 'search'
-    else if (k === 'j' || k === 'down') this.cursor = (this.cursor + 1) % this.rows.length
+    else if (k === 'j' || k === 'down' || k === 'n') {
+      // 到底了就去取下一页（网关给 hasMore/nextCursor），不是回到第一条。
+      if (this.cursor >= this.rows.length - 1 && this.listMore) {
+        void this.loadMore()
+        return
+      }
+      this.cursor = (this.cursor + 1) % this.rows.length
+    }
     else if (k === 'k' || k === 'up') this.cursor = (this.cursor - 1 + this.rows.length) % this.rows.length
     else if (k === 'enter') {
       const r = this.rows[this.cursor]
@@ -430,6 +569,19 @@ export class Runtime {
     const onAudio = hasAudio && this.optionTab === 'audio'
     const n = onAudio ? na : nq
     if (!n) return
+    if (onAudio && (k === ' ' || k === 'space')) {
+      const row = this.audios[this.audioIdx]
+      if (row) row.selected = !row.selected
+      return
+    }
+    if (onAudio && k === 'a') {
+      for (const row of this.audios) row.selected = true
+      return
+    }
+    if (onAudio && k === 'c') {
+      for (const row of this.audios) row.selected = false
+      return
+    }
     if (k === 'j' || k === 'down') {
       if (onAudio) this.audioIdx = (this.audioIdx + 1) % n
       else this.qIdx = (this.qIdx + 1) % n
@@ -445,15 +597,21 @@ export class Runtime {
   /** Stamp the chosen quality (and audio track) onto every pending task. */
   private applyOptions(): void {
     const q = this.qualities[this.qIdx]
+    const picked = this.audios.filter((a) => a.selected)
+    const tracks = (picked.length ? picked : this.audios.filter((a) => a.isDefault).slice(0, 1)).map((a) => ({
+      id: a.id,
+      label: a.label,
+      lang: a.lang,
+    }))
     const a = this.audios[this.audioIdx]
     for (const t of this.pending) {
       if (q) {
         t.quality = q.id
         t.group = this.cfg.releaseGroup
-        if (q.height > 0) t.height = q.height
+        if (q.height > 0) t.height = tierHeight(q.width, q.height)
         if (q.codec) t.codec = q.codec
       }
-      if (a) t.audio = a.id
+      t.audioTracks = tracks
     }
     this.probeFailed = false
     if (q) this.say(a ? `画质 ${q.label} · 音轨 ${a.label}` : `画质 ${q.label}`, 'ok')
@@ -498,6 +656,31 @@ export class Runtime {
   private async openSetting(f: string): Promise<void> {
     if (f === '隧道') {
       this.say(this.tunnelOk ? '隧道已连接' : (this.tunnelErr || '未连接'), this.tunnelOk ? 'ok' : 'warn')
+      this.emit()
+      return
+    }
+    if (f === '优酷登录') {
+      if (!this.cfg.youkuSign) {
+        void this.openSetting('优酷扫码')
+        return
+      }
+      if (this.signMissing) {
+        this.say('本机签名在网关凭证库里已经没有了，续期不可能成功 → 直接扫码', 'warn')
+        this.emit()
+        void this.openSetting('优酷扫码')
+        return
+      }
+      this.say('正在续期并查询会员状态…')
+      this.emit()
+      const ok = await this.renewYoukuLogin()
+      await this.checkYoukuAccount()
+      if (!ok || this.ykAcct?.needsScan) {
+        this.say('登录态不可用，续期救不回来 → 设置 → 优酷扫码 重新登录', 'warn')
+      } else {
+        const probe = this.vipProbe
+        const tail = probe ? ` · 取流: ${probe.canPlay ? '可播' : '不可播'}${probe.isVip ? ' · 会员权益✓' : ''}${probe.hasTrial ? ' · 仅试看' : ''}` : ''
+        this.say(`${accountSummary(this.ykAcct)}${tail}`, probe && probe.canPlay ? 'ok' : 'info')
+      }
       this.emit()
       return
     }
@@ -550,6 +733,7 @@ export class Runtime {
         await this.refreshKey()
         return
       case '下载目录': this.cfg.outDir = v; break
+      case '下载线程': this.cfg.threads = clampThreads(v); break
       case '发布组': this.cfg.releaseGroup = v; break
       case 'TMDB Key': this.cfg.tmdbKey = v; break
       case '腾讯 Cookie': this.cfg.tencentCookie = v; break
@@ -564,6 +748,7 @@ export class Runtime {
           this.cfg.youkuSign = await this.work(() => importYoukuCookie(this.cli!, v))
           saveConfig(this.cfg)
           this.say('优酷 Cookie 已导入', 'ok')
+          void this.ensureYouku()
         } catch (e) {
           this.say(`Cookie 导入失败：${e instanceof Error ? e.message : e}`, 'err')
         }
@@ -620,21 +805,75 @@ export class Runtime {
     this.emit()
     try {
       const opts = await this.work(() => probeOptions(this.cli!, this.cfg, this.detailProv, tasks[0].vid))
-      this.qualities = opts.qualities
-      this.audios = opts.audios
-      this.qIdx = 0
-      this.audioIdx = Math.max(0, opts.audios.findIndex((a) => a.isDefault))
-      this.optionTab = 'quality'
-      this.probeFailed = false
-      this.scene = 'quality'
-      this.say(`${opts.qualities.length} 档画质${opts.audios.length ? ` · ${opts.audios.length} 条音轨` : ''} · ${tasks.length} 集`, 'ok')
+      this.adoptOptions(opts, tasks.length)
     } catch (e) {
-      this.probeFailed = true
-      this.qualities = []
-      this.audios = []
-      this.say(`取画质失败：${e instanceof Error ? e.message : e} · 再按 ⏎ 用默认画质下载`, 'err')
+      if (e instanceof ReloginRequired && this.cfg.youkuSign) {
+        // ① 先续期：网关能用 stoken/ptoken 自己续，续成功就重试原请求，
+        //    用户完全不用重新扫码（"重启就失效"多半就是缺了这一步）。
+        this.say('优酷登录态失效，尝试自动续期…', 'warn')
+        this.emit()
+        if (await this.renewYoukuLogin()) {
+          try {
+            const opts = await this.work(() => probeOptions(this.cli!, this.cfg, this.detailProv, tasks[0].vid))
+            this.adoptOptions(opts, tasks.length)
+            this.emit()
+            return
+          } catch (afterRenew) {
+            this.failProbe(afterRenew instanceof Error ? afterRenew.message : String(afterRenew), true)
+            this.emit()
+            return
+          }
+        }
+        // ② 续期也不行 → 试一次不带签名的请求（网关自己的优酷会话兜底）。
+        //    只覆盖这一次请求的请求头，**不动配置文件**：早先那版把用户的
+        //    签名从 tui.json 里删掉了，属于我越权，这里不再重犯。
+        this.say('续期未成功，这次先用网关侧的优酷会话试试…', 'warn')
+        this.emit()
+        try {
+          const opts = await this.work(() => probeOptions(this.cli!, this.cfg, this.detailProv, tasks[0].vid, { skipSign: true }))
+          this.adoptOptions(opts, tasks.length)
+          this.say('本次用网关会话取流成功；本机签名仍不可用，建议 设置 → 优酷扫码', 'warn')
+          this.emit()
+          return
+        } catch (again) {
+          this.failProbe(again instanceof Error ? again.message : String(again), true)
+          this.emit()
+          return
+        }
+      }
+      this.failProbe(e instanceof Error ? e.message : String(e), e instanceof ReloginRequired)
     }
     this.emit()
+  }
+
+  private adoptOptions(opts: { qualities: Quality[]; audios: Audio[]; vip?: VipProbe }, count: number): void {
+    this.qualities = opts.qualities
+    this.audios = opts.audios
+    this.vipProbe = opts.vip ?? null
+    this.qIdx = 0
+    this.audioIdx = Math.max(0, opts.audios.findIndex((a) => a.isDefault))
+    this.optionTab = 'quality'
+    this.probeFailed = false
+    this.scene = 'quality'
+    const rights = this.vipProbe
+      ? ` · ${this.vipProbe.canPlay ? '可播' : '不可播'}${this.vipProbe.hasTrial ? '（仅试看）' : ''}`
+      : ''
+    this.say(
+      `${opts.qualities.length} 档画质${opts.audios.length ? ` · ${opts.audios.length} 条音轨` : ''} · ${count} 集${rights}`,
+      this.vipProbe && !this.vipProbe.canPlay ? 'warn' : 'ok',
+    )
+  }
+
+  private failProbe(message: string, relogin: boolean): void {
+    this.probeFailed = true
+    this.qualities = []
+    this.audios = []
+    this.vipProbe = null
+    if (relogin) {
+      this.say('优酷登录态失效：设置 → 优酷扫码 重新登录，⏎ 先用默认画质下载', 'err')
+      return
+    }
+    this.say(`取画质失败：${message} · 再按 ⏎ 用默认画质下载`, 'err')
   }
 
   private async afterQuality(): Promise<void> {
@@ -690,14 +929,17 @@ export class Runtime {
       if (!pickDouyinURL(data)) throw new Error('这条没有视频直链（可能是图文）')
       const desc = clipTitle(asString(data.content) || asString(data.title) || title)
       let height = 0
+      let width = 0
       const media = Array.isArray(data.media) ? data.media : []
       for (const it of media) {
         if (!isObj(it) || !asString(it.url)) continue
         const typ = asString(it.type)
         if (typ && typ !== 'video') continue
         height = anyInt(it.height)
+        width = anyInt(it.width)
         break
       }
+      const tier = tierHeight(width, height)
       this.enqueueAll([{
         provider: 'douyin',
         title: desc,
@@ -706,8 +948,8 @@ export class Runtime {
         url: link,
         season: 0,
         episode: 0,
-        height,
-        quality: height > 0 ? `${height}p` : '',
+        height: tier,
+        quality: tier > 0 ? `${tier}p` : '',
         group: '',
         codec: 'H264',
         tmdbId: 0,
@@ -720,13 +962,53 @@ export class Runtime {
       this.emit()
     }
   }
+  /** 记住列表上下文，翻页时用同一个 provider/action 再打一次。 */
+  private setListSpec(spec: { provider: string; action: string; input: Record<string, unknown> }, data: Record<string, unknown>): void {
+    this.listSpec = spec
+    const info = pageInfo(data)
+    this.listMore = info.more
+    this.listCursor = info.cursor
+  }
+
+  /** 追加下一页；到底后 listMore=false，再按也不打请求。 */
+  private async loadMore(): Promise<void> {
+    if (!this.cli || !this.listSpec || !this.listMore) return
+    const spec = this.listSpec
+    const cursor = this.listCursor
+    if (!cursor) {
+      this.listMore = false
+      this.say('已经是最后一页', 'info')
+      this.emit()
+      return
+    }
+    try {
+      const data = await this.work(() =>
+        this.cli!.invoke(spec.provider, spec.action, { ...spec.input, cursor, page: cursor }),
+      )
+      const more = parseSearch(spec.provider, data)
+      const seen = new Set(this.rows.map((r) => `${r.id}|${r.title}`))
+      const fresh = more.filter((r) => !seen.has(`${r.id}|${r.title}`))
+      this.rows = [...this.rows, ...fresh]
+      this.setListSpec(spec, data)
+      this.cursor = Math.min(this.rows.length - 1, this.cursor + 1)
+      this.say(
+        fresh.length ? `已加载 ${this.rows.length} 条${this.listMore ? ' · 还有更多' : ' · 到底了'}` : '没有更多了',
+        fresh.length ? 'ok' : 'warn',
+      )
+    } catch (e) {
+      this.say(e instanceof Error ? e.message : String(e), 'err')
+    }
+    this.emit()
+  }
   private async search(provider: string, q: string): Promise<void> {
     if (!this.cli) return
     try {
-      const data = await this.work(() => this.cli!.invoke(provider, 'search', { q, pageSize: 20 }))
+      const input = { q, pageSize: 20 }
+      const data = await this.work(() => this.cli!.invoke(provider, 'search', input))
       this.rows = parseSearch(provider, data)
+      this.setListSpec({ provider, action: 'search', input }, data)
       this.cursor = 0
-      this.say(this.rows.length ? `${this.rows.length} 条 · ${provider}` : '没有搜到结果', this.rows.length ? 'ok' : 'warn')
+      this.say(this.rows.length ? `${this.rows.length} 条 · ${provider}${this.listMore ? ' · 还有更多' : ''}` : '没有搜到结果', this.rows.length ? 'ok' : 'warn')
       this.scene = 'results'
     } catch (e) {
       this.say(e instanceof Error ? e.message : String(e), 'err')
@@ -742,10 +1024,12 @@ export class Runtime {
       if (x === 'youku' || x === 'tencent' || x === 'hongguo') { p = x; break }
     }
     try {
-      const data = await this.work(() => this.cli!.invoke(p, 'browse', { mode: 'rank', pageSize: 20 }))
+      const input = { mode: 'rank', pageSize: 20 }
+      const data = await this.work(() => this.cli!.invoke(p, 'browse', input))
       this.rows = parseSearch(p, data)
+      this.setListSpec({ provider: p, action: 'browse', input }, data)
       this.cursor = 0
-      this.say(this.rows.length ? `榜单 ${this.rows.length} 条 · ${p}` : '榜单是空的', this.rows.length ? 'ok' : 'warn')
+      this.say(this.rows.length ? `榜单 ${this.rows.length} 条 · ${p}${this.listMore ? ' · 还有更多' : ''}` : '榜单是空的', this.rows.length ? 'ok' : 'warn')
       this.scene = 'results'
     } catch (e) {
       this.say(e instanceof Error ? e.message : String(e), 'err')
@@ -800,6 +1084,7 @@ export class Runtime {
         this.scene = 'settings'
         this.stopQR()
         this.emit()
+        void this.ensureYouku() // 新签名 → 重查登录态与会员（signMissing 会跟着复位）
       }
     } catch (e) {
       this.say(e instanceof Error ? e.message : String(e), 'err')
@@ -819,6 +1104,15 @@ function normKey(name: string, shift?: boolean): string {
   if (n === 'space') return ' '
   if (shift && name.length === 1) return name.toUpperCase()
   return n
+}
+
+/** 网关各 provider 的分页字段不统一：hasMore/more + nextCursor/page。 */
+function pageInfo(data: Record<string, unknown>): { more: boolean; cursor: string } {
+  const more = asBool(data.hasMore) || asBool(data.more) || asBool(data.has_more)
+  const explicit = asString(data.nextCursor)
+  const page = anyInt(data.page)
+  const cursor = explicit && explicit !== '0' ? explicit : page > 0 ? String(page + 1) : ''
+  return { more, cursor }
 }
 
 function parseSearch(provider: string, data: Record<string, unknown>): Row[] {

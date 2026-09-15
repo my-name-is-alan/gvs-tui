@@ -50,9 +50,13 @@ console.log('   detail:', JSON.stringify(rt.snapshot.detail))
 console.log('   first ep:', JSON.stringify(rt.snapshot.episodes?.[0]))
 
 rt.handleKey('enter')       // 下载本集 → 取画质
-await wait(9000)
+for (let i = 0; i < 12; i++) {
+  await wait(1000)
+  const s = rt.snapshot
+  console.log(`   +${i + 1}s scene=${s.scene} busy=${s.busy} q=${s.qualities?.length ?? 0} a=${s.audios?.length ?? 0} probeFailed=${s.probeFailed} | ${s.status}`)
+  if (s.scene === 'quality' || (s.probeFailed && !s.busy)) break
+}
 show('after enter')
-console.log(`   status: ${rt.snapshot.status}`)
 console.log('   qualities:', (rt.snapshot.qualities ?? []).slice(0, 5).map((q) => `${q.label} ${q.size}B ${q.width}x${q.height}`).join(' | '))
 console.log('   audios:', (rt.snapshot.audios ?? []).map((a) => `${a.label}/${a.lang}${a.isDefault ? '(默认)' : ''}`).join(' | '))
 

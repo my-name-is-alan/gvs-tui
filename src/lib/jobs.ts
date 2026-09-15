@@ -7,11 +7,11 @@ import { filename, folder, sourceTag } from './name.ts'
 import type { Naming } from './name.ts'
 import { writeEpisodeNFO, writeTvShowNFO } from './nfo.ts'
 import {
-  CdnDenied, appendURL, downloadProgress, pickDouyinURL, pickHongguo, pickURL, referer, speedCB, youkuAudioURLs,
-  youkuStreamURLs,
+  CdnDenied, appendURLs, downloadProgress, pickDouyinURL, pickHongguo, pickURL, referer, speedCB,
+  youkuAudioURLs, youkuStreamURLs,
 } from './media.ts'
 import type { RetryNote } from './media.ts'
-import { asString, isObj } from './util.ts'
+import { asString, human, isObj } from './util.ts'
 import type { Job } from '../types.ts'
 
 export type DlTask = {
@@ -24,8 +24,8 @@ export type DlTask = {
   episode: number
   height: number
   quality: string
-  /** Audio stream id (youku `audio_stream_type`); empty = platform default. */
-  audio?: string
+  /** Audio tracks to mux in (空格勾选的那些）；空 = 只封平台默认音轨。 */
+  audioTracks?: Array<{ id: string; label: string; lang: string }>
   group: string
   codec: string
   tmdbId: number
@@ -115,7 +115,7 @@ async function runTask(
     emit('取链', 0.01, out.split(/[/\\]/).pop() ?? out)
     switch (t.provider) {
       case 'hongguo':
-        await dlHongguo(cli, t, dir, out, ffmpeg, emit, retryNote)
+        await dlHongguo(cli, t, dir, out, ffmpeg, emit, retryNote, cfg.threads)
         break
       case 'youku':
         await dlYouku(cli, cfg, t, dir, out, ffmpeg, emit, retryNote)
@@ -147,6 +147,7 @@ async function dlHongguo(
   cli: GwClient, t: DlTask, dir: string, out: string, ffmpeg: string,
   emit: (s: string, p: number, l: string) => void,
   retryNote: RetryNote,
+  threads: number,
 ): Promise<void> {
   emit('取链', 0.02, t.vid)
   const data = await cli.invoke('hongguo', 'resolve', { vid: t.vid, platform: 'ios' })
@@ -165,26 +166,26 @@ async function dlHongguo(
   const enc = join(dir, `.${t.vid}.enc.mp4`)
   emit('下载', 0.08, '')
   try {
-    await downloadProgress(picked.cdn, enc, referer(t.provider), speedCB(emit, '下载', 0.08, 0.7), retryNote)
+    await downloadProgress(picked.cdn, enc, referer(t.provider), speedCB(emit, '下载', 0.08, 0.7), retryNote, threads)
   } catch (e) {
     // 红果直链带 expire；403 说明链接过期，重新 resolve 一次再续传。
     if (!(e instanceof CdnDenied)) throw e
     emit('重取', 0.08, `CDN ${e.status}，重新取链后续传`)
     const again = pickHongguo(await cli.invoke('hongguo', 'resolve', { vid: t.vid, platform: 'ios' }), t.vid, t.quality)
     if (!again.cdn) throw new Error('红果重新取链失败')
-    await downloadProgress(again.cdn, enc, referer(t.provider), speedCB(emit, '下载', 0.08, 0.7), retryNote)
+    await downloadProgress(again.cdn, enc, referer(t.provider), speedCB(emit, '下载', 0.08, 0.7), retryNote, threads)
   }
   const tmp = join(dir, `.${t.vid}.mp4`)
-  emit('解密', 0.82, '')
+  emit('解密', 0.66, '')
   if (key) {
-    await ffmpegDecryptCopy(ffmpeg, key, enc, tmp)
+    await ffmpegDecryptCopy(ffmpeg, key, enc, tmp, (n, total) => emit('解密', 0.66 + 0.16 * (n / total), `解密 ${human(n)}/${human(total)}`))
     try { unlinkSync(enc) } catch { /* keep */ }
   } else {
     renameSync(enc, tmp)
   }
-  emit('封装', 0.92, out)
+  emit('封装', 0.86, out)
   try {
-    await ffmpegRemux(ffmpeg, tmp, out)
+    await ffmpegRemux(ffmpeg, tmp, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
   } catch {
     renameSync(tmp, out.slice(0, out.length - extname(out).length) + '.mp4')
     throw new Error('ffmpeg remux failed')
@@ -205,16 +206,16 @@ async function dlTencent(
   const raw = join(dir, `.${t.vid}.bin`)
   emit('下载', 0.1, '')
   try {
-    await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote)
+    await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote, cfg.threads)
   } catch (e) {
     if (!(e instanceof CdnDenied)) throw e
     emit('重取', 0.1, `CDN ${e.status}，重新取链后续传`)
     cdn = pickURL(await play())
     if (!cdn) throw new Error('腾讯重新取链失败')
-    await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote)
+    await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote, cfg.threads)
   }
-  emit('封装', 0.9, out)
-  await ffmpegRemux(ffmpeg, raw, out)
+  emit('封装', 0.86, out)
+  await ffmpegRemux(ffmpeg, raw, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
   try { unlinkSync(raw) } catch { /* keep */ }
 }
 
@@ -234,12 +235,12 @@ async function dlDouyin(
   let cdn = await resolve()
   emit('下载', 0.1, cdn)
   try {
-    await downloadProgress(cdn, out, referer('douyin'), speedCB(emit, '下载', 0.1, 0.85), retryNote)
+    await downloadProgress(cdn, out, referer('douyin'), speedCB(emit, '下载', 0.1, 0.85), retryNote, 4)
   } catch (e) {
     if (!(e instanceof CdnDenied)) throw e
     emit('重取', 0.1, `CDN ${e.status}，重新解析后续传`)
     cdn = await resolve()
-    await downloadProgress(cdn, out, referer('douyin'), speedCB(emit, '下载', 0.1, 0.85), retryNote)
+    await downloadProgress(cdn, out, referer('douyin'), speedCB(emit, '下载', 0.1, 0.85), retryNote, 4)
   }
 }
 
@@ -252,17 +253,20 @@ async function dlYouku(
   let urls = await youkuStreamURLs(data, t.quality)
   if (!urls.length) throw new Error('优酷 play 没有分片')
   const raw = join(dir, `.${t.vid}.fmp4`)
-  const audioRaw = join(dir, `.${t.vid}.audio.fmp4`)
-  const audioURLs = await youkuAudioURLs(data, t.audio ?? '')
+  // 空格勾选的音轨才下载；一条没勾就只封平台默认音轨。
+  const tracks = (t.audioTracks?.length ? t.audioTracks : [{ id: '', label: '默认音轨', lang: '' }])
+  const segProgress = (base: number, span: number, label: string) => (done: number, total: number) =>
+    emit(label, base + span * done / Math.max(1, total), `${done}/${total} · ${cfg.threads} 并发`)
+  const audioRaws: string[] = []
+  const audioProgress = (index: number, label: string) => segProgress(0.67 + 0.04 * index / tracks.length, 0.04 / tracks.length, label)
   try {
-    for (const [i, u] of urls.entries()) {
-      emit('下载', 0.05 + 0.68 * i / urls.length, `${i + 1}/${urls.length}`)
-      await appendURL(raw, u, referer('youku'))
-    }
-    if (audioURLs.length > 1) {
-      for (const [i, u] of audioURLs.entries()) {
-        emit('音轨', 0.73 + 0.05 * i / audioURLs.length, `${i + 1}/${audioURLs.length}`)
-        await appendURL(audioRaw, u, referer('youku'))
+    await appendURLs(raw, urls, referer('youku'), cfg.threads, segProgress(0.05, 0.62, '下载'), retryNote)
+    for (const [i, track] of tracks.entries()) {
+      const audioRaw = join(dir, `.${t.vid}.audio${i}.fmp4`)
+      const audioURLs = await youkuAudioURLs(data, track.id)
+      if (audioURLs.length > 1) {
+        await appendURLs(audioRaw, audioURLs, referer('youku'), cfg.threads, audioProgress(i, `音轨 ${track.label}`), retryNote)
+        audioRaws.push(audioRaw)
       }
     }
   } catch (e) {
@@ -273,47 +277,73 @@ async function dlYouku(
     data = await playYouku(cli, cfg, t)
     urls = await youkuStreamURLs(data, t.quality)
     if (!urls.length) throw new Error('优酷重新取链后仍没有分片')
-    for (const [i, u] of urls.entries()) {
-      emit('下载', 0.05 + 0.68 * i / urls.length, `重试 ${i + 1}/${urls.length}`)
-      await appendURL(raw, u, referer('youku'))
-    }
+    await appendURLs(raw, urls, referer('youku'), cfg.threads, segProgress(0.05, 0.62, '下载'), retryNote)
   }
 
-  let key = ''
-  if (isObj(data.drm)) key = asString(data.drm.content_key_hex)
+  const drm = isObj(data.drm) ? data.drm : {}
+  const key = asString(drm.content_key_hex)
+  const clear = drm.actually_clear === true || drm.need_decrypt === false
+  // CENC pattern 决定这条流加没加密：优酷常见 video 1:9（加密）、audio 0:0（明文）。
+  // 对明文音轨套 -decryption_key 会把 AAC 搅成乱码，mux 直接失败（exit 234）。
+  const encrypted = (pattern: string, dflt: string): boolean => {
+    const p = pattern || dflt
+    return Boolean(key) && !clear && p !== '' && p !== '0:0'
+  }
+  const videoEnc = encrypted(asString(drm.pattern_video), '1:9')
+  const audioEnc = encrypted(asString(drm.pattern_audio), '0:0')
+
   let tmp = join(dir, `.${t.vid}.mp4`)
-  emit('解密', 0.8, '')
-  if (key) {
+  emit('解密', 0.78, '')
+  if (videoEnc) {
     try {
-      await ffmpegDecryptCopy(ffmpeg, key, raw, tmp)
+      await ffmpegDecryptCopy(ffmpeg, key, raw, tmp, (n, total) => emit('解密', 0.78 + 0.06 * (n / total), `解密 ${human(n)}/${human(total)}`))
       try { unlinkSync(raw) } catch { /* keep */ }
     } catch {
-      emit('解密', 0.8, 'ffmpeg 解密失败，尝试直接封装')
+      emit('解密', 0.78, 'ffmpeg 解密失败，尝试直接封装')
       tmp = raw
     }
   } else {
     tmp = raw
   }
-  let audioTmp = ''
-  if (audioURLs.length > 1) {
-    audioTmp = key ? join(dir, `.${t.vid}.audio.mp4`) : audioRaw
-    if (key) {
+
+  const muxInputs: Array<{ path: string; title?: string; lang?: string }> = []
+  const audioTmps: string[] = []
+  for (const [i, audioRaw] of audioRaws.entries()) {
+    const track = tracks[i]
+    let audioPath = audioRaw
+    if (audioEnc) {
+      const dec = join(dir, `.${t.vid}.audio${i}.mp4`)
       try {
-        await ffmpegDecryptCopy(ffmpeg, key, audioRaw, audioTmp)
+        await ffmpegDecryptCopy(ffmpeg, key, audioRaw, dec, (n, total) =>
+          emit('音轨解密', 0.84 + 0.02 * ((i + n / total) / audioRaws.length), `音轨解密 ${human(n)}/${human(total)}`))
+        audioPath = dec
+        audioTmps.push(dec)
       } catch {
-        audioTmp = audioRaw
+        /* 解密失败就直接封原片 */
       }
     }
+    muxInputs.push({ path: audioPath, title: track?.label, lang: track?.lang })
   }
-  emit('封装', 0.92, out)
-  if (audioTmp) await ffmpegMux(ffmpeg, tmp, audioTmp, out)
-  else await ffmpegRemux(ffmpeg, tmp, out)
+
+  emit('封装', 0.86, muxInputs.length > 1 ? `封装 ${muxInputs.length} 条音轨` : out)
+  const muxProgress = (n: number, total: number) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`)
+  try {
+    if (muxInputs.length) await ffmpegMux(ffmpeg, tmp, muxInputs, out, muxProgress)
+    else await ffmpegRemux(ffmpeg, tmp, out, muxProgress)
+  } catch (e) {
+    // 匿名/非会员只拿到试看段，后面的流解不开：ffmpeg 会报 AAC/HEVC 帧解析错误。
+    const msg = e instanceof Error ? e.message : String(e)
+    if (/channel element|Prediction is not allowed|is not allocated|Error submitting packet/i.test(msg)) {
+      throw new Error('片源超出试看段后无法解码（未登录或非会员）：设置 → 优酷扫码 登录后重下')
+    }
+    throw e
+  }
   try { unlinkSync(tmp) } catch { /* keep */ }
-  if (audioTmp) {
-    try { unlinkSync(audioTmp) } catch { /* keep */ }
+  for (const dec of audioTmps) {
+    try { unlinkSync(dec) } catch { /* keep */ }
   }
-  if (tmp !== raw) {
-    try { unlinkSync(raw) } catch { /* keep */ }
+  for (const audioRaw of audioRaws) {
+    try { unlinkSync(audioRaw) } catch { /* keep */ }
   }
 }
 

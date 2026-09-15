@@ -44,17 +44,23 @@ const DETAIL: Detail = {
 }
 
 const QUALITY_YOUKU: Quality[] = [
-  { id: 'cmfv5hd4_dolbyvision_hfr_hbr_hq', label: '杜比视界', title: 'dolbyvision', size: 22_242_398_286, width: 3840, height: 2160, codec: 'DVH1', drm: 'copyrightDRM' },
-  { id: 'cmfv5hd4_hdr_hfr_hbr_hq', label: 'HDR10', title: 'hdr10', size: 18_900_000_000, width: 3840, height: 2160, codec: 'HVC1', drm: 'copyrightDRM' },
-  { id: 'cmfv5hd4_sdr_hfr_hbr_bit10_hq', label: 'SDR', title: 'sdr', size: 9_300_000_000, width: 3840, height: 2160, codec: 'HVC1', drm: 'copyrightDRM' },
-  { id: 'hd3', label: '1080P', title: 'hd3', size: 2_174_000_000, width: 1920, height: 1080, codec: 'HVC1', drm: 'copyrightDRM' },
-  { id: 'mp4hd', label: '720P', title: 'mp4hd', size: 986_000_000, width: 1280, height: 720, codec: 'H264', drm: '' },
+  { id: 'cmfv5hd4_dolbyvision_hfr_hbr_hq', label: '杜比视界', title: 'dolbyvision', size: 22_242_398_286, width: 3840, height: 1608, codec: 'DVH1', drm: 'copyrightDRM' },
+  { id: 'cmfv5hd4_hdrvivid_hfr_hbr_hq', label: 'HDR Vivid', title: 'hdrvivid', size: 17_197_040_024, width: 3840, height: 1608, codec: 'HVC1', drm: 'copyrightDRM' },
+  { id: 'cmfv5hd4_hdr_hfr_hbr_hq', label: 'HDR10', title: 'hdr10', size: 17_197_040_024, width: 3840, height: 1608, codec: 'HVC1', drm: 'copyrightDRM' },
+  { id: 'cmfv5hd4_sdr_hfr_hbr_bit10_hq', label: 'SDR', title: 'sdr', size: 17_034_565_201, width: 3840, height: 1608, codec: 'HVC1', drm: 'copyrightDRM' },
+  { id: 'hls5hd4_hdr_hfr_hbr', label: '4K', title: 'hls5hd4', size: 7_236_077_324, width: 3840, height: 1608, codec: 'H265', drm: 'copyrightDRM' },
+  { id: 'mp4hd3', label: '1080P', title: 'mp4hd3', size: 740_901_420, width: 1920, height: 808, codec: 'H264', drm: 'copyrightDRM' },
+  { id: 'mp5hd3', label: '1080P', title: 'mp5hd3', size: 548_627_240, width: 1920, height: 808, codec: 'H265', drm: 'copyrightDRM' },
+  { id: 'mp4hd2', label: '720P', title: 'mp4hd2', size: 412_531_596, width: 1280, height: 536, codec: 'H264', drm: 'copyrightDRM' },
+  { id: 'mp5hd2', label: '720P', title: 'mp5hd2', size: 282_560_240, width: 1280, height: 536, codec: 'H265', drm: 'copyrightDRM' },
+  { id: 'mp4hd', label: '480P', title: 'mp4hd', size: 247_400_104, width: 864, height: 362, codec: 'H264', drm: 'copyrightDRM' },
+  { id: 'flvhd', label: '360P', title: 'flvhd', size: 157_854_952, width: 640, height: 268, codec: 'H264', drm: 'copyrightDRM' },
 ]
 
 const AUDIOS: Audio[] = [
-  { id: 'cmfa1hd3', label: 'AAC', lang: '国语', codec: 'cmfa1hd3', isDefault: true },
-  { id: 'cmfa2hd3', label: '杜比全景声', lang: '国语', codec: 'cmfa2hd3', isDefault: false },
-  { id: 'cmfa3hd3', label: 'DTS:X', lang: '原声', codec: 'cmfa3hd3', isDefault: false },
+  { id: 'cmfa1hd3', label: 'AAC', lang: '国语', codec: 'cmfa1hd3', isDefault: true, selected: true },
+  { id: 'cmfa2hd3', label: '杜比全景声', lang: '国语', codec: 'cmfa2hd3', isDefault: false, selected: true },
+  { id: 'cmfa3hd3', label: 'DTS:X', lang: '原声', codec: 'cmfa3hd3', isDefault: false, selected: false },
 ]
 
 const QUALITIES: Quality[] = [
@@ -79,15 +85,16 @@ const JOBS: Job[] = [
 ]
 
 const SETTINGS = [
-  { label: '隧道', value: '已连接 · 优酷/腾讯走本机 IP' },
+  { label: '隧道', value: '已连接 · 优酷/腾讯走本机 IP · WebSocket' },
   { label: '网关', value: HOST },
   { label: 'Key', value: 'sk_live_3f9a2c…' },
   { label: '下载目录', value: 'D:\\downloads' },
+  { label: '下载线程', value: '4 路并发' },
   { label: '发布组', value: 'ADWeb' },
   { label: 'TMDB Key', value: '已配置' },
   { label: '优酷扫码', value: '扫码把登录态写进本机' },
   { label: '优酷 Cookie', value: '粘贴浏览器 Cookie（含 P_sck）' },
-  { label: 'Yk-Sign', value: '已登录' },
+  { label: '优酷登录', value: '可续期 · 上次续期 3 分钟前 · 酷友福克纳君的杏花 · uid 2223055214990 · 非 VIP' },
   { label: '腾讯 Cookie', value: '空 · 回车粘贴' },
   { label: '红果合并', value: '开' },
   { label: '红果 NFO', value: '开' },
@@ -119,6 +126,19 @@ const BASE: Omit<Snapshot, 'scene'> = {
   statusKind: 'info' as StatusKind,
   busy: false,
   tunnelOk: true,
+  tunnelTransport: 'ws' as const,
+  ykAccount: {
+    loggedIn: true,
+    needsScan: false,
+    nick: '酷友福克纳君的杏花',
+    uid: '2223055214990',
+    method: 'qr',
+    vipSource: 'login' as const,
+    isVip: true,
+    vipUntil: '',
+    riskLevel: 'none',
+    summary: '酷友福克纳君的杏花 · uid 2223055214990 · 已登录(qr) · 会员（扫码时确认）',
+  },
   cursor: 0,
   providerIndex: 0,
   qualityIndex: 0,
@@ -163,7 +183,8 @@ export function demoSnapshot(scene: string, cursor = 0): Snapshot {
         ...s, scene, detailTitle: '斗破苍穹年番', detail: { ...DETAIL, title: '斗破苍穹年番', category: '电影', score: '9.1', episodes: 4, duration: 4910, vip: true },
         qualities: QUALITY_YOUKU, audios: AUDIOS, qualityIndex: cursor, audioIndex: 0,
         optionTab: (process.env.GVS_PREVIEW_TAB === 'audio' ? 'audio' : 'quality') as OptionTab,
-        pendingCount: 4, cursor: 0, status: '5 档画质 · 3 条音轨 · 4 集', statusKind: 'ok',
+        pendingCount: 4, cursor: 0, status: '11 档画质 · 3 条音轨 · 4 集 · 可播', statusKind: 'ok',
+        vipProbe: { canPlay: true, isVip: true, hasTrial: false, download: '["allowed"]', note: '' },
       }
     case 'tmdb':
       return { ...s, scene, detailTitle: '斗破苍穹年番', tmdbHits: TMDB, cursor, pendingCount: 12, status: '3 个候选 · Enter 采用，Esc 跳过', statusKind: 'info' }

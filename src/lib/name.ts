@@ -66,6 +66,30 @@ export function folder(n: Naming, outDir: string): string {
   return dir
 }
 
+/**
+ * 真实像素 → 发行命名里的规范档位。片源常见 letterbox / 2:1 画幅，
+ * 直接拿高度会写出 `1608p`、`1920p` 这种不存在的档位，所以按宽度判：
+ * 3840×1920（4K 2:1）→ 2160p、1920×808（1080p 宽银幕）→ 1080p。
+ */
+export function tierHeight(width: number, height: number): number {
+  const w = Number.isFinite(width) ? width : 0
+  const h = Number.isFinite(height) ? height : 0
+  if (w >= 3400) return 2160
+  if (w >= 2300) return 1440
+  if (w >= 1700) return 1080
+  if (w >= 1100) return 720
+  if (w >= 750) return 480
+  if (w >= 550) return 360
+  if (h >= 1600) return 2160
+  if (h >= 1300) return 1440
+  if (h >= 1000) return 1080
+  if (h >= 760) return 1080
+  if (h >= 640) return 720
+  if (h >= 400) return 480
+  if (h > 0) return 360
+  return 0
+}
+
 export function filename(n: Naming): string {
   const parts: string[] = []
   if (n.kind === 'short') {
@@ -80,7 +104,8 @@ export function filename(n: Naming): string {
     }
     if (n.year > 0) parts.push(String(n.year))
   }
-  if (n.height > 0) parts.push(`${n.height}p`)
+  const tier = tierHeight(0, n.height)
+  if (tier > 0) parts.push(`${tier}p`)
   if (n.source) parts.push(n.source)
   parts.push('WEB-DL')
   if (n.codec) parts.push(n.codec)

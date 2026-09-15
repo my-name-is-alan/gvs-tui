@@ -135,9 +135,9 @@ const HINTS: Record<string, Array<[string, string]>> = {
   setup: [['tab', '切换字段'], ['⏎', '保存并进入'], ['^C', '退出']],
   home: [['↑↓', '移动'], ['⏎', '打开'], ['q', '退出']],
   search: [['←→', '切换平台'], ['⏎', '搜索 / 下载'], ['esc', '返回']],
-  results: [['↑↓', '移动'], ['⏎', '打开'], ['esc', '返回']],
+  results: [['↑↓', '移动'], ['↓到底', '加载下一页'], ['⏎', '打开'], ['esc', '返回']],
   detail: [['←→↑↓', '移动'], ['空格', '勾选'], ['⏎', '下载选中'], ['a', '全选'], ['c', '清空'], ['A', '全集下载'], ['esc', '返回']],
-  quality: [['↑↓', '选档'], ['←→', '画质 / 音轨'], ['⏎', '开始下载'], ['esc', '返回']],
+  quality: [['↑↓', '选档'], ['空格', '勾选音轨'], ['a', '全选音轨'], ['←→', '画质 / 音轨'], ['⏎', '开始下载'], ['esc', '返回']],
   tmdb: [['↑↓', '选择'], ['⏎', '采用'], ['esc', '跳过']],
   jobs: [['esc', '返回']],
   settings: [['↑↓', '移动'], ['⏎', '修改'], ['esc', '保存并返回']],
@@ -171,8 +171,52 @@ const jobs = computed(() => state.value.jobs ?? [])
 const settings = computed(() => state.value.settings ?? [])
 const providers = computed(() => state.value.providers ?? [])
 const homeItems = computed(() => state.value.homeItems ?? [])
+/**
+ * VIP 徽标要分清三件事：片源要不要 VIP、账号是什么状态、**这次取流到底成不成**。
+ * 最后一条来自 `play` 的 `quality_gate`，比会员接口可信——它是真的取到流了。
+ */
+const vipNotice = computed(() => {
+  if (!state.value.detail?.vip) return null
+  const probe = state.value.vipProbe
+  const acc = state.value.ykAccount
+  if (acc?.needsScan) return { text: 'VIP · 需重新扫码', color: c.err }
+  if (probe) {
+    if (!probe.canPlay) return { text: 'VIP · 该账号不可播', color: c.err }
+    if (probe.hasTrial) return { text: 'VIP · 仅试看', color: c.warn }
+    return { text: probe.isVip ? 'VIP ✓' : 'VIP · 可播', color: c.ok }
+  }
+  if (!acc) return { text: 'VIP', color: c.violet }
+  if (acc.vipSource === 'api' && !acc.isVip) return { text: 'VIP · 账号无权益', color: c.err }
+  return { text: acc.isVip ? 'VIP ✓' : 'VIP', color: acc.isVip ? c.ok : c.violet }
+})
+/** 画质页右上角：这次取流的实际权益（`play` 给的，不是猜的）。 */
+const rightsChip = computed(() => {
+  const probe = state.value.vipProbe
+  if (probe) {
+    const bits = [probe.canPlay ? '可播' : '不可播']
+    if (probe.isVip) bits.push('会员✓')
+    if (probe.hasTrial) bits.push('仅试看')
+    if (probe.note) bits.push(probe.note)
+    return { text: bits.join(' · '), color: !probe.canPlay || probe.hasTrial ? c.warn : c.ok }
+  }
+  const acc = state.value.ykAccount
+  if (acc) {
+    if (acc.needsScan) return { text: '登录态不可用', color: c.err }
+    if (acc.vipSource === 'api') return { text: acc.isVip ? '会员✓' : '无会员权益', color: acc.isVip ? c.ok : c.warn }
+    return { text: acc.isVip ? '会员(登录快照)' : '会员未知', color: acc.isVip ? c.ok : c.dim }
+  }
+  return { text: '权益未知', color: c.dim }
+})
+const accountLine = computed(() => {
+  if (state.value.scene !== 'home') return null
+  const acc = state.value.ykAccount
+  if (!acc) return null
+  const tone = acc.needsScan || !acc.loggedIn ? c.warn : acc.vipSource === 'api' && !acc.isVip ? c.warn : c.ok
+  return new StyledText([fg(c.faint)('  优酷  '), fg(tone)(acc.summary)])
+})
 const detail = computed(() => state.value.detail)
 const onAudioTab = computed(() => state.value.optionTab === 'audio' && audios.value.length > 0)
+const audioPicked = computed(() => audios.value.filter((a) => a.selected).length)
 const selectedEpisode = computed(() => episodes.value[state.value.cursor])
 
 const resultView = computed(() => sliceList(state.value.rows, state.value.cursor, bodyH.value))
@@ -220,7 +264,9 @@ const busyLabel = computed(() => {
 const metaText = computed(() => {
   switch (state.value.scene) {
     case 'results':
-      return resultView.value.total ? `${resultView.value.first}-${resultView.value.last} / ${resultView.value.total}` : ''
+      return resultView.value.total
+        ? `${resultView.value.first}-${resultView.value.last} / ${resultView.value.total}${state.value.listMore ? '+' : ''}`
+        : ''
     case 'tmdb':
       return tmdbView.value.total ? `${tmdbView.value.first}-${tmdbView.value.last} / ${tmdbView.value.total}` : ''
     case 'detail':
@@ -316,28 +362,54 @@ const qrBlock = computed(() => {
 // --- row builders ---------------------------------------------------------
 const labelCells = computed(() => Math.min(14, Math.max(8, Math.floor(bodyW.value * 0.2))))
 
+// 画质/音轨的列宽，表头和数据共用，保证对齐。
+const QUAL_COLS = { label: 14, res: 11, codec: 6, size: 9, drm: 6 }
+const AUDIO_COLS = { label: 18, lang: 10, codec: 12 }
+
+function qualityHeader(): StyledText {
+  return colsLine([
+    { text: '  ', cells: 2 },
+    { text: '档位', cells: QUAL_COLS.label, color: c.line },
+    { text: '分辨率', cells: QUAL_COLS.res, color: c.line },
+    { text: '编码', cells: QUAL_COLS.codec, color: c.line },
+    { text: '体积', cells: QUAL_COLS.size, align: 'right', color: c.line },
+    { text: '  ', cells: 2 },
+    { text: 'DRM', cells: QUAL_COLS.drm, align: 'right', color: c.line },
+  ], bodyW.value)
+}
+
+function audioHeader(): StyledText {
+  return colsLine([
+    { text: ' '.repeat(4), cells: 4 },
+    { text: '音轨', cells: AUDIO_COLS.label, color: c.line },
+    { text: '语言', cells: AUDIO_COLS.lang, color: c.line },
+    { text: '编码', cells: AUDIO_COLS.codec, color: c.line },
+  ], bodyW.value)
+}
+
 function qualityLine(row: Quality, selected: boolean): StyledText {
   const res = row.width > 0 && row.height > 0 ? `${row.width}×${row.height}` : row.height > 0 ? `${row.height}p` : '—'
   const size = row.size > 0 ? human(row.size) : '—'
   return colsLine([
     markCol(selected),
-    { text: row.label || row.title || '视频流', cells: labelCells.value, color: selected ? c.text : c.dim, bold: selected },
-    { text: res, cells: 11, color: c.faint },
-    { text: row.codec || '—', cells: 6, color: c.faint },
-    { text: size, cells: 9, align: 'right', color: c.faint },
+    { text: row.label || row.title || '视频流', cells: QUAL_COLS.label, color: selected ? c.text : c.dim, bold: selected },
+    { text: res, cells: QUAL_COLS.res, color: c.faint },
+    { text: row.codec || '—', cells: QUAL_COLS.codec, color: c.faint },
+    { text: size, cells: QUAL_COLS.size, align: 'right', color: selected ? c.text : c.faint },
     { text: '  ', cells: 2 },
-    { text: row.drm ? 'DRM' : '无 DRM', cells: 6, align: 'right', color: row.drm ? c.violet : c.faint },
+    { text: row.drm ? 'DRM' : '无', cells: QUAL_COLS.drm, align: 'right', color: row.drm ? c.violet : c.faint },
   ], bodyW.value, selected)
 }
 
-/** `▌ AAC   默认   cmfa1hd3` */
+/** `▌ ✓ AAC   国语   cmfa1hd3            平台默认` —— 空格勾选，勾中的才会封进 mkv。 */
 function audioLine(row: Audio, selected: boolean): StyledText {
   return colsLine([
     markCol(selected),
-    { text: row.label || row.id, cells: Math.min(18, Math.max(10, labelCells.value + 2)), color: selected ? c.text : c.dim, bold: selected },
-    { text: row.lang || '—', cells: 10, color: c.faint },
-    { text: row.codec || '', cells: 12, color: c.faint },
-    { text: row.isDefault ? '默认' : '', grow: true, align: 'right', color: c.ok },
+    { text: row.selected ? '✓ ' : '□ ', cells: 2, color: row.selected ? c.ok : c.faint },
+    { text: row.label || row.id, cells: AUDIO_COLS.label, color: selected ? c.text : c.dim, bold: selected },
+    { text: row.lang || '—', cells: AUDIO_COLS.lang, color: c.faint },
+    { text: row.codec || '', cells: AUDIO_COLS.codec, color: c.faint },
+    { text: row.isDefault ? '平台默认' : '', grow: true, align: 'right', color: c.faint },
   ], bodyW.value, selected)
 }
 
@@ -459,6 +531,7 @@ function jobLine(job: Job): StyledText {
 
       <!-- home -->
       <Box v-else-if="state.scene === 'home'" flexDirection="column" :width="bodyW">
+        <Text v-if="accountLine" :content="accountLine" :width="bodyW" :height="1" wrapMode="none" :truncate="true" />
         <Text :content="ink(c.faint, '抖音分享口令直接下，其它平台先搜再选')" :height="1" />
         <Box :height="1" />
         <Text
@@ -573,7 +646,10 @@ function jobLine(job: Job): StyledText {
       <!-- quality + audio -->
       <Box v-else-if="state.scene === 'quality'" flexDirection="column" :width="bodyW">
         <Text
-          :content="ink(c.faint, `${state.pendingCount || 1} 集将使用同一档画质 · ⏎ 应用并开始下载`)"
+          :content="colsLine([
+            { text: `${state.pendingCount || 1} 集将使用同一档画质 · ⏎ 应用并开始下载`, grow: true, color: c.faint },
+            { text: state.detail?.vip ? (vipNotice?.text ?? 'VIP') : rightsChip.text, cells: 20, align: 'right', color: state.detail?.vip ? (vipNotice?.color ?? c.violet) : rightsChip.color },
+          ], bodyW)"
           :height="1"
         />
         <Box flexDirection="row" :height="1" :marginTop="1">
@@ -586,11 +662,17 @@ function jobLine(job: Job): StyledText {
             v-if="audios.length"
             :height="1"
             :bg="onAudioTab ? c.sel : undefined"
-            :content="ink(onAudioTab ? c.accent : c.faint, ` 音轨 ${audios.length} 条 `, onAudioTab)"
+            :content="ink(onAudioTab ? c.accent : c.faint, ` 音轨 ${audios.length} 条 · 已选 ${audioPicked} `, onAudioTab)"
           />
           <Text :height="1" :content="ink(c.line, '  ←→ 切换')" />
         </Box>
         <Text :height="1" :content="' '" />
+        <Text
+          :height="1"
+          :content="onAudioTab ? audioHeader() : qualityHeader()"
+          :width="bodyW"
+          wrapMode="none"
+        />
         <Text
           v-for="entry in (onAudioTab ? audioView.rows : qualityView.rows)"
           :key="`${onAudioTab ? 'a' : 'q'}-${entry.index}`"

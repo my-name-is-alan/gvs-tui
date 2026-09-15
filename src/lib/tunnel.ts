@@ -1,3 +1,5 @@
+import net from 'node:net'
+import tls from 'node:tls'
 import { sleep } from './util.ts'
 
 type TunFrame = {
@@ -15,6 +17,14 @@ type HeaderWS = {
   new (url: string, opts?: { headers?: Record<string, string> }): WebSocket
 }
 
+const LIMIT_RE = /429|TUNNEL_LIMITED|CONCURRENCY_LIMITED/
+const OCCUPIED = '隧道已被同一个 Key 的另一处占用（每 Key 只允许一条），稍后自动重试'
+/** Backoff after a failed attempt: limits/refusals get a long pause, not 3s. */
+function retryDelay(failures: number, message: string): number {
+  if (LIMIT_RE.test(message)) return 30_000
+  return Math.min(5_000 * 2 ** Math.max(0, failures - 1), 30_000)
+}
+
 export function runTunnel(
   host: string,
   key: string,
@@ -22,28 +32,40 @@ export function runTunnel(
   signal: AbortSignal,
 ): void {
   const loop = async () => {
-    // Start on websocket — that is what the current gateway speaks and the only
-    // upgrade Cloudflare keeps alive. A handshake failure (older gateway, which
-    // hijacks a raw `Upgrade: tunnel`) drops us to the legacy protocol instead
-    // of leaving the user without a tunnel.
-    let transport: 'ws' | 'legacy' = 'ws'
+    // Every round starts on WebSocket — that is what the gateway speaks and the
+    // only upgrade Cloudflare keeps alive. Only when a round fails do we also
+    // try the legacy upgrade (older gateway) *in the same round*, so a single
+    // transient failure can never downgrade the rest of the session.
+    let failures = 0
+    let lastError = ''
     while (!signal.aborted) {
+      let connected = false
       try {
-        if (transport === 'ws') await tunnelOnce(host, key, onStatus, signal)
-        else await tunnelLegacy(host, key, onStatus, signal)
-        onStatus(false, 'closed', transport)
+        await tunnelOnce(host, key, onStatus, signal)
+        onStatus(false, 'closed', 'ws')
+        connected = true
       } catch (e) {
         if (signal.aborted) return
-        const msg = e instanceof Error ? e.message : String(e)
-        if (transport === 'ws') {
-          transport = 'legacy'
-          onStatus(false, `${msg} · 回退旧隧道协议`, 'legacy')
+        lastError = e instanceof Error ? e.message : String(e)
+        if (LIMIT_RE.test(lastError)) {
+          onStatus(false, OCCUPIED, 'ws')
         } else {
-          onStatus(false, msg, 'legacy')
+          // The legacy attempt reads the real HTTP status, so its error text is
+          // more informative than the WebSocket handshake failure.
+          try {
+            await tunnelLegacy(host, key, onStatus, signal)
+            onStatus(false, 'closed', 'legacy')
+            connected = true
+          } catch (e2) {
+            if (signal.aborted) return
+            lastError = e2 instanceof Error ? e2.message : String(e2)
+            onStatus(false, LIMIT_RE.test(lastError) ? OCCUPIED : lastError, 'legacy')
+          }
         }
       }
+      failures = connected ? 0 : failures + 1
       try {
-        await sleep(3000, signal)
+        await sleep(connected ? 3000 : retryDelay(failures, lastError), signal)
       } catch {
         return
       }
@@ -237,20 +259,33 @@ function dial(hostname: string, port: number, secure: boolean, signal: AbortSign
 function readHttp101(sock: net.Socket, signal: AbortSignal): Promise<Buffer> {
   const { promise, resolve, reject } = Promise.withResolvers<Buffer>()
   let buf = Buffer.alloc(0)
-  const onAbort = () => reject(new Error('aborted'))
+  const finish = (fn: () => void) => {
+    sock.off('data', onData)
+    signal.removeEventListener('abort', onAbort)
+    clearTimeout(timer)
+    fn()
+  }
+  const onAbort = () => finish(() => reject(new Error('aborted')))
   signal.addEventListener('abort', onAbort, { once: true })
+  const timer = setTimeout(() => finish(() => reject(new Error('tunnel http 无响应'))), 15_000)
   const onData = (chunk: Buffer) => {
     buf = Buffer.concat([buf, chunk])
     const idx = buf.indexOf('\r\n\r\n')
     if (idx < 0) return
-    sock.off('data', onData)
-    signal.removeEventListener('abort', onAbort)
     const head = buf.subarray(0, idx).toString()
-    const rest = buf.subarray(idx + 4)
-    if (!head.includes(' 101 ')) reject(new Error(`tunnel http ${head.split('\r\n')[0] ?? head}`))
-    else resolve(rest)
+    if (head.includes(' 101 ')) {
+      finish(() => resolve(buf.subarray(idx + 4)))
+      return
+    }
+    // 非 101 时把 body 也读出来：TUNNEL_LIMITED / RATE_LIMITED 这类原因在里面。
+    const status = head.split('\r\n')[0] ?? head
+    const body = buf.subarray(idx + 4).toString().trim()
+    if (body.includes('}') || /(TUNNEL_LIMITED|CONCURRENCY|RATE_LIMITED|QUOTA)/.test(body)) {
+      finish(() => reject(new Error(`tunnel http ${status} ${body.slice(0, 160)}`)))
+    }
   }
   sock.on('data', onData)
-  sock.once('error', reject)
+  sock.once('error', (e) => finish(() => reject(e)))
+  sock.once('close', () => finish(() => reject(new Error('tunnel http 连接被关闭'))))
   return promise
 }

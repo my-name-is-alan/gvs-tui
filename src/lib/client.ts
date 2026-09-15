@@ -17,6 +17,16 @@ export type KeyInfo = {
 
 type Envelope = { code: number; msg: string; data: unknown }
 
+/** 优酷登录态失效（本地 Yk-Sign 过期或被踢）。调用方应清掉本地签名并引导重新扫码。 */
+export class ReloginRequired extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ReloginRequired'
+  }
+}
+
+const RELOGIN_RE = /requires re-login|needs_relogin|invalid Yk-Sign/i
+
 export class GwClient {
   host: string
   key: string
@@ -31,9 +41,10 @@ export class GwClient {
     return scope.includes(name)
   }
 
-  extra(cfg: FileConfig, provider: string): Record<string, string> {
+  /** 请求头。`skipSign` 只影响这一次调用 —— 不要为了降级去改用户的配置文件。 */
+  extra(cfg: FileConfig, provider: string, skipSign = false): Record<string, string> {
     const h: Record<string, string> = {}
-    if (provider === 'youku' && cfg.youkuSign) h['Yk-Sign'] = cfg.youkuSign
+    if (provider === 'youku' && cfg.youkuSign && !skipSign) h['Yk-Sign'] = cfg.youkuSign
     if (provider === 'tencent' && cfg.tencentCookie) h['Tx-Cookie'] = cfg.tencentCookie
     return h
   }
@@ -81,7 +92,10 @@ export class GwClient {
     } catch {
       throw new Error(`http ${res.status}: ${truncate(text, 180)}`)
     }
-    if (env.code !== 0) throw new Error(limitError(env.msg) || `http ${res.status}`)
+    if (env.code !== 0) {
+      const message = limitError(env.msg) || `http ${res.status}`
+      throw RELOGIN_RE.test(message) ? new ReloginRequired(message) : new Error(message)
+    }
     return env
   }
 }

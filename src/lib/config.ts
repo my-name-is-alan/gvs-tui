@@ -15,6 +15,17 @@ export type FileConfig = {
   hongguoNfo: boolean
   hongguoFmt: string
   ffmpeg: string
+  /** Parallel connections per download (分片并发 / Range 并发). */
+  threads: number
+}
+
+export const MIN_THREADS = 1
+export const MAX_THREADS = 16
+
+export function clampThreads(n: unknown): number {
+  const v = Math.trunc(Number(n))
+  if (!Number.isFinite(v) || v <= 0) return 4
+  return Math.min(MAX_THREADS, Math.max(MIN_THREADS, v))
 }
 
 export function defaultConfig(): FileConfig {
@@ -31,6 +42,7 @@ export function defaultConfig(): FileConfig {
     hongguoNfo: true,
     hongguoFmt: 'mkv',
     ffmpeg: 'ffmpeg',
+    threads: 4,
   }
 }
 
@@ -46,12 +58,17 @@ export function loadConfig(): FileConfig {
   } catch {
     // first run
   }
+  // Point a single run somewhere else without touching the saved config, e.g.
+  // `GVS_HOST=http://127.0.0.1:8080 bun run dev` against a local gateway build.
+  if (process.env.GVS_HOST) cfg.host = process.env.GVS_HOST
+  if (process.env.GVS_KEY) cfg.key = process.env.GVS_KEY
   cfg.host = (cfg.host || 'http://127.0.0.1:8080').replace(/\/+$/, '')
   if (!cfg.outDir) cfg.outDir = join('.', 'downloads')
   if (!cfg.releaseGroup) cfg.releaseGroup = 'ADWeb'
   if (!cfg.hongguoFmt) cfg.hongguoFmt = 'mkv'
   if (!cfg.ffmpeg) cfg.ffmpeg = 'ffmpeg'
   if (!cfg.tmdbLang) cfg.tmdbLang = 'zh-CN'
+  cfg.threads = clampThreads(cfg.threads)
   return cfg
 }
 
