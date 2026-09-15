@@ -1,8 +1,68 @@
-import { createWriteStream } from 'node:fs'
+import { createWriteStream, statSync } from 'node:fs'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web'
-import { asString, human, isObj } from './util.ts'
+import { asString, human, isObj, sleep } from './util.ts'
+
+/** A CDN refused us (403/410 …) — usually the signed URL expired mid-flight. */
+export class CdnDenied extends Error {
+  constructor(readonly status: number, readonly url: string) {
+    super(`cdn ${status}`)
+    this.name = 'CdnDenied'
+  }
+}
+
+const RETRY_STATUS = new Set([403, 408, 410, 425, 429, 500, 502, 503, 504])
+const MAX_ATTEMPTS = 5
+
+export type RetryNote = (attempt: number, total: number, why: string) => void
+
+function headersFor(ref: string, from = 0): Record<string, string> {
+  const headers: Record<string, string> = {
+    // 有些 CDN 只认完整的浏览器头，缺 Accept 也会给 403。
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+    Accept: '*/*',
+    'Accept-Language': 'zh-CN,zh;q=0.9',
+  }
+  if (ref) headers.Referer = ref
+  if (from > 0) headers.Range = `bytes=${from}-`
+  return headers
+}
+
+/**
+ * GET a CDN URL with retries and byte-range resume. CDN links expire (403/410)
+ * or hiccup (5xx, socket resets) mid-download, and hammering the same URL
+ * immediately rarely helps, so back off and report each attempt upwards.
+ */
+async function openStream(
+  src: string,
+  ref: string,
+  from: number,
+  note?: RetryNote,
+): Promise<{ res: Response; body: ReadableStream<Uint8Array> | null }> {
+  let lastErr: unknown = null
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const res = await fetch(src, { headers: headersFor(ref, from) })
+      if (res.ok || res.status === 206) return { res, body: res.body }
+      if (RESPECT_AFTER.has(res.status)) {
+        const wait = Number(res.headers.get('retry-after') ?? 0) * 1000
+        if (wait > 0 && attempt < MAX_ATTEMPTS) await sleep(Math.min(wait, 10_000))
+      }
+      if (!RETRY_STATUS.has(res.status)) throw new CdnDenied(res.status, src)
+      lastErr = new CdnDenied(res.status, src)
+      note?.(attempt, MAX_ATTEMPTS, `HTTP ${res.status}`)
+    } catch (e) {
+      if (e instanceof CdnDenied && e.status !== 403 && e.status !== 410) throw e
+      lastErr = e
+      note?.(attempt, MAX_ATTEMPTS, e instanceof Error ? e.message : String(e))
+    }
+    if (attempt < MAX_ATTEMPTS) await sleep(Math.min(500 * 2 ** (attempt - 1), 8000))
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('cdn unreachable')
+}
+
+const RESPECT_AFTER = new Set([429, 503])
 
 export function referer(p: string): string {
   switch (p) {
@@ -92,39 +152,58 @@ export function speedCB(
 }
 
 async function cdnResponse(src: string, ref: string): Promise<Response> {
-  const headers: Record<string, string> = { 'User-Agent': 'Mozilla/5.0' }
-  if (ref) headers.Referer = ref
-  const res = await fetch(src, { headers })
-  if (!res.ok) throw new Error(`cdn ${res.status}`)
+  const { res } = await openStream(src, ref, 0)
   return res
 }
 
+/**
+ * Download `src` to `dest`, resuming from whatever is already on disk if the
+ * transfer dies. `note` is called on every retry so the job row can say what is
+ * being retried instead of sitting at a frozen percentage.
+ */
 export async function downloadProgress(
   src: string,
   dest: string,
   ref: string,
   cb?: (n: number, total: number) => void,
+  note?: RetryNote,
 ): Promise<void> {
-  const res = await cdnResponse(src, ref)
-  const total = Number(res.headers.get('content-length') ?? 0)
-  if (!res.body) throw new Error('cdn empty body')
-  const file = createWriteStream(dest)
-  let n = 0
-  const { promise, resolve, reject } = Promise.withResolvers<void>()
-  const node = Readable.fromWeb(res.body as unknown as NodeWebReadableStream) // fetch body is web stream
-  node.on('data', (chunk: Buffer) => {
-    n += chunk.length
-    cb?.(n, total)
-  })
-  pipeline(node, file).then(resolve, reject)
-  return promise
+  let have = 0
+  try {
+    have = statSync(dest).size
+  } catch {
+    have = 0
+  }
+  for (let round = 1; round <= MAX_ATTEMPTS; round++) {
+    const { res, body } = await openStream(src, ref, have, note)
+    if (!body) throw new Error('cdn empty body')
+    const len = Number(res.headers.get('content-length') ?? 0)
+    const total = have + len
+    const file = createWriteStream(dest, { flags: have > 0 ? 'a' : 'w' })
+    let n = have
+    const node = Readable.fromWeb(body as unknown as NodeWebReadableStream)
+    node.on('data', (chunk: Buffer | Uint8Array) => {
+      n += chunk.length
+      cb?.(n, total)
+    })
+    try {
+      await pipeline(node, file)
+      cb?.(n, total)
+      return
+    } catch (e) {
+      have = n
+      if (round === MAX_ATTEMPTS) throw e
+      note?.(round, MAX_ATTEMPTS, `传输中断，从 ${human(have)} 续传`)
+      await sleep(Math.min(1000 * 2 ** (round - 1), 8000))
+    }
+  }
 }
 
-export async function appendURL(dest: string, src: string, ref: string): Promise<void> {
-  const res = await cdnResponse(src, ref)
-  if (!res.body) throw new Error('cdn empty body')
+export async function appendURL(dest: string, src: string, ref: string, note?: RetryNote): Promise<void> {
+  const { res, body } = await openStream(src, ref, 0, note)
+  if (!body) throw new Error('cdn empty body')
   const file = createWriteStream(dest, { flags: 'a' })
-  await pipeline(Readable.fromWeb(res.body as unknown as NodeWebReadableStream), file)
+  await pipeline(Readable.fromWeb(body as unknown as NodeWebReadableStream), file)
 }
 
 export async function parseCMAF(playlistURL: string, ref: string): Promise<{ initURL: string; segs: string[] }> {
@@ -157,6 +236,7 @@ export async function youkuStreamURLs(data: Record<string, unknown>, want: strin
     for (const s of data.streams) {
       if (!isObj(s)) continue
       if (asString(s.stream_type) !== want) continue
+      if (asString(s.media_type).toLowerCase() === 'audio') continue
       const u = asString(s.playlist_url)
       if (u) {
         try {
@@ -180,6 +260,41 @@ export async function youkuStreamURLs(data: Record<string, unknown>, want: strin
     if (urls.length === 0) {
       const pl = asString(data.video.playlist_url) || asString(data.video.url)
       if (pl) urls.push(pl)
+    }
+  }
+  return urls
+}
+
+/**
+ * Segment list for one audio track. `want` is the `audio_stream_type` the user
+ * picked; when it is empty we take the default track so a single-file mux still
+ * carries the platform's preferred audio.
+ */
+export async function youkuAudioURLs(data: Record<string, unknown>, want: string): Promise<string[]> {
+  const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
+  let chosen: Record<string, unknown> | null = null
+  for (const tr of tracks) {
+    if (!isObj(tr)) continue
+    if (want && asString(tr.stream_type) !== want) continue
+    if (!chosen || tr.default === true) chosen = tr
+  }
+  if (!chosen) return []
+  const urls: string[] = []
+  const playlist = asString(chosen.playlist_url)
+  if (playlist) {
+    try {
+      const parsed = await parseCMAF(playlist, referer('youku'))
+      if (parsed.initURL) urls.push(parsed.initURL)
+      urls.push(...parsed.segs)
+    } catch {
+      urls.push(playlist)
+    }
+  } else {
+    const init = asString(chosen.init_url)
+    if (init) urls.push(init)
+    const segs = Array.isArray(chosen.segment_urls) ? chosen.segment_urls : []
+    for (const x of segs) {
+      if (typeof x === 'string' && x) urls.push(x)
     }
   }
   return urls

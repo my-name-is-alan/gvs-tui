@@ -88,6 +88,16 @@ export function ffmpegRemux(ffmpeg: string, inPath: string, outPath: string): Pr
   return run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-i', inPath, '-c', 'copy', outPath])
 }
 
+/** Mux a separate audio track into the video file (优酷多音轨). */
+export function ffmpegMux(ffmpeg: string, videoPath: string, audioPath: string, outPath: string): Promise<void> {
+  return run(ffmpeg, [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-i', videoPath, '-i', audioPath,
+    '-map', '0:v', '-map', '1:a',
+    '-c', 'copy', outPath,
+  ])
+}
+
 export function writeConcatList(paths: string[], listPath: string): void {
   const dir = dirname(listPath)
   const body = paths.map((p) => {

@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "bun --bun vite",
     "build": "tsc --noEmit && vite build",
-    "start": "bun --bun dist/main.js"
+    "start": "bun --bun dist/main.js",
+    "preview": "bun run scripts/preview.ts"
   },
   "dependencies": {
     "@opentui/core": "^0.5.11",

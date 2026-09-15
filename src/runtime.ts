@@ -1,7 +1,8 @@
+import { appendFileSync } from 'node:fs'
 import { loadConfig, saveConfig, type FileConfig } from './lib/config.ts'
 import { GwClient, type KeyInfo } from './lib/client.ts'
 import { JobHub, jobTitle, nextJobID, patchJob, type DlTask } from './lib/jobs.ts'
-import { probeQualities } from './lib/quality.ts'
+import { probeOptions } from './lib/quality.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import { hostIsLocal, importYoukuCookie, pollYoukuQR, startYoukuQR } from './lib/youku-qr.ts'
 import { tmdbSearch } from './lib/tmdb.ts'
@@ -9,9 +10,23 @@ import { clipTitle, extractDouyinURL } from './lib/link.ts'
 import { pickDouyinURL } from './lib/media.ts'
 import { dots } from './lib/name.ts'
 import { anyInt, asString, firstStr, isObj } from './lib/util.ts'
-import type { Episode, Job, Quality, Row, Scene, Snapshot, TMDBHit } from './types.ts'
+import type { Audio, Detail, Episode, Job, OptionTab, Quality, Row, Scene, Snapshot, StatusKind, TMDBHit } from './types.ts'
 
 const ALL_PROVIDERS = ['youku', 'tencent', 'hongguo', 'douyin']
+
+/**
+ * Temporary diagnostic: `GVS_TRACE=<file>` appends a line per event, which is
+ * the only way to see what a full-screen TUI is doing from the outside.
+ */
+function trace(line: string): void {
+  const file = process.env.GVS_TRACE
+  if (!file) return
+  try {
+    appendFileSync(file, `${new Date().toISOString()} ${line}\n`)
+  } catch {
+    // never let tracing break the app
+  }
+}
 
 type Listener = (s: Snapshot) => void
 
@@ -22,6 +37,10 @@ export class Runtime {
   snapshot!: Snapshot
   private scene: Scene
   private status = ''
+  /** Lets the shell color a message instead of guessing from its text. */
+  private statusKind: StatusKind = 'info'
+  /** Set while a gateway call is in flight, so the UI can show progress. */
+  private busy = false
   private cursor = 0
   private provIdx = 0
   private qIdx = 0
@@ -36,6 +55,11 @@ export class Runtime {
   private rows: Row[] = []
   private eps: Episode[] = []
   private qualities: Quality[] = []
+  private audios: Audio[] = []
+  private audioIdx = 0
+  private optionTab: OptionTab = 'quality'
+  private probeFailed = false
+  private detailInfo: Detail | null = null
   private tmdbHits: TMDBHit[] = []
   private jobs: Job[] = []
   private pending: DlTask[] = []
@@ -118,6 +142,28 @@ export class Runtime {
   private emit(): void {
     this.snapshot = this.build()
     for (const fn of this.listeners) fn(this.snapshot)
+    trace(`emit scene=${this.scene} busy=${this.busy} tunnel=${this.tunnelOk} status=${this.status}`)
+  }
+
+  /** Update the status line and how the shell should read it. */
+  private say(message: string, kind: StatusKind = 'info'): void {
+    this.status = message
+    this.statusKind = kind
+  }
+
+  /**
+   * Run a gateway round trip with the busy flag up, so the shell can show a
+   * spinner instead of a frozen frame.
+   */
+  private async work<T>(run: () => Promise<T>): Promise<T> {
+    this.busy = true
+    this.emit()
+    try {
+      return await run()
+    } finally {
+      this.busy = false
+      this.emit()
+    }
   }
 
   private providers(): string[] {
@@ -186,44 +232,34 @@ export class Runtime {
     }
   }
 
-  private footer(): string {
-    switch (this.scene) {
-      case 'setup': return 'Tab 切换    Enter 进入'
-      case 'home': return 'j/k 移动    Enter 打开    q 退出'
-      case 'search': return '←/→ 平台    Enter 下载链接或搜索    Esc 返回'
-      case 'results':
-      case 'tmdb': return 'j/k 移动    Enter 确认    Esc 返回'
-      case 'detail': return '方向键    空格勾选    a全选    c清空    d下选中    A全集    Enter本集'
-      case 'quality': return 'j/k 选择画质    Enter 下载    Esc 返回'
-      case 'jobs': return 'Esc 返回'
-      case 'settings': return 'j/k 移动    Enter 修改    空格 开关    Esc 返回'
-      case 'qr': return '手机扫码    Esc 取消'
-      case 'edit': return 'Enter 保存    Esc 取消'
-      default: return ''
-    }
-  }
-
   private build(): Snapshot {
     const cursor = this.scene === 'quality' ? this.qIdx : this.scene === 'settings' ? this.setIdx : this.cursor
     return {
       scene: this.scene,
       host: this.cfg.host,
       status: this.status,
+      statusKind: this.statusKind,
+      busy: this.busy,
       tunnelOk: this.tunnelOk,
       tunnelError: this.tunnelErr || undefined,
       cursor,
       providerIndex: this.provIdx,
       qualityIndex: this.qIdx,
+      audioIndex: this.audioIdx,
+      optionTab: this.optionTab,
       providers: this.providers(),
       homeItems: this.homeItems(),
       rows: this.rows,
       episodes: this.eps,
       qualities: this.qualities,
+      audios: this.audios,
       tmdbHits: this.tmdbHits,
       jobs: this.jobs,
       settings: this.settingFields().map((label) => ({ label, value: this.settingValue(label) })),
+      detail: this.detailInfo ?? undefined,
       detailTitle: this.detailTitle,
       pendingCount: this.pending.length,
+      probeFailed: this.probeFailed,
       query: this.query,
       hostInput: this.hostInput,
       hostFocused: this.hostFocused,
@@ -232,34 +268,51 @@ export class Runtime {
       editField: this.editField,
       editValue: this.editValue,
       qrAscii: this.qrAscii,
-      footer: this.footer(),
     }
   }
 
   private async refreshKey(): Promise<void> {
     if (!this.cli) return
-    try {
-      this.keyInfo = await this.cli.keyInfo()
-      this.status = `${this.keyInfo.name}  scope=${this.keyInfo.all || !this.keyInfo.scope?.length ? '全部' : this.keyInfo.scope.join(',')}  ${
-        this.keyInfo.permanent || !this.keyInfo.expiresAt ? '永不到期' : `剩 ${this.keyInfo.daysLeft ?? 0} 天`
-      }`
-      if (!this.tunnelOn && (this.has('youku') || this.has('tencent'))) {
-        this.tunnelOn = true
-        this.tunnelAbort = new AbortController()
-        runTunnel(this.cfg.host, this.cfg.key, (ok, err) => {
-          this.tunnelOk = ok
-          this.tunnelErr = err
-          this.status = ok ? '隧道已连接：优酷/腾讯走本机 IP' : (err ? `隧道断开 ${err}` : this.status)
-          this.emit()
-        }, this.tunnelAbort.signal)
+    await this.work(async () => {
+      try {
+        this.keyInfo = await this.cli!.keyInfo()
+        this.say(`${this.keyInfo.name}  scope=${this.keyInfo.all || !this.keyInfo.scope?.length ? '全部' : this.keyInfo.scope.join(',')}  ${
+          this.keyInfo.permanent || !this.keyInfo.expiresAt ? '永不到期' : `剩 ${this.keyInfo.daysLeft ?? 0} 天`
+        }`, 'ok')
+        if (!this.tunnelOn && (this.has('youku') || this.has('tencent'))) {
+          this.tunnelOn = true
+          this.tunnelAbort = new AbortController()
+          // A tunnel that is torn down and redialled every few seconds must not
+          // own the status line: the header dot already shows the live state, so
+          // only the first drop is announced, and recovery only after a real gap.
+          let announcedDrop = false
+          let downSince = 0
+          runTunnel(this.cfg.host, this.cfg.key, (ok, err) => {
+            this.tunnelOk = ok
+            this.tunnelErr = err
+            if (ok) {
+              if (downSince && Date.now() - downSince > 8000) this.say('隧道已恢复：优酷/腾讯走本机 IP', 'ok')
+              downSince = 0
+            } else {
+              downSince ||= Date.now()
+              if (!announcedDrop) {
+                announcedDrop = true
+                this.say(
+                  err === 'closed' ? '隧道断开，自动重连中（优酷/腾讯暂时走本机 IP）' : `隧道断开 ${err}`,
+                  'warn',
+                )
+              }
+            }
+            this.emit()
+          }, this.tunnelAbort.signal)
+        }
+      } catch (e) {
+        this.say(`Key 无效：${e instanceof Error ? e.message : e}`, 'err')
+        this.scene = 'setup'
+        this.hostFocused = false
+        this.keyFocused = true
       }
-    } catch (e) {
-      this.status = `Key 无效：${e instanceof Error ? e.message : e}`
-      this.scene = 'setup'
-      this.hostFocused = false
-      this.keyFocused = true
-    }
-    this.emit()
+    })
   }
 
   private updateSetup(k: string): void {
@@ -272,7 +325,7 @@ export class Runtime {
     this.cfg.host = this.hostInput.replace(/\/+$/, '').trim()
     this.cfg.key = this.keyInput.trim()
     if (!this.cfg.key) {
-      this.status = '请填写 API Key'
+      this.say('请填写 API Key', 'warn')
       return
     }
     saveConfig(this.cfg)
@@ -291,7 +344,7 @@ export class Runtime {
           this.scene = 'search'
           const i = this.providers().indexOf('douyin')
           if (i >= 0) this.provIdx = i
-          this.status = '把抖音分享口令或链接贴进来，回车直接下载'
+          this.say('把抖音分享口令或链接贴进来，回车直接下载')
           break
         }
         case '搜索': this.scene = 'search'; break
@@ -353,10 +406,10 @@ export class Runtime {
     else if (k === ' ' || k === 'space') this.eps[this.cursor].selected = !this.eps[this.cursor].selected
     else if (k === 'a') {
       for (const ep of this.eps) ep.selected = true
-      this.status = `已选 ${n} 集`
+      this.say(`已选 ${n} 集`, 'ok')
     } else if (k === 'c') {
       for (const ep of this.eps) ep.selected = false
-      this.status = '已清空选择'
+      this.say('已清空选择')
     } else if (k === 'enter' || k === 'd') {
       const tasks = this.selectedTasks()
       void this.queueEpisodes(tasks.length ? tasks : [this.taskFromEp(this.cursor)])
@@ -366,21 +419,44 @@ export class Runtime {
   }
 
   private updateQuality(k: string): void {
-    const n = this.qualities.length
+    const nq = this.qualities.length
+    const na = this.audios.length
+    const hasAudio = na > 0
     if (k === 'esc') { this.scene = 'detail'; return }
-    if (n && (k === 'j' || k === 'down')) this.qIdx = (this.qIdx + 1) % n
-    else if (n && (k === 'k' || k === 'up')) this.qIdx = (this.qIdx - 1 + n) % n
-    else if (k === 'enter' && n) {
-      const q = this.qualities[this.qIdx]
-      for (const t of this.pending) {
+    if (hasAudio && (k === 'tab' || k === 'left' || k === 'right' || k === 'h' || k === 'l')) {
+      this.optionTab = this.optionTab === 'quality' ? 'audio' : 'quality'
+      return
+    }
+    const onAudio = hasAudio && this.optionTab === 'audio'
+    const n = onAudio ? na : nq
+    if (!n) return
+    if (k === 'j' || k === 'down') {
+      if (onAudio) this.audioIdx = (this.audioIdx + 1) % n
+      else this.qIdx = (this.qIdx + 1) % n
+    } else if (k === 'k' || k === 'up') {
+      if (onAudio) this.audioIdx = (this.audioIdx - 1 + n) % n
+      else this.qIdx = (this.qIdx - 1 + n) % n
+    } else if (k === 'enter') {
+      this.applyOptions()
+      void this.afterQuality()
+    }
+  }
+
+  /** Stamp the chosen quality (and audio track) onto every pending task. */
+  private applyOptions(): void {
+    const q = this.qualities[this.qIdx]
+    const a = this.audios[this.audioIdx]
+    for (const t of this.pending) {
+      if (q) {
         t.quality = q.id
         t.group = this.cfg.releaseGroup
         if (q.height > 0) t.height = q.height
         if (q.codec) t.codec = q.codec
       }
-      this.status = `画质 ${q.label}`
-      void this.afterQuality()
+      if (a) t.audio = a.id
     }
+    this.probeFailed = false
+    if (q) this.say(a ? `画质 ${q.label} · 音轨 ${a.label}` : `画质 ${q.label}`, 'ok')
   }
 
   private updateTMDB(k: string): void {
@@ -421,13 +497,13 @@ export class Runtime {
 
   private async openSetting(f: string): Promise<void> {
     if (f === '隧道') {
-      this.status = this.tunnelOk ? '隧道已连接' : (this.tunnelErr || '未连接')
+      this.say(this.tunnelOk ? '隧道已连接' : (this.tunnelErr || '未连接'), this.tunnelOk ? 'ok' : 'warn')
       this.emit()
       return
     }
     if (f === '优酷扫码') {
       if (!this.cli) return
-      this.status = hostIsLocal(this.cfg.host) ? '本机网关，扫码从家庭 IP 出去。' : '扫码从本机 IP 出网（隧道）。'
+      this.say(hostIsLocal(this.cfg.host) ? '本机网关，扫码从家庭 IP 出去。' : '扫码从本机 IP 出网（隧道）。')
       try {
         const qr = await startYoukuQR(this.cli)
         this.qrTicket = qr.ticket
@@ -435,14 +511,14 @@ export class Runtime {
         this.scene = 'qr'
         this.startQRPoll()
       } catch (e) {
-        this.status = e instanceof Error ? e.message : String(e)
+        this.say(e instanceof Error ? e.message : String(e), 'err')
         this.scene = 'settings'
       }
       this.emit()
       return
     }
     if (f === 'Yk-Sign') {
-      this.status = '登录态由扫码或导入 Cookie 写入，不能手改。'
+      this.say('登录态由扫码或导入 Cookie 写入，不能手改。', 'warn')
       this.emit()
       return
     }
@@ -479,23 +555,23 @@ export class Runtime {
       case '腾讯 Cookie': this.cfg.tencentCookie = v; break
       case 'ffmpeg': this.cfg.ffmpeg = v; break
       case '优酷 Cookie':
-        if (!v) { this.status = 'Cookie 为空'; this.scene = 'settings'; this.emit(); return }
+        if (!v) { this.say('Cookie 为空', 'warn'); this.scene = 'settings'; this.emit(); return }
         if (!this.cli) return
         this.scene = 'settings'
-        this.status = '正在导入优酷 Cookie…'
+        this.say('正在导入优酷 Cookie…')
         this.emit()
         try {
-          this.cfg.youkuSign = await importYoukuCookie(this.cli, v)
+          this.cfg.youkuSign = await this.work(() => importYoukuCookie(this.cli!, v))
           saveConfig(this.cfg)
-          this.status = '优酷 Cookie 已导入'
+          this.say('优酷 Cookie 已导入', 'ok')
         } catch (e) {
-          this.status = `Cookie 导入失败：${e instanceof Error ? e.message : e}`
+          this.say(`Cookie 导入失败：${e instanceof Error ? e.message : e}`, 'err')
         }
         this.emit()
         return
     }
     saveConfig(this.cfg)
-    this.status = `${this.editField} 已保存`
+    this.say(`${this.editField} 已保存`, 'ok')
     this.scene = 'settings'
     this.emit()
   }
@@ -532,22 +608,31 @@ export class Runtime {
       return
     }
     this.pending = tasks
-    this.status = '正在取画质…'
+    // The user just asked for these episodes; if the stream list fails we stop
+    // here and say so, instead of quietly downloading a guessed quality. A
+    // second Enter (probeFailed) goes ahead with the platform default.
+    if (this.probeFailed) {
+      this.say('用默认画质下载（跳过画质选择）', 'warn')
+      await this.afterQuality()
+      return
+    }
+    this.say('正在取画质…')
     this.emit()
     try {
-      const list = await probeQualities(this.cli, this.cfg, this.detailProv, tasks[0].vid)
-      if (!list.length) {
-        this.status = '没有画质列表，使用默认画质'
-        await this.afterQuality()
-        return
-      }
-      this.qualities = list
+      const opts = await this.work(() => probeOptions(this.cli!, this.cfg, this.detailProv, tasks[0].vid))
+      this.qualities = opts.qualities
+      this.audios = opts.audios
       this.qIdx = 0
+      this.audioIdx = Math.max(0, opts.audios.findIndex((a) => a.isDefault))
+      this.optionTab = 'quality'
+      this.probeFailed = false
       this.scene = 'quality'
-      this.status = `${list.length} 档 · ${tasks.length} 集`
+      this.say(`${opts.qualities.length} 档画质${opts.audios.length ? ` · ${opts.audios.length} 条音轨` : ''} · ${tasks.length} 集`, 'ok')
     } catch (e) {
-      this.status = `画质不可用，使用默认画质：${e instanceof Error ? e.message : e}`
-      await this.afterQuality()
+      this.probeFailed = true
+      this.qualities = []
+      this.audios = []
+      this.say(`取画质失败：${e instanceof Error ? e.message : e} · 再按 ⏎ 用默认画质下载`, 'err')
     }
     this.emit()
   }
@@ -565,7 +650,7 @@ export class Runtime {
           return
         }
       } catch (e) {
-        this.status = `TMDB: ${e instanceof Error ? e.message : e}`
+        this.say(`TMDB: ${e instanceof Error ? e.message : e}`, 'warn')
       }
     }
     this.enqueueAll(tasks)
@@ -580,7 +665,7 @@ export class Runtime {
     }
     this.pending = []
     this.scene = 'jobs'
-    this.status = `已加入 ${tasks.length} 个任务`
+    this.say(`已加入 ${tasks.length} 个任务`, 'ok')
     this.emit()
   }
 
@@ -588,20 +673,20 @@ export class Runtime {
   private async downloadDouyin(title: string, vid: string, url: string): Promise<void> {
     if (!this.cli) return
     if (!this.has('douyin')) {
-      this.status = '当前 Key 没有抖音权限'
+      this.say('当前 Key 没有抖音权限', 'err')
       this.emit()
       return
     }
     const link = url.trim() || (vid ? `https://www.douyin.com/video/${vid}` : '')
     if (!link) {
-      this.status = '没有抖音链接'
+      this.say('没有抖音链接', 'err')
       this.emit()
       return
     }
-    this.status = '正在解析抖音链接…'
+    this.say('正在解析抖音链接…')
     this.emit()
     try {
-      const data = await this.cli.invoke('douyin', 'resolve', { url: link })
+      const data = await this.work(() => this.cli!.invoke('douyin', 'resolve', { url: link }))
       if (!pickDouyinURL(data)) throw new Error('这条没有视频直链（可能是图文）')
       const desc = clipTitle(asString(data.content) || asString(data.title) || title)
       let height = 0
@@ -631,20 +716,20 @@ export class Runtime {
         plot: '',
       }])
     } catch (e) {
-      this.status = e instanceof Error ? e.message : String(e)
+      this.say(e instanceof Error ? e.message : String(e), 'err')
       this.emit()
     }
   }
   private async search(provider: string, q: string): Promise<void> {
     if (!this.cli) return
     try {
-      const data = await this.cli.invoke(provider, 'search', { q, pageSize: 20 })
+      const data = await this.work(() => this.cli!.invoke(provider, 'search', { q, pageSize: 20 }))
       this.rows = parseSearch(provider, data)
       this.cursor = 0
-      this.status = `${this.rows.length} 条`
+      this.say(this.rows.length ? `${this.rows.length} 条 · ${provider}` : '没有搜到结果', this.rows.length ? 'ok' : 'warn')
       this.scene = 'results'
     } catch (e) {
-      this.status = e instanceof Error ? e.message : String(e)
+      this.say(e instanceof Error ? e.message : String(e), 'err')
     }
     this.emit()
   }
@@ -657,13 +742,13 @@ export class Runtime {
       if (x === 'youku' || x === 'tencent' || x === 'hongguo') { p = x; break }
     }
     try {
-      const data = await this.cli.invoke(p, 'browse', { mode: 'rank', pageSize: 20 })
+      const data = await this.work(() => this.cli!.invoke(p, 'browse', { mode: 'rank', pageSize: 20 }))
       this.rows = parseSearch(p, data)
       this.cursor = 0
-      this.status = `${this.rows.length} 条`
+      this.say(this.rows.length ? `榜单 ${this.rows.length} 条 · ${p}` : '榜单是空的', this.rows.length ? 'ok' : 'warn')
       this.scene = 'results'
     } catch (e) {
-      this.status = e instanceof Error ? e.message : String(e)
+      this.say(e instanceof Error ? e.message : String(e), 'err')
     }
     this.emit()
   }
@@ -672,7 +757,7 @@ export class Runtime {
     if (!this.cli) return
     const trimmed = id.trim()
     if (!trimmed || trimmed === '<nil>' || trimmed === 'null') {
-      this.status = '这条没有剧 ID，换一条'
+      this.say('这条没有剧 ID，换一条', 'warn')
       this.emit()
       return
     }
@@ -681,13 +766,16 @@ export class Runtime {
     else if (provider === 'youku') { input.showId = trimmed; input.all = '1' }
     else if (provider === 'tencent') input.cid = trimmed
     try {
-      const data = await this.cli.invoke(provider, 'detail', input)
+      const data = await this.work(() => this.cli!.invoke(provider, 'detail', input))
       this.detailTitle = asString(data.title)
       this.eps = parseEps(data)
+      this.detailInfo = parseDetail(data, provider, this.detailTitle)
       this.cursor = 0
+      this.probeFailed = false
       this.scene = 'detail'
+      this.say(this.eps.length ? `${this.detailTitle} · ${this.eps.length} 集` : '这部剧没有返回剧集', this.eps.length ? 'ok' : 'warn')
     } catch (e) {
-      this.status = e instanceof Error ? e.message : String(e)
+      this.say(e instanceof Error ? e.message : String(e), 'err')
     }
     this.emit()
   }
@@ -708,13 +796,13 @@ export class Runtime {
       if (sign) {
         this.cfg.youkuSign = sign
         saveConfig(this.cfg)
-        this.status = '已保存 Yk-Sign'
+        this.say('已保存 Yk-Sign', 'ok')
         this.scene = 'settings'
         this.stopQR()
         this.emit()
       }
     } catch (e) {
-      this.status = e instanceof Error ? e.message : String(e)
+      this.say(e instanceof Error ? e.message : String(e), 'err')
       this.emit()
     }
   }
@@ -739,15 +827,57 @@ function parseSearch(provider: string, data: Record<string, unknown>): Row[] {
   const rows: Row[] = []
   for (const it of arr) {
     if (!isObj(it)) continue
-    const title = firstStr(it, 'title', 'name', 'seriesName')
-    let id = firstStr(it, 'seriesId', 'showId', 'cid', 'vid', 'id')
+    const meta = isObj(it.meta) ? it.meta : {}
+    const title = firstStr(it, 'title', 'name', 'seriesName') || firstStr(meta, 'title')
+    let id = firstStr(it, 'seriesId', 'showId', 'cid', 'vid', 'id') || firstStr(meta, 'seriesId', 'showId', 'cid')
     if (id === '<nil>' || id === 'null') id = ''
     const key = `${id}|${title}`
     if ((!title && !id) || seen[key]) continue
     seen[key] = true
-    rows.push({ title, id, sub: provider })
+    const tags = pickTags(it, meta)
+    rows.push({
+      title,
+      id,
+      sub: provider,
+      desc: firstStr(it, 'subtitle', 'desc') || firstStr(meta, 'subTitle', 'subtitle', 'desc'),
+      score: firstStr(it, 'score') || firstStr(meta, 'score'),
+      tags,
+    })
   }
   return rows
+}
+
+function pickTags(item: Record<string, unknown>, meta: Record<string, unknown>): string[] {
+  for (const src of [item, meta]) {
+    const raw = src.tags
+    if (Array.isArray(raw)) {
+      const tags = raw.filter((t): t is string => typeof t === 'string' && t.length > 0)
+      if (tags.length) return tags.slice(0, 4)
+    }
+  }
+  return []
+}
+
+/** Title-level metadata for the detail screen; every platform fills what it has. */
+function parseDetail(data: Record<string, unknown>, provider: string, fallbackTitle: string): Detail {
+  const raw = isObj(data.raw) ? data.raw : {}
+  const title = asString(data.title) || asString(raw.title) || fallbackTitle
+  const episodeList = Array.isArray(data.episodes) ? data.episodes : []
+  const count = anyInt(data.episode_count) || anyInt(data.totalEps) || anyInt(raw.episode_count) || episodeList.length
+  const drm = isObj(data.drm) ? asString(data.drm.note) || asString(data.drm.drm_type) : ''
+  const tags = pickTags(data, raw)
+  const score = asString(data.score) || asString(raw.score)
+  return {
+    title,
+    desc: asString(data.desc) || asString(raw.desc) || asString(data.intro) || asString(data.description),
+    category: asString(data.category) || asString(raw.category),
+    tags,
+    score,
+    episodes: count,
+    duration: anyInt(data.duration) || anyInt(raw.duration),
+    vip: data.is_vip === true || raw.is_vip === true,
+    drm,
+  }
 }
 
 function parseEps(data: Record<string, unknown>): Episode[] {
@@ -757,11 +887,22 @@ function parseEps(data: Record<string, unknown>): Episode[] {
     if (!isObj(it)) continue
     let n = i + 1
     if (typeof it.ep === 'number') n = it.ep
-    else if (typeof it.stage === 'string') {
+    else if (typeof it.number === 'number') n = it.number
+    else if (typeof it.number === 'string') {
+      const x = Number.parseInt(it.number, 10)
+      if (Number.isFinite(x)) n = x
+    } else if (typeof it.stage === 'string') {
       const x = Number.parseInt(it.stage, 10)
       if (Number.isFinite(x)) n = x
     }
-    eps.push({ title: firstStr(it, 'title', 'name'), vid: firstStr(it, 'vid', 'id'), number: n, selected: false })
+    eps.push({
+      title: firstStr(it, 'title', 'name'),
+      vid: firstStr(it, 'vid', 'id'),
+      number: n,
+      selected: false,
+      duration: anyInt(it.duration) || anyInt(it.duration_ms ? Number(it.duration_ms) / 1000 : 0) || undefined,
+      group: firstStr(it, 'kind', 'group', 'stage'),
+    })
   }
   return eps
 }

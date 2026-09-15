@@ -250,36 +250,66 @@ TUI 搜索框粘贴分享口令/短链会直接 `resolve` 并下载，不走选�
 
 ## 8. 家宽隧道 `GET /v1/tunnel`
 
-优酷/腾讯的**平台上游请求**必须从用户家宽 IP 出网。Key 校验通过后：
+优酷/腾讯的**平台上游请求**必须从用户家宽 IP 出网。Key 校验通过后，客户端用 **WebSocket** 升级：
 
 ```http
-GET {base}/v1/tunnel HTTP/1.1
+GET /v1/tunnel HTTP/1.1
 Host: {host}
 Authorization: Bearer sk_live_...
-Upgrade: tunnel
+Upgrade: websocket
 Connection: Upgrade
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Key: ...
 ```
 
-成功：`101 Switching Protocols`。之后是 **JSON 行**（`\n` 分隔）：
+成功：`101 Switching Protocols`，`Upgrade: websocket`。之后每条 **WebSocket 文本帧** 是一个 JSON 对象（不再是裸 TCP JSON 行）：
 
 网关 → 客户端
 
 ```json
 {"t":"req","id":"...","method":"GET","url":"https://...","header":{"User-Agent":["..."]},"body":"<base64>"}
-{"t":"ping"}
 ```
 
 客户端 → 网关
 
 ```json
 {"t":"res","id":"...","status":200,"header":{},"body":"<base64>"}
-{"t":"pong"}
 {"t":"res","id":"...","err":"..."}
 ```
+
+协议层 ping/pong 由 WebSocket 控制帧完成（网关每 20s 发一次 ping，读超时 60s），应用层不必再发 `{"t":"ping"}`。
 
 `body` 上限按实现约 6MiB。断开后每 3s 重连。隧道握手**不计**日配额。
 
 视频 CDN **不走**隧道。
+
+### Cloudflare / 1Panel
+
+必须是真正的 `Upgrade: websocket`。自定义 `Upgrade: tunnel` 会被 Cloudflare 在约 1s 内 FIN。
+
+橙云 443 可以走这条 WebSocket。Cloudflare 闲置约 100s 会拆连接，网关 ping 已覆盖。
+
+1Panel / nginx 反代还要打开升级并拉长超时，否则源站永远收不到 101：
+
+```nginx
+proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection "upgrade";
+proxy_set_header Host $host;
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+```
+
+排障：
+
+```powershell
+bun run scripts/probe-tunnel.ts                      # 打线上，OPEN 后应保持到结束
+$env:TUNNEL_URL='http://127.0.0.1:8080'              # 打本地源站
+$env:TUNNEL_ECHO='1'
+bun run scripts/probe-tunnel.ts
+```
+
+启动 TUI 时加 `GVS_TRACE=<文件>` 可以把状态机轨迹写到文件（全屏界面从外面看不见）。
 
 ---
 

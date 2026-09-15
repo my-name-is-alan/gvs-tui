@@ -1,20 +1,35 @@
 <script setup lang="ts">
+/**
+ * GVS terminal UI.
+ *
+ * The shell is fixed: a header bar, an optional hairline rule, a content
+ * region, a status line and a key-hint footer. Content rows are single
+ * `<Text>` renderables built by `colsLine`, so every scene lines up on the
+ * same columns and nothing reflows when a status message appears.
+ */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue-termui'
-import { Box, Input, Text, useExit, onKeyDown, onPaste, useTerminalSize } from 'vue-termui'
+import {
+  Box, Input, StyledText, Text, bold, fg, onKeyDown, onPaste, useExit, useInterval, useTerminalSize, useTitle,
+} from 'vue-termui'
 import { Bridge, type Snapshot } from './bridge'
+import EpisodeGrid from './components/EpisodeGrid.vue'
+import KeyHints from './components/KeyHints.vue'
+import Spinner from './components/Spinner.vue'
+import { MARK, barChunks, colsLine, descLine, ink, kvLine, markCol, pickLine } from './lib/rows'
+import type { Col } from './lib/rows'
+import { clip, column, displayWidth, padStart } from './lib/text'
+import { human } from './lib/util'
+import { c, hostLabel, jobTone, providerName, toneColor, valueColor } from './lib/theme'
+import type { Audio, Job, Quality, Row } from './types'
 
 const exit = useExit()
 const bridge = new Bridge()
-const state = ref<Snapshot>(bridge.snapshot ?? {
-  scene: 'setup', host: '', status: '', tunnelOk: false, cursor: 0, providerIndex: 0, qualityIndex: 0,
-  hostFocused: true, keyFocused: false, keyConfigured: false,
-})
+const state = ref<Snapshot>(bridge.snapshot)
 const query = ref('')
 const host = ref('')
 const key = ref('')
 const edit = ref('')
 const { width, height } = useTerminalSize()
-const fieldWidth = computed(() => Math.max(24, Number(width.value) - 10))
 const hostField = ref<{ $el?: { focus?: () => void } } | null>(null)
 const keyField = ref<{ $el?: { focus?: () => void } } | null>(null)
 const editField = ref<{ $el?: { focus?: () => void } } | null>(null)
@@ -91,152 +106,613 @@ onKeyDown((event) => {
   bridge.key(forwardedName, { ctrl: event.ctrl, alt: event.option, shift: event.shift })
 })
 
-const heading = computed(() => ({
-  setup: '解锁 GVS', home: 'GVS', search: '搜索 / 粘贴链接', results: '搜索结果', detail: state.value.detailTitle || '剧集',
-  quality: '画质', tmdb: 'TMDB 匹配', jobs: '下载任务', settings: '设置', qr: '优酷扫码', edit: state.value.editField || '编辑',
-}[state.value.scene] ?? 'GVS'))
-const sceneHint = computed(() => state.value.footer || '↑↓ 移动 · Enter 确认 · Esc 返回')
-const statusColor = computed(() => state.value.tunnelOk ? '#6ee7b7' : '#64748b')
-function windowed<T>(items: T[] | undefined, cursor: number, room = 10) {
-  const all = items ?? []
-  // Snapshots from an older bridge may not contain a dedicated quality index.
-  // Never let an undefined/NaN cursor reach Array.slice, otherwise the list
-  // silently renders empty and the UI displays NaN in derived values.
-  const safeCursor = Number.isFinite(cursor) ? Math.max(0, Math.floor(cursor)) : 0
-  const size = Math.max(3, Math.min(room, all.length || 3))
-  let start = Math.max(0, safeCursor - Math.floor(size / 2))
-  if (start + size > all.length) start = Math.max(0, all.length - size)
-  return all.slice(start, start + size).map((item, offset) => ({ item, index: start + offset }))
-}
-const qualityCursor = computed(() => Number.isFinite(state.value.qualityIndex) ? state.value.qualityIndex : state.value.cursor)
-const visibleRows = computed(() => windowed(state.value.rows, state.value.cursor, height.value - 8))
-const visibleEpisodes = computed(() => windowed(state.value.episodes, state.value.cursor, height.value - 10))
-const visibleQualities = computed(() => windowed(state.value.qualities, qualityCursor.value, height.value - 8))
-const visibleTMDBHits = computed(() => windowed(state.value.tmdbHits, state.value.cursor, height.value - 8))
-const visibleJobs = computed(() => windowed(state.value.jobs, 0, height.value - 8))
-const visibleSettings = computed(() => windowed(state.value.settings, state.value.cursor, height.value - 8))
+// --- layout budgets -------------------------------------------------------
+// Chrome is fixed height, so the body budget only depends on the terminal size
+// — never on transient text.
+const W = computed(() => Math.max(24, Math.floor(Number(width.value) || 80)))
+const H = computed(() => Math.max(8, Math.floor(Number(height.value) || 24)))
+const bodyW = computed(() => W.value - 2)
+const showRule = computed(() => H.value >= 18)
+const bodyH = computed(() => Math.max(3, H.value - (showRule.value ? 4 : 3)))
 
-function displayKey() { return state.value.keyConfigured ? '已配置' : '未配置' }
-function qualitySize(size: number | undefined) {
-  const value = Number(size)
-  return Number.isFinite(value) && value > 0 ? `${(value / 1024 / 1024).toFixed(1)} MB` : '—'
+const blink = ref(true)
+useInterval(() => { blink.value = !blink.value }, 530)
+
+const SCENE_TITLES: Record<string, string> = {
+  setup: '连接网关', home: '首页', search: '搜索', results: '搜索结果', detail: '剧集',
+  quality: '画质', tmdb: 'TMDB 匹配', jobs: '下载任务', settings: '设置', qr: '优酷扫码', edit: '编辑',
 }
-function percent(value: number | undefined) {
-  const n = Number(value)
-  if (!Number.isFinite(n)) return 0
-  return Math.max(0, Math.min(100, Math.round(n * 100)))
+
+const HOME_DESC: Record<string, string> = {
+  '粘贴链接': '抖音分享口令 / 链接，直接解析下载',
+  '搜索': '按标题在所选平台搜索',
+  '榜单': '平台热榜，找片最快',
+  '任务': '下载队列与进度',
+  '设置': '网关、画质、命名与 Cookie',
+}
+
+const HINTS: Record<string, Array<[string, string]>> = {
+  setup: [['tab', '切换字段'], ['⏎', '保存并进入'], ['^C', '退出']],
+  home: [['↑↓', '移动'], ['⏎', '打开'], ['q', '退出']],
+  search: [['←→', '切换平台'], ['⏎', '搜索 / 下载'], ['esc', '返回']],
+  results: [['↑↓', '移动'], ['⏎', '打开'], ['esc', '返回']],
+  detail: [['←→↑↓', '移动'], ['空格', '勾选'], ['⏎', '下载选中'], ['a', '全选'], ['c', '清空'], ['A', '全集下载'], ['esc', '返回']],
+  quality: [['↑↓', '选档'], ['←→', '画质 / 音轨'], ['⏎', '开始下载'], ['esc', '返回']],
+  tmdb: [['↑↓', '选择'], ['⏎', '采用'], ['esc', '跳过']],
+  jobs: [['esc', '返回']],
+  settings: [['↑↓', '移动'], ['⏎', '修改'], ['esc', '保存并返回']],
+  edit: [['⏎', '保存'], ['esc', '取消']],
+  qr: [['esc', '取消扫码']],
+}
+
+useTitle(() => `GVS · ${SCENE_TITLES[state.value.scene] ?? 'GVS'}`)
+
+/** Window a long list around the cursor, reporting the visible range. */
+function sliceList<T>(items: T[] | undefined, cursor: number, room: number) {
+  const all = items ?? []
+  const total = all.length
+  const safeCursor = Number.isFinite(cursor) ? Math.max(0, Math.floor(cursor)) : 0
+  const size = Math.max(1, Math.min(Math.max(1, room), total || 1))
+  let start = Math.max(0, safeCursor - Math.floor(size / 2))
+  if (start + size > total) start = Math.max(0, total - size)
+  const view = all.slice(start, start + size)
+  return {
+    total,
+    first: total ? start + 1 : 0,
+    last: Math.min(total, start + size),
+    rows: view.map((item, offset) => ({ item, index: start + offset })),
+  }
+}
+
+const episodes = computed(() => state.value.episodes ?? [])
+const qualities = computed(() => state.value.qualities ?? [])
+const audios = computed(() => state.value.audios ?? [])
+const jobs = computed(() => state.value.jobs ?? [])
+const settings = computed(() => state.value.settings ?? [])
+const providers = computed(() => state.value.providers ?? [])
+const homeItems = computed(() => state.value.homeItems ?? [])
+const detail = computed(() => state.value.detail)
+const onAudioTab = computed(() => state.value.optionTab === 'audio' && audios.value.length > 0)
+const selectedEpisode = computed(() => episodes.value[state.value.cursor])
+
+const resultView = computed(() => sliceList(state.value.rows, state.value.cursor, bodyH.value))
+const tmdbView = computed(() => sliceList(state.value.tmdbHits, state.value.cursor, Math.max(1, Math.floor(bodyH.value / 2))))
+const qualityView = computed(() => sliceList(qualities.value, state.value.qualityIndex, bodyH.value - 3))
+const audioView = computed(() => sliceList(audios.value, state.value.audioIndex, bodyH.value - 3))
+const settingView = computed(() => sliceList(settings.value, state.value.cursor, bodyH.value - 1))
+const selectedCount = computed(() => episodes.value.filter((ep) => ep.selected).length)
+
+const jobStats = computed(() => {
+  const list = jobs.value
+  return {
+    total: list.length,
+    done: list.filter((j) => j.status === '完成').length,
+    failed: list.filter((j) => j.status === '失败').length,
+    queued: list.filter((j) => j.status === '排队').length,
+    active: list.filter((j) => !['完成', '失败', '排队'].includes(j.status)).length,
+  }
+})
+
+// --- chrome ---------------------------------------------------------------
+const headerLine = computed(() => {
+  const right = `${hostLabel(state.value.host)}  ${state.value.tunnelOk ? '● 隧道' : '○ 隧道'}`
+  const cols: Col[] = [
+    { text: '▌ ', cells: 2, color: c.accent, bold: true },
+    { text: 'GVS', cells: 4, color: c.accent, bold: true },
+    { text: `› ${SCENE_TITLES[state.value.scene] ?? 'GVS'}`, grow: true, color: c.faint },
+  ]
+  if (bridge.preview) cols.push({ text: 'PREVIEW  ', cells: 9, align: 'right', color: c.warn })
+  cols.push({ text: right, cells: displayWidth(right), align: 'right', color: state.value.tunnelOk ? c.ok : c.faint })
+  return colsLine(cols, bodyW.value)
+})
+
+const busyLabel = computed(() => {
+  switch (state.value.scene) {
+    case 'search':
+    case 'results': return '查询中…'
+    case 'detail': return '取剧集…'
+    case 'quality': return '取画质…'
+    case 'setup': return '校验 Key…'
+    default: return '处理中…'
+  }
+})
+
+const metaText = computed(() => {
+  switch (state.value.scene) {
+    case 'results':
+      return resultView.value.total ? `${resultView.value.first}-${resultView.value.last} / ${resultView.value.total}` : ''
+    case 'tmdb':
+      return tmdbView.value.total ? `${tmdbView.value.first}-${tmdbView.value.last} / ${tmdbView.value.total}` : ''
+    case 'detail':
+      return `已选 ${selectedCount.value} / ${episodes.value.length}`
+    case 'quality': {
+      const q = qualities.value[state.value.qualityIndex]
+      const a = audios.value[state.value.audioIndex]
+      return [`${state.value.pendingCount || 1} 集`, q?.label, a?.label].filter(Boolean).join(' · ')
+    }
+    case 'jobs': {
+      const s = jobStats.value
+      return `${s.done} 完成 · ${s.active} 进行 · ${s.queued} 排队${s.failed ? ` · ${s.failed} 失败` : ''}`
+    }
+    case 'settings':
+      return `${settings.value.length} 项`
+    default:
+      return ''
+  }
+})
+
+const statusContent = computed(() => {
+  const message = state.value.status
+  const tone = state.value.statusKind
+  if (!message) return new StyledText([])
+  if (tone === 'info') return new StyledText([fg(c.dim)(message)])
+  const icon = tone === 'warn' ? '!' : tone === 'err' ? '✖' : '✔'
+  return new StyledText([fg(toneColor(tone))(bold(icon)), fg(toneColor(tone))(` ${message}`)])
+})
+
+/** Width reserved on the right half of the status line. */
+const statusRightW = computed(() => (state.value.busy ? displayWidth(busyLabel.value) + 2 : displayWidth(metaText.value)))
+const statusLeftW = computed(() => Math.max(10, bodyW.value - statusRightW.value - 1))
+
+const hints = computed(() => HINTS[state.value.scene] ?? [])
+
+// --- detail screen --------------------------------------------------------
+const gridRows = computed(() => Math.max(1, bodyH.value - (state.value.detail?.desc ? 6 : 4)))
+
+function clock(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return ''
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.floor(seconds % 60)
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`
+}
+
+/** `奇幻短剧 · 奇幻/古代/乡村 · 评分 8.0 · 总时长 1:21:50` */
+const detailFacts = computed(() => {
+  const d = state.value.detail
+  if (!d) return ''
+  const parts: string[] = []
+  if (d.category) parts.push(d.category)
+  if (d.tags?.length) parts.push(d.tags.join('/'))
+  if (d.score) parts.push(`评分 ${d.score}`)
+  const firstLen = episodes.value[0]?.duration ?? 0
+  if (d.episodes <= 1 && d.duration > 0) parts.push(`时长 ${clock(d.duration)}`)
+  else if (firstLen > 0) parts.push(`每集约 ${clock(firstLen)}`)
+  if (d.drm) parts.push(d.drm)
+  return parts.length ? `  ${parts.join('  ·  ')}` : ''
+})
+
+const episodeLine = computed(() => {
+  const ep = selectedEpisode.value
+  if (!ep) return ''
+  const bits: string[] = [`E${String(ep.number).padStart(2, '0')}`]
+  const len = clock(ep.duration ?? 0)
+  if (len) bits.push(len)
+  const title = (ep.title || '').trim()
+  return new StyledText([
+    fg(c.accent)(bold(`  ${bits.join(' · ')}`)),
+    fg(c.faint)(title ? `  ${clip(title, Math.max(10, bodyW.value - 24))}` : ''),
+  ])
+})
+
+// Cards are sized from the terminal, never from a fixed number, so nothing
+// overflows on a narrow window.
+const setupCardW = computed(() => Math.max(44, Math.min(72, bodyW.value - 2)))
+const setupFieldBoxW = computed(() => setupCardW.value - 6)
+const setupFieldW = computed(() => setupFieldBoxW.value - 3)
+const editBoxW = computed(() => Math.max(30, Math.min(72, bodyW.value - 2)))
+const editW = computed(() => editBoxW.value - 4)
+
+/** QR blocks are drawn with half-width blocks; centre them and keep them on screen. */
+const qrBlock = computed(() => {
+  const raw = (state.value.qrAscii || '').split('\n').filter((line) => line.trim().length > 0)
+  const room = Math.max(0, bodyH.value - 3)
+  const lines = raw.length > room ? raw.slice(0, room) : raw
+  const widest = lines.reduce((max, line) => Math.max(max, displayWidth(line)), 0)
+  const indent = ' '.repeat(Math.max(0, Math.floor((bodyW.value - widest) / 2)))
+  return lines.map((line) => indent + line).join('\n')
+})
+
+// --- row builders ---------------------------------------------------------
+const labelCells = computed(() => Math.min(14, Math.max(8, Math.floor(bodyW.value * 0.2))))
+
+function qualityLine(row: Quality, selected: boolean): StyledText {
+  const res = row.width > 0 && row.height > 0 ? `${row.width}×${row.height}` : row.height > 0 ? `${row.height}p` : '—'
+  const size = row.size > 0 ? human(row.size) : '—'
+  return colsLine([
+    markCol(selected),
+    { text: row.label || row.title || '视频流', cells: labelCells.value, color: selected ? c.text : c.dim, bold: selected },
+    { text: res, cells: 11, color: c.faint },
+    { text: row.codec || '—', cells: 6, color: c.faint },
+    { text: size, cells: 9, align: 'right', color: c.faint },
+    { text: '  ', cells: 2 },
+    { text: row.drm ? 'DRM' : '无 DRM', cells: 6, align: 'right', color: row.drm ? c.violet : c.faint },
+  ], bodyW.value, selected)
+}
+
+/** `▌ AAC   默认   cmfa1hd3` */
+function audioLine(row: Audio, selected: boolean): StyledText {
+  return colsLine([
+    markCol(selected),
+    { text: row.label || row.id, cells: Math.min(18, Math.max(10, labelCells.value + 2)), color: selected ? c.text : c.dim, bold: selected },
+    { text: row.lang || '—', cells: 10, color: c.faint },
+    { text: row.codec || '', cells: 12, color: c.faint },
+    { text: row.isDefault ? '默认' : '', grow: true, align: 'right', color: c.ok },
+  ], bodyW.value, selected)
+}
+
+/** `▌ 斗破苍穹年番   萧炎智斗蛇人族 ★9.1        优酷 · 336578` */
+function resultLine(row: Row, selected: boolean, width: number): StyledText {
+  const right = `${providerName(row.sub)}${row.id ? ` · ${row.id}` : ''}`
+  const rightW = displayWidth(right)
+  const meta = [row.desc, row.score ? `★${row.score}` : '', row.desc || row.score ? '' : (row.tags ?? []).join('·')]
+    .filter(Boolean)
+    .join('  ')
+  const metaW = meta ? Math.min(displayWidth(meta), Math.max(0, Math.floor(width * 0.32))) : 0
+  const titleW = Math.max(6, width - 2 - rightW - (metaW ? metaW + 2 : 0) - 1)
+  const title = selected ? fg(c.text)(bold(column(row.title, titleW))) : fg(c.dim)(column(row.title, titleW))
+  return new StyledText([
+    selected ? fg(c.accent)(bold(MARK)) : fg(c.dim)('  '),
+    title,
+    metaW ? fg(c.faint)(`  ${column(meta, metaW)}`) : fg(c.dim)(''),
+    fg(c.faint)(` ${right}`),
+  ])
+}
+
+function jobLine(job: Job): StyledText {
+  const tone = jobTone(job.status)
+  const pct = Math.max(0, Math.min(100, Math.round((job.pct ?? 0) * 100)))
+  const titleCells = Math.min(30, Math.max(14, Math.floor(bodyW.value * 0.34)))
+  const barCells = Math.min(18, Math.max(8, Math.floor(bodyW.value * 0.16)))
+  const failed = job.status === '失败'
+  const trailing = failed ? (job.err || '失败') : job.status === '完成' ? job.log || '完成' : job.log || job.status
+  const cols: Col[] = [
+    { text: `${tone.icon} `, cells: 2, color: tone.color },
+    { text: job.title, cells: titleCells, color: failed ? c.dim : c.text },
+    { text: ' ', cells: 1 },
+    { chunks: (cells) => barChunks(pct / 100, cells, failed ? c.err : c.accent), cells: barCells },
+    { text: ' ', cells: 1 },
+    { text: `${pct}%`, cells: 4, align: 'right', color: pct >= 100 ? c.ok : c.dim },
+    { text: '  ', cells: 2 },
+    { text: trailing, grow: true, color: failed ? c.err : c.faint },
+  ]
+  return colsLine(cols, bodyW.value)
 }
 </script>
 
 <template>
-  <Box :width="width" :height="height" flexDirection="column" backgroundColor="#07090d" padding="1">
-    <Box justifyContent="space-between" border borderStyle="rounded" padding="1" :marginBottom="1">
-      <Text bold fg="#fb7185">◆ GVS</Text>
-      <Text fg="#94a3b8">{{ state.host || '未配置网关' }}</Text>
-      <Text :fg="statusColor">{{ state.tunnelOk ? '● 隧道已连' : '○ 隧道未连' }}</Text>
+  <Box :width="W" :height="H" flexDirection="column" :backgroundColor="c.bg">
+    <!-- header -->
+    <Box :width="W" :height="1" flexDirection="row" :backgroundColor="c.panel" :paddingLeft="1" :paddingRight="1">
+      <Text :content="headerLine" :width="bodyW" :height="1" wrapMode="none" :truncate="true" />
     </Box>
-    <Text v-if="state.status" fg="#fbbf24">{{ state.status }}</Text>
+    <Text v-if="showRule" :content="'─'.repeat(W)" :width="W" :height="1" :fg="c.line" />
 
-    <Box v-if="state.scene === 'setup'" flexDirection="column" border borderStyle="rounded" padding="2" :marginTop="1">
-      <Text bold fg="#f8fafc">连接到你的网关</Text>
-      <Text fg="#94a3b8">输入地址和 API Key，配置会保存在用户目录。</Text>
-      <Text :marginTop="1" fg="#cbd5e1">网关地址</Text>
-      <Box border borderStyle="single" backgroundColor="#1e293b">
-        <Input ref="hostField" v-model="host" placeholder="http://127.0.0.1:8080" autofocus backgroundColor="#1e293b" focusedBackgroundColor="#1e293b" textColor="#f8fafc" placeholderColor="#94a3b8" :width="fieldWidth" />
-      </Box>
-      <Text :marginTop="1" fg="#cbd5e1">API Key</Text>
-      <Box border borderStyle="single" backgroundColor="#1e293b">
-        <Input ref="keyField" v-model="key" placeholder="sk_live_..." backgroundColor="#1e293b" focusedBackgroundColor="#1e293b" textColor="#f8fafc" placeholderColor="#94a3b8" :width="fieldWidth" />
-      </Box>
-      <Text :marginTop="1" fg="#64748b">Tab 切换 · Enter 进入</Text>
-    </Box>
-
-    <Box v-else-if="state.scene === 'home'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">下载</Text>
-      <Text fg="#94a3b8">抖音分享口令直接下。其它平台先搜再选。</Text>
-      <Box v-for="(item, index) in state.homeItems" :key="item" padding="1" :backgroundColor="index === state.cursor ? '#3b1220' : undefined">
-        <Text :fg="index === state.cursor ? '#fb7185' : '#e2e8f0'">{{ index === state.cursor ? '› ' : '  ' }}{{ item }}</Text>
-      </Box>
-    </Box>
-
-    <Box v-else-if="state.scene === 'search'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">抖音链接直接下，其它平台搜标题</Text>
-      <Box>
-        <Text v-for="(provider, index) in state.providers" :key="provider" :fg="index === state.providerIndex ? '#fb7185' : '#94a3b8'" padding="1">
-          {{ index === state.providerIndex ? `[${provider}]` : provider }}
-        </Text>
-      </Box>
-      <Text :marginTop="1" fg="#cbd5e1">在下面这一行输入 / 粘贴</Text>
-      <Box flexDirection="row" border borderStyle="single" backgroundColor="#1e293b" :padding="1" :width="fieldWidth">
-        <Text fg="#fb7185">› </Text>
-        <Text :fg="query ? '#f8fafc' : '#64748b'">{{ query || '粘贴抖音分享口令，回车下载' }}</Text>
-        <Text fg="#fb7185">█</Text>
-      </Box>
-    </Box>
-
-    <Box v-else-if="state.scene === 'results'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">{{ state.rows?.length ?? 0 }} 条结果</Text>
-      <Box v-for="entry in visibleRows" :key="`${entry.item.sub}-${entry.item.id}`" padding="1" :backgroundColor="entry.index === state.cursor ? '#3b1220' : undefined">
-        <Text :fg="entry.index === state.cursor ? '#fb7185' : '#e2e8f0'">{{ entry.index === state.cursor ? '› ' : '  ' }}{{ entry.item.title }}</Text>
-        <Text fg="#64748b">  {{ entry.item.sub }} · {{ entry.item.id }}</Text>
-      </Box>
-    </Box>
-
-    <Box v-else-if="state.scene === 'detail'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">{{ state.detailTitle }} · {{ state.episodes?.length ?? 0 }} 集</Text>
-      <Box flexWrap="wrap">
-        <Box v-for="entry in visibleEpisodes" :key="entry.item.vid" width="8" padding="1" :backgroundColor="entry.index === state.cursor ? '#3b1220' : undefined">
-          <Text :fg="entry.item.selected ? '#6ee7b7' : entry.index === state.cursor ? '#fb7185' : '#cbd5e1'">{{ entry.item.selected ? '✓' : '□' }} E{{ String(entry.item.number || entry.index + 1).padStart(2, '0') }}</Text>
+    <!-- body -->
+    <Box flexGrow="1" flexDirection="column" :width="W" :paddingLeft="1" :paddingRight="1">
+      <!-- setup -->
+      <Box
+        v-if="state.scene === 'setup'"
+        flexGrow="1"
+        flexDirection="row"
+        justifyContent="center"
+        alignItems="center"
+      >
+        <Box
+          :width="setupCardW"
+          flexDirection="column"
+          :border="true"
+          borderStyle="rounded"
+          :borderColor="c.line"
+          :backgroundColor="c.panel"
+          :paddingLeft="2"
+          :paddingRight="2"
+          :paddingTop="1"
+          :paddingBottom="1"
+        >
+          <Text :content="ink(c.accent, '▌ GVS', true)" :height="1" />
+          <Text :content="ink(c.dim, '填入管理台签发的网关地址与 API Key')" :height="1" />
+          <Text :content="'网关地址'" :height="1" :marginTop="1" :fg="state.hostFocused ? c.accent : c.dim" />
+          <Box
+            :width="setupFieldBoxW"
+            :border="true"
+            borderStyle="single"
+            :borderColor="state.hostFocused ? c.accent : c.line"
+            :backgroundColor="c.sunken"
+            :paddingLeft="1"
+          >
+            <Input
+              ref="hostField"
+              v-model="host"
+              placeholder="http://127.0.0.1:8080"
+              autofocus
+              :backgroundColor="c.sunken"
+              :focusedBackgroundColor="c.sunken"
+              :textColor="c.text"
+              :placeholderColor="c.faint"
+              :width="setupFieldW"
+            />
+          </Box>
+          <Text :content="'API Key'" :height="1" :marginTop="1" :fg="state.keyFocused ? c.accent : c.dim" />
+          <Box
+            :width="setupFieldBoxW"
+            :border="true"
+            borderStyle="single"
+            :borderColor="state.keyFocused ? c.accent : c.line"
+            :backgroundColor="c.sunken"
+            :paddingLeft="1"
+          >
+            <Input
+              ref="keyField"
+              v-model="key"
+              placeholder="sk_live_..."
+              :backgroundColor="c.sunken"
+              :focusedBackgroundColor="c.sunken"
+              :textColor="c.text"
+              :placeholderColor="c.faint"
+              :width="setupFieldW"
+            />
+          </Box>
+          <Text :content="ink(c.faint, 'tab 切换字段 · ⏎ 保存并进入')" :height="1" :marginTop="1" />
         </Box>
       </Box>
-    </Box>
 
-    <Box v-else-if="state.scene === 'quality'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">选择画质 · {{ state.detailTitle }}</Text>
-      <Text fg="#94a3b8">{{ state.pendingCount || 1 }} 集将使用同一档画质 · Enter 应用并开始下载</Text>
-      <Box v-for="entry in visibleQualities" :key="`${entry.item.label}-${entry.index}`" padding="1" :backgroundColor="entry.index === qualityCursor ? '#3b1220' : undefined">
-        <Text :fg="entry.index === qualityCursor ? '#fb7185' : '#e2e8f0'">{{ entry.index === qualityCursor ? '› ' : '  ' }}{{ entry.item.label || entry.item.title || '视频流' }}</Text>
-        <Text fg="#94a3b8"> {{ entry.item.width }}x{{ entry.item.height }} · {{ entry.item.codec || '—' }} · {{ qualitySize(entry.item.size) }} · {{ entry.item.drm || '无 DRM' }}</Text>
+      <!-- home -->
+      <Box v-else-if="state.scene === 'home'" flexDirection="column" :width="bodyW">
+        <Text :content="ink(c.faint, '抖音分享口令直接下，其它平台先搜再选')" :height="1" />
+        <Box :height="1" />
+        <Text
+          v-for="(item, index) in homeItems"
+          :key="item"
+          :width="bodyW"
+          :height="1"
+          wrapMode="none"
+          :truncate="true"
+          :bg="index === state.cursor ? c.sel : undefined"
+          :content="descLine(item, HOME_DESC[item] ?? '', bodyW, index === state.cursor)"
+        />
+      </Box>
+
+      <!-- search -->
+      <Box v-else-if="state.scene === 'search'" flexDirection="column" :width="bodyW">
+        <Text :content="ink(c.faint, '粘贴抖音分享口令或链接直接下载，其它平台搜标题')" :height="1" />
+        <Box flexDirection="row" :height="1" :marginTop="1">
+          <Text
+            v-for="(provider, index) in providers"
+            :key="provider"
+            :height="1"
+            :bg="index === state.providerIndex ? c.sel : undefined"
+            :content="ink(index === state.providerIndex ? c.accent : c.faint, ` ${providerName(provider)} `, index === state.providerIndex)"
+          />
+        </Box>
+        <Box
+          flexDirection="row"
+          :width="bodyW"
+          :height="3"
+          :marginTop="1"
+          :border="true"
+          borderStyle="rounded"
+          :borderColor="c.line"
+          :backgroundColor="c.sunken"
+          :paddingLeft="1"
+          :paddingRight="1"
+        >
+          <Text :height="1" :content="ink(c.accent, '› ', true)" />
+          <Text
+            :height="1"
+            :content="query ? ink(c.text, clip(query, Math.max(4, bodyW - 8))) : ink(c.faint, '搜片名，或粘贴抖音分享口令')"
+          />
+          <Text :height="1" :content="ink(c.accent, blink ? '█' : ' ')" />
+        </Box>
+      </Box>
+
+      <!-- results -->
+      <Box v-else-if="state.scene === 'results'" flexDirection="column" :width="bodyW">
+        <Text
+          v-if="!resultView.total"
+          :content="ink(c.faint, '没有结果。换个关键词或平台再试，esc 返回')"
+          :height="1"
+        />
+        <Text
+          v-for="entry in resultView.rows"
+          :key="`${entry.item.sub}-${entry.item.id}-${entry.index}`"
+          :width="bodyW"
+          :height="1"
+          wrapMode="none"
+          :truncate="true"
+          :bg="entry.index === state.cursor ? c.sel : undefined"
+          :content="resultLine(entry.item, entry.index === state.cursor, bodyW)"
+        />
+      </Box>
+
+      <!-- detail -->
+      <Box v-else-if="state.scene === 'detail'" flexDirection="column" :width="bodyW">
+        <Text
+          :content="colsLine([
+            { text: state.detail?.title || state.detailTitle || '剧集', grow: true, color: c.text, bold: true },
+            { text: state.detail?.vip ? 'VIP' : '', cells: 4, align: 'right', color: c.violet },
+            { text: `${episodes.length} 集`, cells: displayWidth(`${episodes.length} 集`), align: 'right', color: c.faint },
+          ], bodyW)"
+          :width="bodyW"
+          :height="1"
+        />
+        <Text
+          v-if="detailFacts"
+          :content="detailFacts"
+          :width="bodyW"
+          :height="1"
+          wrapMode="none"
+          :truncate="true"
+        />
+        <Text
+          v-if="state.detail?.desc"
+          :content="ink(c.faint, '  ' + state.detail.desc)"
+          :width="bodyW"
+          :height="2"
+          wrapMode="char"
+        />
+        <Text
+          v-if="selectedEpisode"
+          :content="episodeLine"
+          :width="bodyW"
+          :height="1"
+          wrapMode="none"
+          :truncate="true"
+          :marginTop="1"
+        />
+        <Text v-if="!episodes.length" :content="ink(c.faint, '这部剧没有返回剧集，esc 返回换一部')" :height="1" />
+        <EpisodeGrid
+          v-else
+          :episodes="episodes"
+          :cursor="state.cursor"
+          :width="bodyW"
+          :rows="gridRows"
+        />
+      </Box>
+
+      <!-- quality + audio -->
+      <Box v-else-if="state.scene === 'quality'" flexDirection="column" :width="bodyW">
+        <Text
+          :content="ink(c.faint, `${state.pendingCount || 1} 集将使用同一档画质 · ⏎ 应用并开始下载`)"
+          :height="1"
+        />
+        <Box flexDirection="row" :height="1" :marginTop="1">
+          <Text
+            :height="1"
+            :bg="onAudioTab ? undefined : c.sel"
+            :content="ink(onAudioTab ? c.faint : c.accent, ` 画质 ${qualities.length} 档 `, !onAudioTab)"
+          />
+          <Text
+            v-if="audios.length"
+            :height="1"
+            :bg="onAudioTab ? c.sel : undefined"
+            :content="ink(onAudioTab ? c.accent : c.faint, ` 音轨 ${audios.length} 条 `, onAudioTab)"
+          />
+          <Text :height="1" :content="ink(c.line, '  ←→ 切换')" />
+        </Box>
+        <Text :height="1" :content="' '" />
+        <Text
+          v-for="entry in (onAudioTab ? audioView.rows : qualityView.rows)"
+          :key="`${onAudioTab ? 'a' : 'q'}-${entry.index}`"
+          :width="bodyW"
+          :height="1"
+          wrapMode="none"
+          :truncate="true"
+          :bg="entry.index === (onAudioTab ? state.audioIndex : state.qualityIndex) ? c.sel : undefined"
+          :content="onAudioTab
+            ? audioLine(entry.item as Audio, entry.index === state.audioIndex)
+            : qualityLine(entry.item as Quality, entry.index === state.qualityIndex)"
+        />
+      </Box>
+
+      <!-- tmdb -->
+      <Box v-else-if="state.scene === 'tmdb'" flexDirection="column" :width="bodyW">
+        <Text :content="ink(c.faint, '选中后写入剧名 / 年份 / 简介，esc 直接跳过')" :height="1" :marginBottom="1" />
+        <Box v-for="entry in tmdbView.rows" :key="entry.item.id" flexDirection="column" :width="bodyW">
+          <Text
+            :width="bodyW"
+            :height="1"
+            wrapMode="none"
+            :truncate="true"
+            :bg="entry.index === state.cursor ? c.sel : undefined"
+            :content="pickLine(
+              `${entry.item.name || entry.item.title}${entry.item.year ? ` (${entry.item.year})` : ''}`,
+              `tmdb-${entry.item.id}`,
+              bodyW,
+              entry.index === state.cursor,
+            )"
+          />
+          <Text
+            v-if="entry.item.overview"
+            :content="ink(c.faint, `  ${clip(entry.item.overview, Math.max(8, bodyW - 4))}`)"
+            :width="bodyW"
+            :height="1"
+            wrapMode="none"
+            :truncate="true"
+          />
+        </Box>
+      </Box>
+
+      <!-- jobs -->
+      <Box v-else-if="state.scene === 'jobs'" flexDirection="column" :width="bodyW">
+        <Text
+          v-if="!jobs.length"
+          :content="ink(c.faint, '还没有任务。回首页粘贴链接或搜索下载，esc 返回')"
+          :height="1"
+        />
+        <Text
+          v-for="job in jobs"
+          :key="job.id"
+          :content="jobLine(job)"
+          :width="bodyW"
+          :height="1"
+          wrapMode="none"
+          :truncate="true"
+        />
+      </Box>
+
+      <!-- settings -->
+      <Box v-else-if="state.scene === 'settings'" flexDirection="column" :width="bodyW">
+        <Text :content="ink(c.faint, '⏎ 修改 / 切换，esc 保存并返回')" :height="1" :marginBottom="1" />
+        <Text
+          v-for="entry in settingView.rows"
+          :key="entry.item.label"
+          :width="bodyW"
+          :height="1"
+          wrapMode="none"
+          :truncate="true"
+          :bg="entry.index === state.cursor ? c.sel : undefined"
+          :content="kvLine(entry.item.label, entry.item.value, bodyW, entry.index === state.cursor, valueColor(entry.item.value))"
+        />
+      </Box>
+
+      <!-- edit -->
+      <Box v-else-if="state.scene === 'edit'" flexDirection="column" :width="bodyW">
+        <Text :content="ink(c.text, state.editField || '编辑', true)" :height="1" />
+        <Box
+          :width="editBoxW"
+          :height="3"
+          :marginTop="1"
+          :border="true"
+          borderStyle="rounded"
+          :borderColor="c.accent"
+          :backgroundColor="c.sunken"
+          :paddingLeft="1"
+          :paddingRight="1"
+        >
+          <Input
+            ref="editField"
+            v-model="edit"
+            autofocus
+            :backgroundColor="c.sunken"
+            :focusedBackgroundColor="c.sunken"
+            :textColor="c.text"
+            :placeholderColor="c.faint"
+            :width="editW"
+          />
+        </Box>
+        <Text :content="ink(c.faint, '⏎ 保存 · esc 取消')" :height="1" :marginTop="1" />
+      </Box>
+
+      <!-- qr -->
+      <Box v-else-if="state.scene === 'qr'" flexDirection="column" :width="bodyW">
+        <Text :content="ink(c.dim, '用优酷 App 扫码登录，登录态会写进本机')" :height="1" />
+        <Box :height="1" />
+        <Text :content="qrBlock" :fg="c.text" wrapMode="none" />
+        <Text :content="ink(c.faint, '扫码成功会自动返回设置页')" :height="1" :marginTop="1" />
       </Box>
     </Box>
 
-    <Box v-else-if="state.scene === 'tmdb'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">匹配 TMDB · Esc 跳过</Text>
-      <Box v-for="entry in visibleTMDBHits" :key="entry.item.id" flexDirection="column" padding="1" :backgroundColor="entry.index === state.cursor ? '#3b1220' : undefined">
-        <Text :fg="entry.index === state.cursor ? '#fb7185' : '#e2e8f0'">{{ entry.index === state.cursor ? '› ' : '  ' }}{{ entry.item.name || entry.item.title }}{{ entry.item.year ? ` (${entry.item.year})` : '' }} · tmdb-{{ entry.item.id }}</Text>
-        <Text v-if="entry.item.overview" fg="#64748b">  {{ entry.item.overview }}</Text>
-      </Box>
+    <!-- status -->
+    <Box :width="W" :height="1" flexDirection="row" :paddingLeft="1" :paddingRight="1">
+      <Text :content="statusContent" :width="statusLeftW" :height="1" wrapMode="none" :truncate="true" />
+      <Spinner v-if="state.busy" :label="busyLabel" />
+      <Text v-else :content="ink(c.faint, padStart(metaText, statusRightW))" :width="statusRightW" :height="1" />
     </Box>
 
-    <Box v-else-if="state.scene === 'jobs'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">下载任务</Text>
-      <Box v-if="!state.jobs?.length"><Text fg="#94a3b8">没有任务</Text></Box>
-      <Box v-for="entry in visibleJobs" :key="entry.item.id" flexDirection="column" padding="1">
-        <Text :fg="entry.item.status === '失败' ? '#f87171' : entry.item.status === '完成' ? '#6ee7b7' : '#e2e8f0'">{{ entry.item.status }} · {{ entry.item.title }}</Text>
-        <Text fg="#94a3b8">{{ percent(entry.item.pct) }}% {{ entry.item.log || entry.item.err }}</Text>
-      </Box>
+    <!-- footer -->
+    <Box :width="W" :height="1" flexDirection="row" :backgroundColor="c.panel" :paddingLeft="1" :paddingRight="1">
+      <KeyHints :hints="hints" :width="bodyW" />
     </Box>
-
-    <Box v-else-if="state.scene === 'settings'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">设置</Text>
-      <Box v-for="entry in visibleSettings" :key="entry.item.label" padding="1" :backgroundColor="entry.index === state.cursor ? '#3b1220' : undefined">
-        <Text :fg="entry.index === state.cursor ? '#fb7185' : '#e2e8f0'">{{ entry.index === state.cursor ? '› ' : '  ' }}{{ entry.item.label }}</Text>
-        <Text fg="#94a3b8">  {{ entry.item.value }}</Text>
-      </Box>
-    </Box>
-
-    <Box v-else-if="state.scene === 'edit'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">{{ state.editField }}</Text>
-      <Box border borderStyle="single" backgroundColor="#1e293b">
-        <Input ref="editField" v-model="edit" autofocus backgroundColor="#1e293b" focusedBackgroundColor="#1e293b" textColor="#f8fafc" placeholderColor="#94a3b8" :width="fieldWidth" />
-      </Box>
-    </Box>
-
-    <Box v-else-if="state.scene === 'qr'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">请用优酷 App 扫码登录</Text>
-      <Text>{{ state.qrAscii }}</Text>
-    </Box>
-
-    <Box :marginTop="1"><Text fg="#64748b">{{ sceneHint }}</Text></Box>
   </Box>
 </template>
