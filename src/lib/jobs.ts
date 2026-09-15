@@ -17,6 +17,7 @@ export type DlTask = {
   title: string
   series: string
   vid: string
+  url?: string
   season: number
   episode: number
   height: number
@@ -61,6 +62,10 @@ export class JobHub {
 }
 
 export function jobTitle(t: DlTask): string {
+  if (t.provider === 'douyin') {
+    const title = t.series || t.title || t.vid
+    return t.quality ? `${title} ${t.quality}` : title
+  }
   let title = `${t.series} E${String(t.episode).padStart(2, '0')}`
   if (t.quality) title += ` ${t.quality}`
   return title
@@ -77,7 +82,7 @@ async function runTask(
     emitEvt({ id, status, pct, log, err: '' })
   }
   try {
-    const kind = t.provider === 'hongguo' ? 'short' : 'show'
+    const kind = t.provider === 'hongguo' || t.provider === 'douyin' ? 'short' : 'show'
     const n: Naming = {
       kind,
       title: t.series || t.title,
@@ -88,15 +93,15 @@ async function runTask(
       height: t.height,
       codec: t.codec || 'H264',
       source: sourceTag(t.provider),
-      group: t.group.trim() || cfg.releaseGroup,
+      group: t.provider === 'douyin' ? '' : (t.group.trim() || cfg.releaseGroup),
       tmdbId: t.tmdbId,
-      container: t.provider === 'hongguo' && cfg.hongguoFmt ? cfg.hongguoFmt : 'mkv',
+      container: t.provider === 'douyin' ? 'mp4' : t.provider === 'hongguo' && cfg.hongguoFmt ? cfg.hongguoFmt : 'mkv',
     }
-    const dir = folder(n, cfg.outDir)
+    const dir = t.provider === 'douyin' ? cfg.outDir : folder(n, cfg.outDir)
     mkdirSync(dir, { recursive: true })
     const out = join(dir, filename(n))
-    const ffmpeg = lookFFmpeg(cfg.ffmpeg)
-    if (!ffmpeg) throw new Error('没有 ffmpeg。设置页填 ffmpeg.exe 完整路径，或安装后重开 TUI')
+    const ffmpeg = t.provider === 'douyin' ? '' : lookFFmpeg(cfg.ffmpeg)
+    if (t.provider !== 'douyin' && !ffmpeg) throw new Error('没有 ffmpeg。设置页填 ffmpeg.exe 完整路径，或安装后重开 TUI')
     emit('取链', 0.01, out.split(/[/\\]/).pop() ?? out)
     switch (t.provider) {
       case 'hongguo':
@@ -188,8 +193,10 @@ async function dlDouyin(
   cli: GwClient, t: DlTask, out: string,
   emit: (s: string, p: number, l: string) => void,
 ): Promise<void> {
-  emit('取链', 0.02, t.vid)
-  const data = await cli.invoke('douyin', 'resolve', { url: `https://www.douyin.com/video/${t.vid}` })
+  emit('取链', 0.02, t.vid || t.url || '')
+  const url = (t.url || '').trim() || (t.vid ? `https://www.douyin.com/video/${t.vid}` : '')
+  if (!url) throw new Error('没有抖音链接')
+  const data = await cli.invoke('douyin', 'resolve', { url })
   const cdn = pickDouyinURL(data)
   if (!cdn) throw new Error('抖音没有直链')
   emit('下载', 0.1, cdn)

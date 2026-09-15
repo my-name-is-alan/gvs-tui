@@ -41,6 +41,8 @@ Authorization: Bearer sk_live_<prefix>.<secret>
 
 或 `X-API-Key: sk_live_...`
 
+同一把 Key 10 分钟内最多 2 个公网 IP。第 3 个返回 `429 IP_LIMITED`。
+
 额外（存在才带）：
 
 | 头 | 何时 |
@@ -238,9 +240,11 @@ DRM：`drm.content_key_hex`。本机 ffmpeg `-decryption_key`。IV 由网关解�
 | action | input |
 |---|---|
 | `search` | `q` |
-| `resolve` | `url=https://www.douyin.com/video/{vid}` |
+| `resolve` | `url=` 分享口令里的 `https://v.douyin.com/…` 或 `https://www.douyin.com/video/{vid}` |
 
 下载读规范化 `media[]` 里 `type=video` 的直链。Referer：`https://www.douyin.com/`。
+
+TUI 搜索框粘贴分享口令/短链会直接 `resolve` 并下载，不走选集和画质。短链必须把原始 `url` 交给网关（网关跟跳 `v.douyin`），不要先拆成 `video/{vid}`。
 
 ---
 
@@ -320,7 +324,7 @@ Snapshot：`src/types.ts`。场景：
 |---|---|
 | 全局 | Ctrl+C 退出 |
 | home | j/k Enter；`q` 退出 |
-| search | ←→ 平台；Enter 搜 |
+| search | ←→ 平台；Enter：抖音链接直接下载，否则搜 |
 | results | j/k Enter |
 | detail | 方向键；空格勾选；`a` 全选；`c` 清空；Enter/`d` 下所选；`A`/`f` 整部 |
 | quality | j/k Enter |

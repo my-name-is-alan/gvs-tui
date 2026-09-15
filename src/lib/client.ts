@@ -81,7 +81,16 @@ export class GwClient {
     } catch {
       throw new Error(`http ${res.status}: ${truncate(text, 180)}`)
     }
-    if (env.code !== 0) throw new Error(env.msg || `http ${res.status}`)
+    if (env.code !== 0) throw new Error(limitError(env.msg) || `http ${res.status}`)
     return env
+  }
+}
+
+function limitError(msg: string): string {
+  switch (msg) {
+    case 'IP_LIMITED':
+      return '这把 Key 10 分钟内已在 2 个 IP 用过'
+    default:
+      return msg
   }
 }

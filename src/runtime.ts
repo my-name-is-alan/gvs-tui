@@ -5,8 +5,10 @@ import { probeQualities } from './lib/quality.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import { hostIsLocal, importYoukuCookie, pollYoukuQR, startYoukuQR } from './lib/youku-qr.ts'
 import { tmdbSearch } from './lib/tmdb.ts'
+import { clipTitle, extractDouyinURL } from './lib/link.ts'
+import { pickDouyinURL } from './lib/media.ts'
 import { dots } from './lib/name.ts'
-import { asString, firstStr, isObj } from './lib/util.ts'
+import { anyInt, asString, firstStr, isObj } from './lib/util.ts'
 import type { Episode, Job, Quality, Row, Scene, Snapshot, TMDBHit } from './types.ts'
 
 const ALL_PROVIDERS = ['youku', 'tencent', 'hongguo', 'douyin']
@@ -130,7 +132,9 @@ export class Runtime {
   }
 
   private homeItems(): string[] {
-    const items = ['搜索']
+    const items: string[] = []
+    if (this.has('douyin')) items.push('粘贴链接')
+    items.push('搜索')
     if (this.has('hongguo') || this.has('youku') || this.has('tencent')) items.push('榜单')
     items.push('任务', '设置')
     return items
@@ -186,7 +190,7 @@ export class Runtime {
     switch (this.scene) {
       case 'setup': return 'Tab 切换    Enter 进入'
       case 'home': return 'j/k 移动    Enter 打开    q 退出'
-      case 'search': return '←/→ 平台    Enter 搜索    Esc 返回'
+      case 'search': return '←/→ 平台    Enter 下载链接或搜索    Esc 返回'
       case 'results':
       case 'tmdb': return 'j/k 移动    Enter 确认    Esc 返回'
       case 'detail': return '方向键    空格勾选    a全选    c清空    d下选中    A全集    Enter本集'
@@ -283,6 +287,13 @@ export class Runtime {
     else if (k === 'k' || k === 'up') this.cursor = (this.cursor - 1 + items.length) % items.length
     else if (k === 'enter') {
       switch (items[this.cursor]) {
+        case '粘贴链接': {
+          this.scene = 'search'
+          const i = this.providers().indexOf('douyin')
+          if (i >= 0) this.provIdx = i
+          this.status = '把抖音分享口令或链接贴进来，回车直接下载'
+          break
+        }
         case '搜索': this.scene = 'search'; break
         case '榜单': void this.rank(); break
         case '任务': this.scene = 'jobs'; break
@@ -299,7 +310,12 @@ export class Runtime {
     else if (k === 'enter') {
       const q = this.query.trim()
       if (!q) return
-      void this.search(ps[this.provIdx] ?? 'hongguo', q)
+      const dy = extractDouyinURL(q)
+      if (dy) {
+        void this.downloadDouyin('', '', dy)
+        return
+      }
+      void this.search(this.providers()[this.provIdx] ?? 'hongguo', q)
     }
   }
 
@@ -313,6 +329,10 @@ export class Runtime {
     else if (k === 'k' || k === 'up') this.cursor = (this.cursor - 1 + this.rows.length) % this.rows.length
     else if (k === 'enter') {
       const r = this.rows[this.cursor]
+      if (r.sub === 'douyin') {
+        void this.downloadDouyin(r.title, r.id, r.id ? `https://www.douyin.com/video/${r.id}` : '')
+        return
+      }
       this.detailProv = r.sub
       this.detailId = r.id
       void this.detail(r.sub, r.id)
@@ -506,6 +526,11 @@ export class Runtime {
 
   private async queueEpisodes(tasks: DlTask[]): Promise<void> {
     if (!tasks.length || !this.cli) return
+    if (this.detailProv === 'douyin') {
+      for (const t of tasks) t.url = t.vid ? `https://www.douyin.com/video/${t.vid}` : t.url
+      this.enqueueAll(tasks)
+      return
+    }
     this.pending = tasks
     this.status = '正在取画质…'
     this.emit()
@@ -559,6 +584,57 @@ export class Runtime {
     this.emit()
   }
 
+
+  private async downloadDouyin(title: string, vid: string, url: string): Promise<void> {
+    if (!this.cli) return
+    if (!this.has('douyin')) {
+      this.status = '当前 Key 没有抖音权限'
+      this.emit()
+      return
+    }
+    const link = url.trim() || (vid ? `https://www.douyin.com/video/${vid}` : '')
+    if (!link) {
+      this.status = '没有抖音链接'
+      this.emit()
+      return
+    }
+    this.status = '正在解析抖音链接…'
+    this.emit()
+    try {
+      const data = await this.cli.invoke('douyin', 'resolve', { url: link })
+      if (!pickDouyinURL(data)) throw new Error('这条没有视频直链（可能是图文）')
+      const desc = clipTitle(asString(data.content) || asString(data.title) || title)
+      let height = 0
+      const media = Array.isArray(data.media) ? data.media : []
+      for (const it of media) {
+        if (!isObj(it) || !asString(it.url)) continue
+        const typ = asString(it.type)
+        if (typ && typ !== 'video') continue
+        height = anyInt(it.height)
+        break
+      }
+      this.enqueueAll([{
+        provider: 'douyin',
+        title: desc,
+        series: desc,
+        vid: vid || asString(data.id),
+        url: link,
+        season: 0,
+        episode: 0,
+        height,
+        quality: height > 0 ? `${height}p` : '',
+        group: '',
+        codec: 'H264',
+        tmdbId: 0,
+        nameDots: '',
+        year: 0,
+        plot: '',
+      }])
+    } catch (e) {
+      this.status = e instanceof Error ? e.message : String(e)
+      this.emit()
+    }
+  }
   private async search(provider: string, q: string): Promise<void> {
     if (!this.cli) return
     try {

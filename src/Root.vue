@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue-termui'
-import { Box, Input, Text, useExit, onKeyDown, useTerminalSize } from 'vue-termui'
+import { Box, Input, Text, useExit, onKeyDown, onPaste, useTerminalSize } from 'vue-termui'
 import { Bridge, type Snapshot } from './bridge'
 
 const exit = useExit()
@@ -14,6 +14,32 @@ const host = ref('')
 const key = ref('')
 const edit = ref('')
 const { width, height } = useTerminalSize()
+const fieldWidth = computed(() => Math.max(24, Number(width.value) - 10))
+const hostField = ref<{ $el?: { focus?: () => void } } | null>(null)
+const keyField = ref<{ $el?: { focus?: () => void } } | null>(null)
+const editField = ref<{ $el?: { focus?: () => void } } | null>(null)
+
+function focusField(comp: { $el?: { focus?: () => void } } | null | undefined) {
+  const fn = comp?.$el?.focus
+  if (typeof fn === 'function') fn.call(comp.$el)
+}
+
+watch(() => state.value.scene, (scene) => {
+  queueMicrotask(() => {
+    if (scene === 'edit') focusField(editField.value)
+    else if (scene === 'setup') focusField(state.value.hostFocused ? hostField.value : keyField.value)
+  })
+})
+watch(() => state.value.hostFocused, (on) => {
+  if (state.value.scene !== 'setup') return
+  queueMicrotask(() => focusField(on ? hostField.value : keyField.value))
+})
+
+onPaste((event) => {
+  if (state.value.scene !== 'search') return
+  query.value += new TextDecoder().decode(event.bytes).replace(/[\r\n]+/g, ' ')
+  event.preventDefault()
+})
 
 const stop = bridge.onSnapshot((next) => {
   state.value = next
@@ -38,22 +64,35 @@ onKeyDown((event) => {
   if (event.ctrl && name === 'c') { exit(); return }
   if (name === 'q' && state.value.scene === 'home') { exit(); return }
 
-  // Input renderables already consume text editing keys and update their
-  // v-model. Forwarding those same keys to the hidden Bubble Tea model makes
-  // the value change twice (and can move the caret unexpectedly). Keep the
-  // bridge for navigation/submit keys only while an input is focused.
-  const inputScene = state.value.scene === 'setup' || state.value.scene === 'search' || state.value.scene === 'edit'
+  if (state.value.scene === 'search') {
+    if (['enter', 'return', 'escape', 'esc', 'left', 'right', 'arrowleft', 'arrowright', 'up', 'down', 'arrowup', 'arrowdown'].includes(name)) {
+      const forwardedName = event.shift && event.name.length === 1 ? event.name.toUpperCase() : event.name
+      bridge.key(forwardedName, { ctrl: event.ctrl, alt: event.option, shift: event.shift })
+      return
+    }
+    if (event.ctrl || event.option) return
+    if (name === 'backspace' || name === 'delete') {
+      query.value = query.value.slice(0, -1)
+      return
+    }
+    if (name === 'space') {
+      query.value += ' '
+      return
+    }
+    const ch = event.sequence && !event.sequence.startsWith('\x1b') ? event.sequence : (event.name.length === 1 ? event.name : '')
+    if (ch) query.value += ch
+    return
+  }
+
+  const inputScene = state.value.scene === 'setup' || state.value.scene === 'edit'
   const navigationKey = ['enter', 'return', 'escape', 'esc', 'tab', 'left', 'right', 'up', 'down', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(name)
   if (inputScene && !navigationKey) return
-  // OpenTUI reports Shift as a modifier while keeping the key name lowercase
-  // on some terminals. Preserve the uppercase rune so Bubble Tea can still
-  // distinguish `A` (whole-series download) from `a` (select all episodes).
   const forwardedName = event.shift && event.name.length === 1 ? event.name.toUpperCase() : event.name
   bridge.key(forwardedName, { ctrl: event.ctrl, alt: event.option, shift: event.shift })
 })
 
 const heading = computed(() => ({
-  setup: '解锁 GVS', home: 'GVS', search: '搜索', results: '搜索结果', detail: state.value.detailTitle || '剧集',
+  setup: '解锁 GVS', home: 'GVS', search: '搜索 / 粘贴链接', results: '搜索结果', detail: state.value.detailTitle || '剧集',
   quality: '画质', tmdb: 'TMDB 匹配', jobs: '下载任务', settings: '设置', qr: '优酷扫码', edit: state.value.editField || '编辑',
 }[state.value.scene] ?? 'GVS'))
 const sceneHint = computed(() => state.value.footer || '↑↓ 移动 · Enter 确认 · Esc 返回')
@@ -102,29 +141,37 @@ function percent(value: number | undefined) {
       <Text bold fg="#f8fafc">连接到你的网关</Text>
       <Text fg="#94a3b8">输入地址和 API Key，配置会保存在用户目录。</Text>
       <Text :marginTop="1" fg="#cbd5e1">网关地址</Text>
-      <Input v-model="host" placeholder="http://127.0.0.1:8080" :focus="state.hostFocused" />
+      <Box border borderStyle="single" backgroundColor="#1e293b">
+        <Input ref="hostField" v-model="host" placeholder="http://127.0.0.1:8080" autofocus backgroundColor="#1e293b" focusedBackgroundColor="#1e293b" textColor="#f8fafc" placeholderColor="#94a3b8" :width="fieldWidth" />
+      </Box>
       <Text :marginTop="1" fg="#cbd5e1">API Key</Text>
-      <Input v-model="key" placeholder="sk_live_..." :focus="state.keyFocused" />
+      <Box border borderStyle="single" backgroundColor="#1e293b">
+        <Input ref="keyField" v-model="key" placeholder="sk_live_..." backgroundColor="#1e293b" focusedBackgroundColor="#1e293b" textColor="#f8fafc" placeholderColor="#94a3b8" :width="fieldWidth" />
+      </Box>
       <Text :marginTop="1" fg="#64748b">Tab 切换 · Enter 进入</Text>
     </Box>
 
     <Box v-else-if="state.scene === 'home'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">欢迎回来</Text>
-      <Text fg="#94a3b8">用键盘操作你的多平台取链客户端。</Text>
+      <Text bold fg="#f8fafc">下载</Text>
+      <Text fg="#94a3b8">抖音分享口令直接下。其它平台先搜再选。</Text>
       <Box v-for="(item, index) in state.homeItems" :key="item" padding="1" :backgroundColor="index === state.cursor ? '#3b1220' : undefined">
         <Text :fg="index === state.cursor ? '#fb7185' : '#e2e8f0'">{{ index === state.cursor ? '› ' : '  ' }}{{ item }}</Text>
       </Box>
     </Box>
 
     <Box v-else-if="state.scene === 'search'" flexDirection="column" border borderStyle="rounded" padding="1">
-      <Text bold fg="#f8fafc">选择平台</Text>
+      <Text bold fg="#f8fafc">抖音链接直接下，其它平台搜标题</Text>
       <Box>
         <Text v-for="(provider, index) in state.providers" :key="provider" :fg="index === state.providerIndex ? '#fb7185' : '#94a3b8'" padding="1">
           {{ index === state.providerIndex ? `[${provider}]` : provider }}
         </Text>
       </Box>
-      <Text fg="#94a3b8">搜索标题或粘贴链接</Text>
-      <Input v-model="query" placeholder="搜索标题 / 粘贴链接" :focus="state.scene === 'search'" />
+      <Text :marginTop="1" fg="#cbd5e1">在下面这一行输入 / 粘贴</Text>
+      <Box flexDirection="row" border borderStyle="single" backgroundColor="#1e293b" :padding="1" :width="fieldWidth">
+        <Text fg="#fb7185">› </Text>
+        <Text :fg="query ? '#f8fafc' : '#64748b'">{{ query || '粘贴抖音分享口令，回车下载' }}</Text>
+        <Text fg="#fb7185">█</Text>
+      </Box>
     </Box>
 
     <Box v-else-if="state.scene === 'results'" flexDirection="column" border borderStyle="rounded" padding="1">
@@ -180,7 +227,9 @@ function percent(value: number | undefined) {
 
     <Box v-else-if="state.scene === 'edit'" flexDirection="column" border borderStyle="rounded" padding="1">
       <Text bold fg="#f8fafc">{{ state.editField }}</Text>
-      <Input v-model="edit" focus />
+      <Box border borderStyle="single" backgroundColor="#1e293b">
+        <Input ref="editField" v-model="edit" autofocus backgroundColor="#1e293b" focusedBackgroundColor="#1e293b" textColor="#f8fafc" placeholderColor="#94a3b8" :width="fieldWidth" />
+      </Box>
     </Box>
 
     <Box v-else-if="state.scene === 'qr'" flexDirection="column" border borderStyle="rounded" padding="1">
