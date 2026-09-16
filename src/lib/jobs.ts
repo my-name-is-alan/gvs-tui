@@ -4,8 +4,8 @@ import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
 import { ffmpegDecryptCopy, ffmpegMux, ffmpegRemux, lookFFmpeg } from './ffmpeg.ts'
 import { filename, folder, sourceTag } from './name.ts'
-import type { Naming } from './name.ts'
-import { writeEpisodeNFO, writeTvShowNFO } from './nfo.ts'
+import type { MediaKind, Naming } from './name.ts'
+import { writeEpisodeNFO, writeMovieNFO, writeTvShowNFO } from './nfo.ts'
 import {
   CdnDenied, appendURLs, downloadProgress, pickDouyinURL, pickHongguo, pickURL, referer, speedCB,
   youkuAudioURLs, youkuStreamURLs,
@@ -32,6 +32,8 @@ export type DlTask = {
   nameDots: string
   year: number
   plot: string
+  kind?: MediaKind
+  edition?: string
 }
 
 export type JobEvt = { id: number; status: string; pct: number; log: string; err: string; done?: boolean }
@@ -70,6 +72,12 @@ export function jobTitle(t: DlTask): string {
     const title = t.series || t.title || t.vid
     return t.quality ? `${title} ${t.quality}` : title
   }
+  if (t.kind === 'movie') {
+    let title = t.series
+    if (t.edition) title += ` ${t.edition}`
+    if (t.quality) title += ` ${t.quality}`
+    return title
+  }
   let title = `${t.series} E${String(t.episode).padStart(2, '0')}`
   if (t.quality) title += ` ${t.quality}`
   return title
@@ -92,7 +100,7 @@ async function runTask(
     emitEvt({ id, status: '重试', pct: lastPct, log: `第 ${attempt}/${total} 次 · ${why}`, err: '' })
   }
   try {
-    const kind = t.provider === 'hongguo' || t.provider === 'douyin' ? 'short' : 'show'
+    const kind: MediaKind = t.kind ?? (t.provider === 'hongguo' || t.provider === 'douyin' ? 'short' : 'show')
     const n: Naming = {
       kind,
       title: t.series || t.title,
@@ -102,6 +110,7 @@ async function runTask(
       episode: t.episode,
       height: t.height,
       codec: t.codec || 'H264',
+      edition: t.edition,
       source: sourceTag(t.provider),
       group: t.provider === 'douyin' ? '' : (t.group.trim() || cfg.releaseGroup),
       tmdbId: t.tmdbId,
@@ -134,8 +143,12 @@ async function runTask(
       writeEpisodeNFO(out, t.title, t.season, t.episode, '')
     }
     if ((t.provider === 'youku' || t.provider === 'tencent') && t.tmdbId > 0) {
-      writeTvShowNFO(t.season > 0 ? dirname(dir) : dir, t.series, t.plot, t.tmdbId)
-      writeEpisodeNFO(out, t.title, t.season, t.episode, '')
+      if (kind === 'movie') {
+        writeMovieNFO(dir, t.series, t.plot, t.tmdbId, t.year)
+      } else {
+        writeTvShowNFO(t.season > 0 ? dirname(dir) : dir, t.series, t.plot, t.tmdbId)
+        writeEpisodeNFO(out, t.title, t.season, t.episode, '')
+      }
     }
     emitEvt({ id, status: '完成', pct: 1, log: out, err: '', done: true })
   } catch (e) {

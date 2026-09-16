@@ -15,6 +15,16 @@ export function writeTvShowNFO(dir: string, title: string, plot: string, tmdbId:
   writeFileSync(join(dir, 'tvshow.nfo'), b)
 }
 
+export function writeMovieNFO(dir: string, title: string, plot: string, tmdbId: number, year: number): void {
+  let b = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<movie>\n'
+  b += xmlTag('title', title)
+  if (year > 0) b += xmlTag('year', String(year))
+  if (plot) b += xmlTag('plot', plot)
+  if (tmdbId > 0) b += `  <uniqueid type="tmdb" default="true">${tmdbId}</uniqueid>\n`
+  b += '</movie>\n'
+  writeFileSync(join(dir, 'movie.nfo'), b)
+}
+
 export function writeEpisodeNFO(mediaPath: string, title: string, season: number, ep: number, plot: string): void {
   let b = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<episodedetails>\n'
   b += xmlTag('title', title)

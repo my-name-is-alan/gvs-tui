@@ -20,7 +20,7 @@ import type { Col } from './lib/rows'
 import { clip, column, displayWidth, padStart } from './lib/text'
 import { human } from './lib/util'
 import { c, hostLabel, jobTone, providerName, toneColor, valueColor } from './lib/theme'
-import type { Audio, Job, Quality, Row } from './types'
+import type { Audio, Episode, Job, Quality, Row } from './types'
 
 const exit = useExit()
 const bridge = new Bridge()
@@ -217,6 +217,7 @@ const accountLine = computed(() => {
   return new StyledText([fg(c.faint)('  优酷  '), fg(tone)(acc.summary)])
 })
 const detail = computed(() => state.value.detail)
+const isMovie = computed(() => detail.value?.kind === 'movie' || /电影/.test(detail.value?.category ?? ''))
 const onAudioTab = computed(() => state.value.optionTab === 'audio' && audios.value.length > 0)
 const audioPicked = computed(() => audios.value.filter((a) => a.selected).length)
 const selectedEpisode = computed(() => episodes.value[state.value.cursor])
@@ -272,11 +273,14 @@ const metaText = computed(() => {
     case 'tmdb':
       return tmdbView.value.total ? `${tmdbView.value.first}-${tmdbView.value.last} / ${tmdbView.value.total}` : ''
     case 'detail':
-      return `已选 ${selectedCount.value} / ${episodes.value.length}`
+      return isMovie.value
+        ? `已选 ${selectedCount.value} / ${episodes.value.length} 个版本`
+        : `已选 ${selectedCount.value} / ${episodes.value.length}`
     case 'quality': {
       const q = qualities.value[state.value.qualityIndex]
       const a = audios.value[state.value.audioIndex]
-      return [`${state.value.pendingCount || 1} 集`, q?.label, a?.label].filter(Boolean).join(' · ')
+      const n = state.value.pendingCount || 1
+      return [`${n} ${isMovie.value ? '部' : '集'}`, q?.label, a?.label].filter(Boolean).join(' · ')
     }
     case 'jobs': {
       const s = jobStats.value
@@ -302,7 +306,12 @@ const statusContent = computed(() => {
 const statusRightW = computed(() => (state.value.busy ? displayWidth(busyLabel.value) + 2 : displayWidth(metaText.value)))
 const statusLeftW = computed(() => Math.max(10, bodyW.value - statusRightW.value - 1))
 
-const hints = computed(() => HINTS[state.value.scene] ?? [])
+const hints = computed(() => {
+  if (state.value.scene === 'detail' && isMovie.value) {
+    return [['↑↓', '选版本'], ['空格', '勾选'], ['⏎', '下载'], ['a', '全选'], ['esc', '返回']]
+  }
+  return HINTS[state.value.scene] ?? []
+})
 
 // --- detail screen --------------------------------------------------------
 const gridRows = computed(() => Math.max(1, bodyH.value - (state.value.detail?.desc ? 6 : 4)))
@@ -333,15 +342,30 @@ const detailFacts = computed(() => {
 const episodeLine = computed(() => {
   const ep = selectedEpisode.value
   if (!ep) return ''
-  const bits: string[] = [`E${String(ep.number).padStart(2, '0')}`]
+  const bits: string[] = isMovie.value
+    ? [ep.title || '正片']
+    : [`E${String(ep.number).padStart(2, '0')}`]
   const len = clock(ep.duration ?? 0)
   if (len) bits.push(len)
-  const title = (ep.title || '').trim()
+  const title = isMovie.value ? '' : (ep.title || '').trim()
   return new StyledText([
     fg(c.accent)(bold(`  ${bits.join(' · ')}`)),
     fg(c.faint)(title ? `  ${clip(title, Math.max(10, bodyW.value - 24))}` : ''),
   ])
 })
+
+const detailCountLabel = computed(() => {
+  if (isMovie.value) return episodes.value.length > 1 ? `${episodes.value.length} 个版本` : '电影'
+  return `${episodes.value.length} 集`
+})
+
+function editionLine(ep: Episode, here: boolean) {
+  const mark = ep.selected ? '✓' : '□'
+  return colsLine([
+    { text: `${mark}  ${ep.title || '正片'}`, grow: true, color: here ? c.text : ep.selected ? c.ok : c.faint, bold: here },
+    { text: clock(ep.duration ?? 0), cells: 8, align: 'right', color: c.faint },
+  ], bodyW.value)
+}
 
 // Cards are sized from the terminal, never from a fixed number, so nothing
 // overflows on a narrow window.
@@ -620,9 +644,9 @@ function jobLine(job: Job): StyledText {
       <Box v-else-if="state.scene === 'detail'" flexDirection="column" :width="bodyW">
         <Text
           :content="colsLine([
-            { text: state.detail?.title || state.detailTitle || '剧集', grow: true, color: c.text, bold: true },
+            { text: state.detail?.title || state.detailTitle || (isMovie ? '电影' : '剧集'), grow: true, color: c.text, bold: true },
             { text: state.detail?.vip ? 'VIP' : '', cells: 4, align: 'right', color: c.violet },
-            { text: `${episodes.length} 集`, cells: displayWidth(`${episodes.length} 集`), align: 'right', color: c.faint },
+            { text: detailCountLabel, cells: displayWidth(detailCountLabel), align: 'right', color: c.faint },
           ], bodyW)"
           :width="bodyW"
           :height="1"
@@ -643,7 +667,7 @@ function jobLine(job: Job): StyledText {
           wrapMode="char"
         />
         <Text
-          v-if="selectedEpisode"
+          v-if="selectedEpisode && !isMovie"
           :content="episodeLine"
           :width="bodyW"
           :height="1"
@@ -651,7 +675,19 @@ function jobLine(job: Job): StyledText {
           :truncate="true"
           :marginTop="1"
         />
-        <Text v-if="!episodes.length" :content="ink(c.faint, '这部剧没有返回剧集，esc 返回换一部')" :height="1" />
+        <Text v-if="!episodes.length" :content="ink(c.faint, '这部没有返回正片，esc 返回换一部')" :height="1" />
+        <Box v-else-if="isMovie" flexDirection="column" :width="bodyW" :marginTop="1">
+          <Text
+            v-for="(ep, i) in episodes"
+            :key="ep.vid || i"
+            :width="bodyW"
+            :height="1"
+            wrapMode="none"
+            :truncate="true"
+            :bg="i === state.cursor ? c.sel : undefined"
+            :content="editionLine(ep, i === state.cursor)"
+          />
+        </Box>
         <EpisodeGrid
           v-else
           :episodes="episodes"
@@ -665,7 +701,7 @@ function jobLine(job: Job): StyledText {
       <Box v-else-if="state.scene === 'quality'" flexDirection="column" :width="bodyW">
         <Text
           :content="colsLine([
-            { text: `${state.pendingCount || 1} 集将使用同一档画质 · ⏎ 应用并开始下载`, grow: true, color: c.faint },
+            { text: `${state.pendingCount || 1} ${isMovie ? '部' : '集'}将使用同一档画质 · ⏎ 应用并开始下载`, grow: true, color: c.faint },
             { text: state.detail?.vip ? (vipNotice?.text ?? 'VIP') : rightsChip.text, cells: 20, align: 'right', color: state.detail?.vip ? (vipNotice?.color ?? c.violet) : rightsChip.color },
           ], bodyW)"
           :height="1"

@@ -22,7 +22,6 @@ export type TMDBHit = { id: number; name: string; title: string; year: number; o
 export type Quality = { id: string; label: string; title: string; size: number; width: number; height: number; codec: string; drm: string }
 /** Selectable audio track (only some platforms expose more than one). */
 export type Audio = { id: string; label: string; lang: string; codec: string; isDefault: boolean; selected: boolean }
-/** Title-level metadata shown on the detail screen. */
 export type Detail = {
   title: string
   desc: string
@@ -35,6 +34,8 @@ export type Detail = {
   /** True when the platform marks the title VIP. */
   vip: boolean
   drm: string
+  kind: 'movie' | 'show'
+  year: number
 }
 
 export type StatusKind = 'info' | 'ok' | 'warn' | 'err'

@@ -41,6 +41,8 @@ const DETAIL: Detail = {
   duration: 302,
   vip: false,
   drm: 'CENC 加密，下载后本机解密',
+  kind: 'show',
+  year: 0,
 }
 
 const QUALITY_YOUKU: Quality[] = [

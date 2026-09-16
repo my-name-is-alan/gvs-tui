@@ -12,6 +12,8 @@ export type Naming = {
   height: number
   codec: string
   audio?: string
+  /** 电影配音版本，如 英语版 / 国语版。 */
+  edition?: string
   dv?: boolean
   source: string
   group: string
@@ -103,6 +105,7 @@ export function filename(n: Naming): string {
       parts.push(`S${String(Math.max(n.season, 1)).padStart(2, '0')}E${String(Math.max(n.episode, 1)).padStart(2, '0')}`)
     }
     if (n.year > 0) parts.push(String(n.year))
+    if (n.kind === 'movie' && n.edition) parts.push(dots(n.edition))
   }
   const tier = tierHeight(0, n.height)
   if (tier > 0) parts.push(`${tier}p`)

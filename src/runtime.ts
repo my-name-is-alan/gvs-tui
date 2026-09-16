@@ -2,7 +2,7 @@ import { appendFileSync } from 'node:fs'
 import { clampThreads, loadConfig, saveConfig, type FileConfig } from './lib/config.ts'
 import { GwClient, ReloginRequired, type KeyInfo } from './lib/client.ts'
 import { JobHub, jobTitle, nextJobID, patchJob, type DlTask } from './lib/jobs.ts'
-import { probeOptions } from './lib/quality.ts'
+import { probeOptions, youkuEditionsFromDetail } from './lib/quality.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import { hostIsLocal, importYoukuCookie, pollYoukuQR, startYoukuQR } from './lib/youku-qr.ts'
 import {
@@ -307,9 +307,9 @@ export class Runtime {
       homeItems: this.homeItems(),
       rows: this.rows,
       listMore: this.listMore,
-      episodes: this.eps,
+      episodes: this.eps.map((e) => ({ ...e })),
       qualities: this.qualities,
-      audios: this.audios,
+      audios: this.audios.map((a) => ({ ...a })),
       tmdbHits: this.tmdbHits,
       jobs: this.jobs,
       settings: this.settingFields().map((label) => ({ label, value: this.settingValue(label) })),
@@ -564,7 +564,7 @@ export class Runtime {
     else if (k === ' ' || k === 'space') this.eps[this.cursor].selected = !this.eps[this.cursor].selected
     else if (k === 'a') {
       for (const ep of this.eps) ep.selected = true
-      this.say(`已选 ${n} 集`, 'ok')
+      this.say(`已选 ${n} ${this.pickNoun()}`, 'ok')
     } else if (k === 'c') {
       for (const ep of this.eps) ep.selected = false
       this.say('已清空选择')
@@ -797,23 +797,34 @@ export class Runtime {
     this.emit()
   }
 
+  private isMovie(): boolean {
+    return this.detailInfo?.kind === 'movie'
+  }
+
+  private pickNoun(): string {
+    return this.isMovie() ? '个版本' : '集'
+  }
+
   private taskFromEp(i: number): DlTask {
     const ep = this.eps[i]
+    const movie = this.isMovie()
     return {
       provider: this.detailProv,
       title: ep.title,
       series: this.detailTitle,
       vid: ep.vid,
-      season: 1,
-      episode: ep.number || i + 1,
+      season: movie ? 0 : 1,
+      episode: movie ? 0 : (ep.number || i + 1),
       height: 0,
       quality: '',
       group: this.cfg.releaseGroup,
       codec: '',
       tmdbId: 0,
       nameDots: '',
-      year: 0,
+      year: this.detailInfo?.year ?? 0,
       plot: '',
+      kind: movie ? 'movie' : 'show',
+      edition: movie ? (ep.title || '') : '',
     }
   }
 
@@ -895,7 +906,7 @@ export class Runtime {
       ? ` · ${this.vipProbe.canPlay ? '可播' : '不可播'}${this.vipProbe.hasTrial ? '（仅试看）' : ''}`
       : ''
     this.say(
-      `${opts.qualities.length} 档画质${opts.audios.length ? ` · ${opts.audios.length} 条音轨` : ''} · ${count} 集${rights}`,
+      `${opts.qualities.length} 档画质${opts.audios.length ? ` · ${opts.audios.length} 条音轨` : ''} · ${count} ${this.pickNoun()}${rights}`,
       this.vipProbe && !this.vipProbe.canPlay ? 'warn' : 'ok',
     )
   }
@@ -916,7 +927,7 @@ export class Runtime {
     const tasks = this.pending
     if ((this.detailProv === 'youku' || this.detailProv === 'tencent') && this.cfg.tmdbKey.trim()) {
       try {
-        const hits = await tmdbSearch(this.cfg.tmdbKey, this.cfg.tmdbLang, this.detailTitle, true)
+        const hits = await tmdbSearch(this.cfg.tmdbKey, this.cfg.tmdbLang, this.detailTitle, !this.isMovie())
         if (hits.length) {
           this.tmdbHits = hits.map((h) => ({ id: h.id, name: h.name || h.title, title: h.title, year: h.year, overview: h.overview }))
           this.cursor = 0
@@ -1090,14 +1101,42 @@ export class Runtime {
       this.detailTitle = asString(data.title)
       this.eps = parseEps(data)
       this.detailInfo = parseDetail(data, provider, this.detailTitle)
+      await this.applyMovieEditions(provider, data)
       this.cursor = 0
       this.probeFailed = false
       this.scene = 'detail'
-      this.say(this.eps.length ? `${this.detailTitle} · ${this.eps.length} 集` : '这部剧没有返回剧集', this.eps.length ? 'ok' : 'warn')
+      const n = this.eps.length
+      const noun = this.detailInfo.kind === 'movie' ? (n > 1 ? `${n} 个版本` : '电影') : `${n} 集`
+      this.say(n ? `${this.detailTitle} · ${noun}` : '这部没有返回正片', n ? 'ok' : 'warn')
     } catch (e) {
       this.say(e instanceof Error ? e.message : String(e), 'err')
     }
     this.emit()
+  }
+
+  private async applyMovieEditions(provider: string, data: Record<string, unknown>): Promise<void> {
+    if (this.detailInfo?.kind !== 'movie') return
+    let editions = provider === 'youku' ? youkuEditionsFromDetail(data) : []
+    if (!editions.length && provider === 'youku') {
+      const vid = this.eps[0]?.vid || asString(data.vid)
+      if (vid && this.cli) {
+        try {
+          const play = await this.work(() => this.cli!.invoke('youku', 'play', { vid, tier: 'single', expand: '0' }))
+          editions = youkuEditionsFromDetail(play)
+        } catch {
+          // keep the episode list
+        }
+      }
+    }
+    if (editions.length) {
+      const dur = this.eps[0]?.duration
+      this.eps = editions.map((e) => (dur ? { ...e, duration: e.duration ?? dur } : e))
+      return
+    }
+    if (this.eps.length === 1) {
+      this.eps[0].title = this.eps[0].title || '正片'
+      this.eps[0].group = 'edition'
+    }
   }
 
   tickQR(): void {
@@ -1222,17 +1261,20 @@ function parseDetail(data: Record<string, unknown>, provider: string, fallbackTi
   const count = anyInt(data.episode_count) || anyInt(data.totalEps) || anyInt(raw.episode_count) || episodeList.length
   const drm = isObj(data.drm) ? asString(data.drm.note) || asString(data.drm.drm_type) : ''
   const tags = pickTags(data, raw)
+  const category = asString(data.category) || asString(raw.category)
   const score = asString(data.score) || asString(raw.score)
   return {
     title,
     desc: asString(data.desc) || asString(raw.desc) || asString(data.intro) || asString(data.description),
-    category: asString(data.category) || asString(raw.category),
+    category,
     tags,
     score,
     episodes: count,
     duration: anyInt(data.duration) || anyInt(raw.duration),
     vip: data.is_vip === true || raw.is_vip === true,
     drm,
+    kind: /电影/.test(category) ? 'movie' : 'show',
+    year: anyInt(data.year) || anyInt(raw.year),
   }
 }
 

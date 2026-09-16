@@ -1,10 +1,117 @@
-import type { Audio, Quality, VipProbe } from '../types.ts'
+import type { Audio, Episode, Quality, VipProbe } from '../types.ts'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
 import { anyInt, asBool, asString, isObj } from './util.ts'
 import { hongguoItem } from './media.ts'
 
 export type StreamOptions = { qualities: Quality[]; audios: Audio[]; vip?: VipProbe }
+
+/** Map Youku play payload → TUI audio rows. Gateway catalog is `audios[]`. */
+export function youkuAudiosFromPlay(data: Record<string, unknown>): Audio[] {
+  const audios: Audio[] = []
+  const addAudio = (id: string, label: string, lang: string, codec: string, isDefault: boolean) => {
+    if (!id || audios.some((a) => a.id === id)) return
+    audios.push({ id, label, lang, codec, isDefault, selected: isDefault })
+  }
+
+  const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
+  for (const tr of tracks) {
+    if (!isObj(tr)) continue
+    const st = asString(tr.stream_type)
+    addAudio(
+      st,
+      youkuAudioCodecLabel(st, asString(tr.lang)),
+      youkuAudioLangLabel(asString(tr.lang), asString(tr.langcode)),
+      st,
+      asBool(tr.default),
+    )
+  }
+
+  const catalog = Array.isArray(data.audios) ? data.audios : []
+  for (const a of catalog) {
+    if (!isObj(a)) continue
+    const st = asString(a.stream_type)
+    addAudio(
+      st,
+      youkuAudioCodecLabel(st, asString(a.name) || asString(a.title)),
+      youkuAudioLangLabel(asString(a.lang), asString(a.langcode)),
+      asString(a.codec) || st,
+      asBool(a.default),
+    )
+  }
+
+  const audioTypes = data.audio_types
+  if (isObj(audioTypes)) {
+    for (const [group, list] of Object.entries(audioTypes)) {
+      if (!Array.isArray(list)) continue
+      for (const at of list) {
+        if (!isObj(at)) continue
+        const st = asString(at.audio_stream_type)
+        addAudio(
+          st,
+          youkuAudioCodecLabel(st, asString(at.display_name)),
+          youkuAudioLangLabel(asString(at.audio_lang) || group, asString(at.langcode)),
+          st,
+          group === 'default',
+        )
+      }
+    }
+  }
+
+  if (!audios.some((a) => a.isDefault) && audios.length) audios[0].isDefault = true
+  for (const a of audios) if (a.isDefault) a.selected = true
+  audios.sort((a, b) => Number(b.isDefault) - Number(a.isDefault))
+  return audios
+}
+
+function youkuAudioCodecLabel(st: string, fallback: string): string {
+  const t = st.toLowerCase()
+  if (t.includes('atmos') || t.includes('cmfa4') || t.includes('dolby')) return '杜比全景声'
+  if (t.includes('dts')) return 'DTS:X'
+  if (t.includes('cmfa1') || t.includes('aac')) return 'AAC'
+  const fb = fallback.trim()
+  if (fb && !/^(en|eng|default|guoyu)$/i.test(fb)) return fb
+  return st ? st.toUpperCase() : fb
+}
+
+function youkuAudioLangLabel(lang: string, langcode: string): string {
+  const s = `${langcode} ${lang}`.toLowerCase()
+  if (/(英语|english|\ben\b|\beng\b)/.test(s) || langcode.toLowerCase() === 'en') return '英语'
+  if (/(普通|国语|guoyu|\bchi\b|\bzh\b)/.test(s)) return '普通话'
+  if (lang && !/^(en|eng|default)$/i.test(lang)) return lang
+  return langcode || lang || '—'
+}
+
+export function youkuEditionLabel(lang: string, langcode: string): string {
+  const s = `${langcode} ${lang}`.toLowerCase()
+  if (/(英语|english|\ben\b|\beng\b)/.test(s) || langcode.toLowerCase() === 'en') return '英语版'
+  if (/粤/.test(s)) return '粤语版'
+  if (/(普通|国语|guoyu|\bchi\b|\bzh\b)/.test(s)) return '国语版'
+  const name = lang.trim() || langcode.trim()
+  return name ? `${name}版` : '原声版'
+}
+
+/** dvd.audiolang → movie detail rows (国语版 / 英语版), one vid each. */
+export function youkuEditionsFromDetail(data: Record<string, unknown>): Episode[] {
+  const arr = Array.isArray(data.languages) ? data.languages : []
+  const seen: Record<string, true> = {}
+  const out: Episode[] = []
+  for (const it of arr) {
+    if (!isObj(it)) continue
+    const vid = asString(it.vid)
+    if (!vid || seen[vid]) continue
+    seen[vid] = true
+    out.push({
+      title: youkuEditionLabel(asString(it.lang), asString(it.langcode)),
+      vid,
+      number: out.length + 1,
+      selected: false,
+      group: 'edition',
+    })
+  }
+  return out
+}
+
 
 /** Everything the picker needs: one entry per quality, one per audio track. */
 export async function probeOptions(
@@ -205,34 +312,7 @@ async function probeYouku(
   // 高分辨率在前；同分辨率保持接口给的顺序（4K 杜比/HDR 在前，普通码在后）。
   qualities.sort((a, b) => b.width * b.height - a.width * a.height || b.size - a.size)
 
-  const audios: Audio[] = []
-  const addAudio = (id: string, label: string, lang: string, codec: string, isDefault: boolean) => {
-    if (!id || audios.some((a) => a.id === id)) return
-    audios.push({ id, label, lang, codec, isDefault, selected: isDefault })
-  }
-  const audioTypes = data.audio_types
-  if (isObj(audioTypes)) {
-    for (const [group, list] of Object.entries(audioTypes)) {
-      if (!Array.isArray(list)) continue
-      for (const at of list) {
-        if (!isObj(at)) continue
-        addAudio(
-          asString(at.audio_stream_type),
-          asString(at.display_name) || asString(at.audio_stream_type).toUpperCase(),
-          asString(at.audio_lang) || group,
-          asString(at.audio_stream_type),
-          group === 'default',
-        )
-      }
-    }
-  }
-  const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
-  for (const tr of tracks) {
-    if (!isObj(tr)) continue
-    const st = asString(tr.stream_type)
-    addAudio(st, asString(tr.lang) || st.toUpperCase(), asString(tr.langcode), st, asBool(tr.default))
-  }
-  audios.sort((a, b) => Number(b.isDefault) - Number(a.isDefault))
+  const audios = youkuAudiosFromPlay(data)
 
   return { qualities, audios, vip: youkuVipProbe(data) }
 }
