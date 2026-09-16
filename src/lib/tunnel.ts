@@ -369,40 +369,149 @@ function splitWsFrames(buf: Buffer): { frames: { op: number, payload: Buffer }[]
 
 async function local(f: TunFrame): Promise<TunFrame> {
   try {
-    const raw = f.body ? Buffer.from(f.body, 'base64') : undefined
-    const headers = new Headers()
-    if (f.header) {
-      for (const [k, v] of Object.entries(f.header)) {
-        if (Array.isArray(v)) for (const x of v) headers.append(k, x)
-        else headers.set(k, v)
-      }
-    }
-    const method = f.method || 'GET'
-    const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(), 40_000)
-    let res: Response
-    try {
-      res = await fetch(f.url ?? '', {
-        method,
-        headers,
-        body: method === 'GET' || method === 'HEAD' || !raw?.byteLength ? undefined : new Uint8Array(raw),
-        signal: ac.signal,
-      })
-    } finally {
-      clearTimeout(timer)
-    }
-    const ab = await res.arrayBuffer()
-    const slice = ab.byteLength > 6 << 20 ? ab.slice(0, 6 << 20) : ab
-    const body = Buffer.from(slice)
-    const header: Record<string, string[]> = {}
-    res.headers.forEach((val, k) => {
-      header[k] = header[k] ? [...header[k], val] : [val]
-    })
-    return { t: 'res', id: f.id, status: res.status, header, body: body.toString('base64') }
+    const url = new URL(f.url ?? '')
+    const route = await tunnelRoute(url.hostname)
+    if (route.fakeIp) return await localDial(f, url, route.tcp)
+    return await localFetch(f)
   } catch (e) {
     return { t: 'res', id: f.id, err: e instanceof Error ? e.message : String(e) }
   }
 }
+
+async function localFetch(f: TunFrame): Promise<TunFrame> {
+  const raw = f.body ? Buffer.from(f.body, 'base64') : undefined
+  const headers = new Headers()
+  if (f.header) {
+    for (const [k, v] of Object.entries(f.header)) {
+      if (Array.isArray(v)) for (const x of v) headers.append(k, x)
+      else headers.set(k, v)
+    }
+  }
+  const method = f.method || 'GET'
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), 40_000)
+  let res: Response
+  try {
+    res = await fetch(f.url ?? '', {
+      method,
+      headers,
+      body: method === 'GET' || method === 'HEAD' || !raw?.byteLength ? undefined : new Uint8Array(raw),
+      signal: ac.signal,
+    })
+  } finally {
+    clearTimeout(timer)
+  }
+  const ab = await res.arrayBuffer()
+  const slice = ab.byteLength > 6 << 20 ? ab.slice(0, 6 << 20) : ab
+  const body = Buffer.from(slice)
+  const header: Record<string, string[]> = {}
+  res.headers.forEach((val, k) => {
+    header[k] = header[k] ? [...header[k], val] : [val]
+  })
+  return { t: 'res', id: f.id, status: res.status, header, body: body.toString('base64') }
+}
+
+/** Clash fake-ip: Bun fetch to 198.18/15 never hits the real Youku MTOP. */
+async function localDial(f: TunFrame, url: URL, tcpHost: string): Promise<TunFrame> {
+  const method = f.method || 'GET'
+  const raw = f.body ? Buffer.from(f.body, 'base64') : Buffer.alloc(0)
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), 40_000)
+  let sock: net.Socket | undefined
+  try {
+    const port = url.port ? Number(url.port) : (url.protocol === 'https:' ? 443 : 80)
+    sock = await dial(url.hostname, port, url.protocol === 'https:', ac.signal, tcpHost)
+    const skip: Record<string, true> = { host: true, 'content-length': true, connection: true, 'transfer-encoding': true, 'accept-encoding': true }
+    const lines = [`${method} ${url.pathname}${url.search} HTTP/1.1`, `Host: ${url.host}`]
+    if (f.header) {
+      for (const [k, v] of Object.entries(f.header)) {
+        if (skip[k.toLowerCase()]) continue
+        const vals = Array.isArray(v) ? v : [v]
+        for (const x of vals) lines.push(`${k}: ${x}`)
+      }
+    }
+    lines.push('Accept-Encoding: identity', 'Connection: close')
+    if (raw.length) lines.push(`Content-Length: ${raw.length}`)
+    sock.write(`${lines.join('\r\n')}\r\n\r\n`)
+    if (raw.length) sock.write(raw)
+    const buf = await readUntilClose(sock, ac.signal)
+    const parsed = parseHttpResponse(buf)
+    const body = parsed.body.byteLength > 6 << 20 ? parsed.body.subarray(0, 6 << 20) : parsed.body
+    return { t: 'res', id: f.id, status: parsed.status, header: parsed.header, body: body.toString('base64') }
+  } finally {
+    clearTimeout(timer)
+    sock?.destroy()
+  }
+}
+
+function readUntilClose(sock: net.Socket, signal: AbortSignal): Promise<Buffer> {
+  const { promise, resolve, reject } = Promise.withResolvers<Buffer>()
+  const chunks: Buffer[] = []
+  const onAbort = () => {
+    sock.destroy()
+    reject(new Error('aborted'))
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+  sock.on('data', (c: Buffer) => chunks.push(c))
+  sock.on('end', () => {
+    signal.removeEventListener('abort', onAbort)
+    resolve(Buffer.concat(chunks))
+  })
+  sock.on('error', (e) => {
+    signal.removeEventListener('abort', onAbort)
+    reject(e)
+  })
+  sock.on('close', () => {
+    signal.removeEventListener('abort', onAbort)
+    resolve(Buffer.concat(chunks))
+  })
+  return promise
+}
+
+function parseHttpResponse(buf: Buffer): { status: number, header: Record<string, string[]>, body: Buffer } {
+  const idx = buf.indexOf('\r\n\r\n')
+  if (idx < 0) return { status: 0, header: {}, body: buf }
+  const head = buf.subarray(0, idx).toString('latin1')
+  const rest = buf.subarray(idx + 4)
+  const lines = head.split('\r\n')
+  const status = Number((lines[0] ?? '').split(' ')[1] || 0)
+  const header: Record<string, string[]> = {}
+  for (const line of lines.slice(1)) {
+    const c = line.indexOf(':')
+    if (c < 0) continue
+    const k = line.slice(0, c).trim()
+    const v = line.slice(c + 1).trim()
+    const key = k.toLowerCase()
+    header[key] = header[key] ? [...header[key], v] : [v]
+  }
+  let body = rest
+  if ((header['transfer-encoding']?.[0] ?? '').toLowerCase().includes('chunked')) {
+    body = decodeChunks(rest)
+  } else {
+    const n = Number(header['content-length']?.[0] ?? '')
+    if (Number.isFinite(n) && n >= 0 && n <= rest.length) body = rest.subarray(0, n)
+  }
+  return { status, header, body }
+}
+
+function decodeChunks(buf: Buffer): Buffer {
+  const out: Buffer[] = []
+  let i = 0
+  while (i < buf.length) {
+    const nl = buf.indexOf('\r\n', i)
+    if (nl < 0) break
+    const n = Number.parseInt(buf.subarray(i, nl).toString(), 16)
+    if (!Number.isFinite(n) || n < 0) break
+    if (n === 0) break
+    const start = nl + 2
+    const end = start + n
+    if (end > buf.length) break
+    out.push(buf.subarray(start, end))
+    i = end + 2
+  }
+  return Buffer.concat(out)
+}
+
 
 async function readBlob(data: unknown): Promise<string> {
   if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8')
