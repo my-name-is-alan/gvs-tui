@@ -49,6 +49,11 @@ export class Bridge {
     this.runtime?.set(field, value)
   }
 
+  /** OpenTUI's clock, not Node setInterval — Win10 conhost starves the latter. */
+  tickQR(): void {
+    this.runtime?.tickQR()
+  }
+
   close(): void {
     this.runtime?.close()
   }

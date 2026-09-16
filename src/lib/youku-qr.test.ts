@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
-import { qrAscii, writeQrPng } from './youku-qr.ts'
+import { pollYoukuQR, qrAscii, writeQrPng } from './youku-qr.ts'
 
 const URL = 'https://passport.youku.com/qr?token=test'
 
@@ -25,5 +25,19 @@ describe('writeQrPng', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('pollYoukuQR', () => {
+  test('sends ticket and loginToken on check', async () => {
+    let input: Record<string, unknown> | undefined
+    const cli = {
+      invoke: async (_provider: string, _action: string, body: Record<string, unknown>) => {
+        input = body
+        return { pending: true, logged_in: false }
+      },
+    }
+    await pollYoukuQR(cli as never, 'ticket-1', 'token-1')
+    expect(input).toEqual({ method: 'qr', state: 'check', yk_ticket: 'ticket-1', loginToken: 'token-1' })
   })
 })

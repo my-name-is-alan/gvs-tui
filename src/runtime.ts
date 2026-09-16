@@ -89,6 +89,8 @@ export class Runtime {
   private qrAscii = ''
   private qrPngPaths: string[] = []
   private qrTicket = ''
+  private qrLoginToken = ''
+  private qrPolls = 0
   private tunnelOk = false
   private tunnelErr = ''
   private tunnelTransport: 'ws' | 'legacy' | undefined
@@ -151,7 +153,10 @@ export class Runtime {
       case 'tmdb': this.updateTMDB(k); break
       case 'jobs': if (k === 'esc') this.scene = 'home'; break
       case 'settings': this.updateSettings(k); break
-      case 'qr': if (k === 'esc') { this.stopQR(); this.scene = 'settings' } break
+      case 'qr':
+        if (k === 'esc') { this.stopQR(); this.scene = 'settings' }
+        else if (k === 'enter' || k === ' ') { void this.pollQR() }
+        break
       case 'edit': this.updateEdit(k); break
     }
     this.emit()
@@ -704,12 +709,12 @@ export class Runtime {
       try {
         const qr = await startYoukuQR(this.cli)
         this.qrTicket = qr.ticket
+        this.qrLoginToken = qr.loginToken
+        this.qrPolls = 0
         this.qrAscii = qr.ascii
         this.qrPngPaths = qr.pngPaths
         this.scene = 'qr'
-        if (qr.pngPaths.length) {
-          this.say(`扫码图片: ${qr.pngPaths.join(' | ')}`, 'info')
-        }
+        this.say(qr.pngPaths.length ? `等待扫码 · ${qr.pngPaths[0]}` : '等待扫码确认', 'info')
         this.startQRPoll()
       } catch (e) {
         this.say(e instanceof Error ? e.message : String(e), 'err')
@@ -1095,9 +1100,15 @@ export class Runtime {
     this.emit()
   }
 
+  tickQR(): void {
+    if (this.scene !== 'qr') return
+    void this.pollQR()
+  }
+
   private startQRPoll(): void {
     this.stopQR()
-    this.qrTimer = setInterval(() => { void this.pollQR() }, 2000)
+    void this.pollQR()
+    this.qrTimer = setInterval(() => { void this.pollQR() }, 1500)
   }
 
   private stopQR(): void {
@@ -1106,10 +1117,12 @@ export class Runtime {
   }
 
   private async pollQR(): Promise<void> {
-    if (this.scene !== 'qr' || !this.cli || !this.qrTicket || this.qrBusy) return
+    if (this.scene !== 'qr' || !this.cli || this.qrBusy) return
+    if (!this.qrTicket && !this.qrLoginToken) return
     this.qrBusy = true
     try {
-      const poll = await pollYoukuQR(this.cli, this.qrTicket)
+      const poll = await pollYoukuQR(this.cli, this.qrTicket, this.qrLoginToken)
+      this.qrPolls++
       if (poll.sign) {
         this.cfg.youkuSign = poll.sign
         saveConfig(this.cfg)
@@ -1128,7 +1141,10 @@ export class Runtime {
         this.emit()
         this.signMissing = false
         this.queueEnsureYouku()
+        return
       }
+      this.say(`等待扫码确认 · 已轮询 ${this.qrPolls} 次`, 'info')
+      this.emit()
     } catch (e) {
       this.say(e instanceof Error ? e.message : String(e), 'err')
       this.emit()
@@ -1136,6 +1152,7 @@ export class Runtime {
       this.qrBusy = false
     }
   }
+
 }
 
 function normKey(name: string, shift?: boolean): string {

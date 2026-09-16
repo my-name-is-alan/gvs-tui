@@ -44,6 +44,7 @@ export function youkuQrPngTargets(): string[] {
 
 export type YoukuQRStart = {
   ticket: string
+  loginToken: string
   ascii: string
   pngPaths: string[]
 }
@@ -51,7 +52,10 @@ export type YoukuQRStart = {
 export async function startYoukuQR(cli: GwClient): Promise<YoukuQRStart> {
   const data = await cli.invoke('youku', 'login', { method: 'qr', force: '1' })
   const ticket = asString(data.yk_ticket) || asString(data.ticket)
+  const loginToken = asString(data.loginToken) || asString(data.login_token)
   const url = asString(data.qrCodeUrl) || asString(data.qr_url) || asString(data.url)
+  if (!ticket && !loginToken) throw new Error('网关没有返回 yk_ticket')
+  if (!url) throw new Error('网关没有返回二维码 URL')
   const pngPaths: string[] = []
   for (const file of youkuQrPngTargets()) {
     try {
@@ -60,7 +64,7 @@ export async function startYoukuQR(cli: GwClient): Promise<YoukuQRStart> {
       // cwd may be unwritable; AppData copy is enough
     }
   }
-  return { ticket, ascii: await qrAscii(url), pngPaths }
+  return { ticket, loginToken, ascii: await qrAscii(url), pngPaths }
 }
 
 export type YoukuQRPoll = {
@@ -68,8 +72,11 @@ export type YoukuQRPoll = {
   loggedIn: boolean
 }
 
-export async function pollYoukuQR(cli: GwClient, ticket: string): Promise<YoukuQRPoll> {
-  const data = await cli.invoke('youku', 'login', { method: 'qr', state: 'check', yk_ticket: ticket })
+export async function pollYoukuQR(cli: GwClient, ticket: string, loginToken = ''): Promise<YoukuQRPoll> {
+  const input: Record<string, string> = { method: 'qr', state: 'check' }
+  if (ticket) input.yk_ticket = ticket
+  if (loginToken) input.loginToken = loginToken
+  const data = await cli.invoke('youku', 'login', input)
   return {
     sign: asString(data.yk_sign) || asString(data.sign),
     loggedIn: asBool(data.logged_in),

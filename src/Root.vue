@@ -117,6 +117,8 @@ const bodyH = computed(() => Math.max(3, H.value - (showRule.value ? 4 : 3)))
 
 const blink = ref(true)
 useInterval(() => { blink.value = !blink.value }, 530)
+useInterval(() => { bridge.tickQR() }, 1500)
+watch([width, height], () => { bridge.tickQR() })
 
 const SCENE_TITLES: Record<string, string> = {
   setup: '连接网关', home: '首页', search: '搜索', results: '搜索结果', detail: '剧集',
@@ -142,7 +144,7 @@ const HINTS: Record<string, Array<[string, string]>> = {
   jobs: [['esc', '返回']],
   settings: [['↑↓', '移动'], ['⏎', '修改'], ['esc', '保存并返回']],
   edit: [['⏎', '保存'], ['esc', '取消']],
-  qr: [['esc', '取消扫码']],
+  qr: [['⏎', '刷新轮询'], ['esc', '取消扫码']],
 }
 
 useTitle(() => `GVS · ${SCENE_TITLES[state.value.scene] ?? 'GVS'}`)
@@ -787,7 +789,7 @@ function jobLine(job: Job): StyledText {
         <Box :height="1" />
         <Text :content="qrBlock" :fg="c.text" wrapMode="none" />
         <Text v-if="qrPngHint" :content="ink(c.warn, qrPngHint)" wrapMode="wrap" :marginTop="1" />
-        <Text :content="ink(c.faint, '扫码成功会自动返回设置页')" :height="1" :marginTop="1" />
+        <Text :content="ink(c.faint, '扫完按回车继续轮询（Win10 1809 控制台会把定时器卡住）')" :height="1" :marginTop="1" />
       </Box>
     </Box>
 
