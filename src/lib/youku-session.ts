@@ -6,7 +6,7 @@
 // 于是 token 一过期就表现为「重启就失效」。
 import type { GwClient } from './client.ts'
 import type { VipProbe, VipSource } from '../types.ts'
-import { asBool, asString, isObj } from './util.ts'
+import { anyInt, asBool, asString, isObj } from './util.ts'
 
 export type YkLogin = {
   ok: boolean
@@ -106,8 +106,8 @@ export async function ykAccount(cli: GwClient, sign: string): Promise<YkAccount>
     out.needsScan = !out.loggedIn
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    // 只有网关明确说凭证不可用才算需要扫码。
     out.needsScan = /invalid Yk-Sign|re-login|relogin|未登录|YOUKU_RELOGIN_REQUIRED|需要重新登录/i.test(msg)
+    out.loggedIn = !out.needsScan
     out.hint = msg
   }
   return out
@@ -139,7 +139,8 @@ export function accountSummary(acc: YkAccount | null, probe?: VipProbe): string 
 function view(data: Record<string, unknown>): YkLogin {
   const yk = isObj(data.yktk_fields) ? data.yktk_fields : {}
   return {
-    ok: asString(data.uid) !== '' || asString(data.yktk) !== '' || asBool(yk.vip),
+    ok: asBool(data.logged_in) || asBool(data.has_stoken) || anyInt(data.yktk_len) > 0
+      || asString(data.uid) !== '' || asString(data.yktk) !== '' || asBool(yk.vip),
     uid: asString(data.uid),
     nick: asString(data.nick) || asString(yk.nick) || '',
     vip: asBool(yk.vip) || asBool(data.vip),

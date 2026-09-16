@@ -19,6 +19,10 @@ type HeaderWS = {
 
 const LIMIT_RE = /429|TUNNEL_LIMITED|CONCURRENCY_LIMITED/
 const OCCUPIED = '隧道已被同一个 Key 的另一处占用（每 Key 只允许一条），稍后自动重试'
+/** A socket that dies this fast is a kick/FIN, not an idle drop. */
+const SHORT_LIFE_MS = 2500
+const KEEPALIVE_MS = 20_000
+
 /** Backoff after a failed attempt: limits/refusals get a long pause, not 3s. */
 function retryDelay(failures: number, message: string): number {
   if (LIMIT_RE.test(message)) return 30_000
@@ -32,40 +36,54 @@ export function runTunnel(
   signal: AbortSignal,
 ): void {
   const loop = async () => {
-    // Every round starts on WebSocket — that is what the gateway speaks and the
-    // only upgrade Cloudflare keeps alive. Only when a round fails do we also
-    // try the legacy upgrade (older gateway) *in the same round*, so a single
-    // transient failure can never downgrade the rest of the session.
+    // Every round starts on WebSocket. Legacy is only a handshake fallback
+    // for an old gateway — never after a WS session that actually opened,
+    // because Upgrade: tunnel through Cloudflare dies in 1–4s and then
+    // fights the still-closing WS for the single slot.
     let failures = 0
-    let lastError = ''
     while (!signal.aborted) {
-      let connected = false
+      let opened = false
+      let transport: 'ws' | 'legacy' = 'ws'
+      let lastError = ''
+      const started = Date.now()
       try {
-        await tunnelOnce(host, key, onStatus, signal)
-        onStatus(false, 'closed', 'ws')
-        connected = true
+        opened = await tunnelOnce(host, key, onStatus, signal)
+        transport = 'ws'
+        if (opened) onStatus(false, 'closed', 'ws')
       } catch (e) {
         if (signal.aborted) return
         lastError = e instanceof Error ? e.message : String(e)
         if (LIMIT_RE.test(lastError)) {
           onStatus(false, OCCUPIED, 'ws')
-        } else {
-          // The legacy attempt reads the real HTTP status, so its error text is
-          // more informative than the WebSocket handshake failure.
+        } else if (!opened) {
           try {
             await tunnelLegacy(host, key, onStatus, signal)
+            opened = true
+            transport = 'legacy'
             onStatus(false, 'closed', 'legacy')
-            connected = true
           } catch (e2) {
             if (signal.aborted) return
             lastError = e2 instanceof Error ? e2.message : String(e2)
             onStatus(false, LIMIT_RE.test(lastError) ? OCCUPIED : lastError, 'legacy')
           }
+        } else {
+          onStatus(false, lastError, 'ws')
         }
       }
-      failures = connected ? 0 : failures + 1
+      const lived = Date.now() - started
+      const kicked = opened && lived < SHORT_LIFE_MS
+      if (kicked && !LIMIT_RE.test(lastError)) {
+        lastError = OCCUPIED
+        onStatus(false, OCCUPIED, transport)
+      }
+      failures = opened && !kicked ? 0 : failures + 1
+      const wait = kicked || LIMIT_RE.test(lastError)
+        ? 30_000
+        : opened
+          ? 1_000
+          : retryDelay(failures, lastError)
       try {
-        await sleep(connected ? 3000 : retryDelay(failures, lastError), signal)
+        await sleep(wait, signal)
       } catch {
         return
       }
@@ -79,10 +97,12 @@ async function tunnelOnce(
   key: string,
   onStatus: (ok: boolean, err: string, transport?: 'ws' | 'legacy') => void,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<boolean> {
   const url = tunnelURL(host)
   const WS = WebSocket as unknown as HeaderWS
   const ws = new WS(url, { headers: { Authorization: `Bearer ${key}` } })
+  let beat: NodeJS.Timeout | undefined
+  let opened = false
 
   const { promise, resolve, reject } = Promise.withResolvers<void>()
   const fail = (e: unknown) => {
@@ -93,9 +113,30 @@ async function tunnelOnce(
     fail(new Error('aborted'))
   }
   signal.addEventListener('abort', onAbort, { once: true })
-  ws.addEventListener('open', () => onStatus(true, '', 'ws'))
-  ws.addEventListener('error', () => fail(new Error('tunnel websocket error')))
-  ws.addEventListener('close', () => resolve())
+  ws.addEventListener('open', () => {
+    opened = true
+    onStatus(true, '', 'ws')
+    beat = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return
+      try {
+        ws.send(JSON.stringify({ t: 'ping' }))
+      } catch {
+        /* close path handles this */
+      }
+    }, KEEPALIVE_MS)
+  })
+  ws.addEventListener('error', () => {
+    // After OPEN the close event is the real end. Rejecting here would
+    // kick the reconnect loop into the legacy protocol.
+    if (!opened) fail(new Error('tunnel websocket error'))
+  })
+  ws.addEventListener('close', (ev) => {
+    if (!opened) {
+      fail(new Error(`tunnel websocket closed ${ev.code}${ev.reason ? ` ${ev.reason}` : ''}`))
+      return
+    }
+    resolve()
+  })
   ws.addEventListener('message', (ev) => {
     void (async () => {
       const text = typeof ev.data === 'string' ? ev.data : await readBlob(ev.data)
@@ -114,14 +155,18 @@ async function tunnelOnce(
     })()
   })
 
-  return promise.finally(() => {
+  try {
+    await promise
+    return opened
+  } finally {
+    if (beat) clearInterval(beat)
     signal.removeEventListener('abort', onAbort)
     try {
       ws.close()
     } catch {
       /* already closed */
     }
-  })
+  }
 }
 
 function tunnelURL(host: string): string {

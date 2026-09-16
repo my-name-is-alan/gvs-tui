@@ -1,6 +1,6 @@
 import QRCode from 'qrcode'
 import type { GwClient } from './client.ts'
-import { asString } from './util.ts'
+import { asBool, asString } from './util.ts'
 
 export function hostIsLocal(host: string): boolean {
   try {
@@ -23,12 +23,16 @@ export async function startYoukuQR(cli: GwClient): Promise<{ ticket: string; asc
   return { ticket, ascii: await qrAscii(url) }
 }
 
-export async function pollYoukuQR(cli: GwClient, ticket: string): Promise<string> {
-  try {
-    const data = await cli.invoke('youku', 'login', { method: 'qr', state: 'check', yk_ticket: ticket })
-    return asString(data.yk_sign) || asString(data.sign)
-  } catch {
-    return ''
+export type YoukuQRPoll = {
+  sign: string
+  loggedIn: boolean
+}
+
+export async function pollYoukuQR(cli: GwClient, ticket: string): Promise<YoukuQRPoll> {
+  const data = await cli.invoke('youku', 'login', { method: 'qr', state: 'check', yk_ticket: ticket })
+  return {
+    sign: asString(data.yk_sign) || asString(data.sign),
+    loggedIn: asBool(data.logged_in),
   }
 }
 

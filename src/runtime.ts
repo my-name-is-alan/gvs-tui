@@ -96,6 +96,7 @@ export class Runtime {
   private readonly abort = new AbortController()
   private tunnelAbort: AbortController | null = null
   private qrTimer: NodeJS.Timeout | null = null
+  private qrBusy = false
 
   constructor() {
     this.cfg = loadConfig()
@@ -340,7 +341,10 @@ export class Runtime {
     if (this.signMissing) {
       this.say('本机 Yk-Sign 在网关凭证库里已经不在了（网关重启/重新部署常见）→ 设置 → 优酷扫码 重新登录', 'warn')
     }
-    const stale = !this.ykLogin?.lastRefreshAt || Date.now() - this.ykLogin.lastRefreshAt > 20 * 60_000
+    // Fresh QR logins have lastRefreshAt=0. Forcing refresh then needs_relogin
+    // is exactly "scanned and immediately dropped".
+    const stale = !!this.ykLogin?.ok && this.ykLogin.lastRefreshAt > 0
+      && Date.now() - this.ykLogin.lastRefreshAt > 20 * 60_000
     if (stale && !this.signMissing) {
       try {
         const res = await ykRefresh(this.cli, this.cfg.youkuSign)
@@ -425,6 +429,7 @@ export class Runtime {
             if (ok) {
               if (downSince && Date.now() - downSince > 8000) this.say('隧道已恢复：优酷/腾讯走本机 IP', 'ok')
               downSince = 0
+              announcedDrop = false
             } else {
               downSince ||= Date.now()
               if (!announcedDrop) {
@@ -1071,24 +1076,36 @@ export class Runtime {
 
   private stopQR(): void {
     if (this.qrTimer) { clearInterval(this.qrTimer); this.qrTimer = null }
+    this.qrBusy = false
   }
 
   private async pollQR(): Promise<void> {
-    if (this.scene !== 'qr' || !this.cli || !this.qrTicket) return
+    if (this.scene !== 'qr' || !this.cli || !this.qrTicket || this.qrBusy) return
+    this.qrBusy = true
     try {
-      const sign = await pollYoukuQR(this.cli, this.qrTicket)
-      if (sign) {
-        this.cfg.youkuSign = sign
+      const poll = await pollYoukuQR(this.cli, this.qrTicket)
+      if (poll.sign) {
+        this.cfg.youkuSign = poll.sign
         saveConfig(this.cfg)
         this.say('已保存 Yk-Sign', 'ok')
         this.scene = 'settings'
         this.stopQR()
         this.emit()
-        void this.ensureYouku() // 新签名 → 重查登录态与会员（signMissing 会跟着复位）
+        void this.ensureYouku()
+        return
+      }
+      if (poll.loggedIn && this.cfg.youkuSign) {
+        this.say('优酷已登录', 'ok')
+        this.scene = 'settings'
+        this.stopQR()
+        this.emit()
+        void this.ensureYouku()
       }
     } catch (e) {
       this.say(e instanceof Error ? e.message : String(e), 'err')
       this.emit()
+    } finally {
+      this.qrBusy = false
     }
   }
 }
