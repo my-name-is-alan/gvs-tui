@@ -15,6 +15,9 @@ node_modules/
 *.log
 downloads/
 
+# QR login PNGs written next to cwd
+youku-qr/
+
 # secrets live in the user config dir, never commit copies
 tui.json
 .env

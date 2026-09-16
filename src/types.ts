@@ -117,6 +117,7 @@ export type Snapshot = {
   editField?: string
   editValue?: string
   qrAscii?: string
+  qrPngPaths?: string[]
 }
 
 export type Scene =
