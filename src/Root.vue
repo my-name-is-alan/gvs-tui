@@ -349,11 +349,22 @@ const setupFieldW = computed(() => setupFieldBoxW.value - 3)
 const editBoxW = computed(() => Math.max(30, Math.min(72, bodyW.value - 2)))
 const editW = computed(() => editBoxW.value - 4)
 
-/** QR blocks are drawn with half-width blocks; centre them and keep them on screen. */
+/** Never crop a QR: a sliced code will not scan. Quiet-zone rows are spaces — keep them. */
+const qrLines = computed(() => {
+  const raw = state.value.qrAscii || ''
+  if (!raw) return [] as string[]
+  return raw.replace(/\n$/, '').split('\n')
+})
+const qrOverflow = computed(() => {
+  const lines = qrLines.value
+  if (!lines.length) return false
+  const room = Math.max(0, bodyH.value - 4)
+  const widest = lines.reduce((max, line) => Math.max(max, displayWidth(line)), 0)
+  return lines.length > room || widest > bodyW.value
+})
 const qrBlock = computed(() => {
-  const raw = (state.value.qrAscii || '').split('\n').filter((line) => line.trim().length > 0)
-  const room = Math.max(0, bodyH.value - 3)
-  const lines = raw.length > room ? raw.slice(0, room) : raw
+  if (qrOverflow.value) return ''
+  const lines = qrLines.value
   const widest = lines.reduce((max, line) => Math.max(max, displayWidth(line)), 0)
   const indent = ' '.repeat(Math.max(0, Math.floor((bodyW.value - widest) / 2)))
   return lines.map((line) => indent + line).join('\n')
@@ -780,7 +791,11 @@ function jobLine(job: Job): StyledText {
       <Box v-else-if="state.scene === 'qr'" flexDirection="column" :width="bodyW">
         <Text :content="ink(c.dim, '用优酷 App 扫码登录，登录态会写进本机')" :height="1" />
         <Box :height="1" />
-        <Text :content="qrBlock" :fg="c.text" wrapMode="none" />
+        <Text
+          v-if="qrOverflow"
+          :content="ink(c.warn, '窗口太小会裁切二维码。请扫已打开的网页，或拉大窗口后重新进入扫码')"
+        />
+        <Text v-else :content="qrBlock" :fg="c.text" wrapMode="none" />
         <Text :content="ink(c.faint, '扫码成功会自动返回设置页')" :height="1" :marginTop="1" />
       </Box>
     </Box>

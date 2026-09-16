@@ -4,7 +4,7 @@ import { GwClient, ReloginRequired, type KeyInfo } from './lib/client.ts'
 import { JobHub, jobTitle, nextJobID, patchJob, type DlTask } from './lib/jobs.ts'
 import { probeOptions } from './lib/quality.ts'
 import { runTunnel } from './lib/tunnel.ts'
-import { hostIsLocal, importYoukuCookie, pollYoukuQR, startYoukuQR } from './lib/youku-qr.ts'
+import { hostIsLocal, importYoukuCookie, openQrFile, pollYoukuQR, startYoukuQR } from './lib/youku-qr.ts'
 import {
   accountSummary, loginSummary, parseYkAccount, ykAccount, ykLoginInfo, ykRefresh,
   shouldRefreshYouku,
@@ -704,6 +704,12 @@ export class Runtime {
         this.qrTicket = qr.ticket
         this.qrAscii = qr.ascii
         this.scene = 'qr'
+        if (qr.asciiMode && hostIsLocal(this.cfg.host) && qr.htmlPath) {
+          openQrFile(qr.htmlPath)
+          this.say('老 PowerShell 画不出 █▀▄，已打开扫码页', 'info')
+        } else if (qr.asciiMode) {
+          this.say('当前控制台用 ASCII 码（##），窗口请拉大', 'info')
+        }
         this.startQRPoll()
       } catch (e) {
         this.say(e instanceof Error ? e.message : String(e), 'err')
