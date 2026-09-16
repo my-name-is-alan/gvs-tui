@@ -2,13 +2,30 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'bun:test'
-import { pollYoukuQR, qrAscii, writeQrPng } from './youku-qr.ts'
+import { pollYoukuQR, qrNeedsAscii, qrAscii, renderQr, writeQrPng } from './youku-qr.ts'
 
 const URL = 'https://passport.youku.com/qr?token=test'
 
-describe('qrAscii', () => {
-  test('keeps utf8 half-blocks for the terminal', async () => {
-    const text = await qrAscii(URL)
+describe('qrNeedsAscii', () => {
+  test('Win10 conhost / PowerShell 5 uses ASCII', () => {
+    expect(qrNeedsAscii({}, 'win32')).toBe(true)
+  })
+  test('Windows Terminal keeps compact blocks', () => {
+    expect(qrNeedsAscii({ WT_SESSION: '1' }, 'win32')).toBe(false)
+  })
+})
+
+describe('renderQr', () => {
+  test('ascii is only hash and space so GBK can print it', () => {
+    const text = renderQr(URL, 'ascii')
+    expect(text).toMatch(/^[ #\n]+$/)
+    const lines = text.split('\n')
+    const width = lines[0].length
+    expect(lines.every((l) => l.length === width)).toBe(true)
+    expect(lines[1].startsWith('  ##############')).toBe(true)
+  })
+  test('compact packs two rows with half-blocks', async () => {
+    const text = await qrAscii(URL, false)
     expect(/[█▀▄]/.test(text)).toBe(true)
     expect(text.includes('#')).toBe(false)
   })

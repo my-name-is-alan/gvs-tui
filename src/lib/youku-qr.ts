@@ -13,10 +13,54 @@ export function hostIsLocal(host: string): boolean {
     return false
   }
 }
+/** Win10 1809 conhost / GBK PowerShell: no █▀▄, and █ is 2 cells so the code shears. */
+export function qrNeedsAscii(
+  env: NodeJS.Dict<string> = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform !== 'win32') return false
+  if (env.WT_SESSION || env.WT_PROFILE_ID) return false
+  if (env.TERM_PROGRAM) return false
+  if (env.ConEmuANSI === 'ON') return false
+  return true
+}
 
-export async function qrAscii(url: string): Promise<string> {
+const QZ = 1
+
+export function renderQr(url: string, mode: 'ascii' | 'compact'): string {
   if (!url) return ''
-  return QRCode.toString(url, { type: 'utf8', errorCorrectionLevel: 'M' })
+  const qr = QRCode.create(url, { errorCorrectionLevel: 'M' })
+  const n = qr.modules.size
+  const dim = n + QZ * 2
+  const dark = (x: number, y: number) => {
+    const mx = x - QZ
+    const my = y - QZ
+    return mx >= 0 && my >= 0 && mx < n && my < n && qr.modules.get(mx, my)
+  }
+  const lines: string[] = []
+  if (mode === 'ascii') {
+    for (let y = 0; y < dim; y++) {
+      let line = ''
+      for (let x = 0; x < dim; x++) line += dark(x, y) ? '##' : '  '
+      lines.push(line)
+    }
+    return lines.join('\n')
+  }
+  for (let y = 0; y < dim; y += 2) {
+    let line = ''
+    for (let x = 0; x < dim; x++) {
+      const top = dark(x, y)
+      const bot = y + 1 < dim && dark(x, y + 1)
+      line += top && bot ? '█' : top ? '▀' : bot ? '▄' : ' '
+    }
+    lines.push(line)
+  }
+  return lines.join('\n')
+}
+
+export async function qrAscii(url: string, ascii = qrNeedsAscii()): Promise<string> {
+  if (!url) return ''
+  return renderQr(url, ascii ? 'ascii' : 'compact')
 }
 
 const QR_PNG = 'youku_qr_login.png'
