@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto'
+import dns from 'node:dns/promises'
 import net from 'node:net'
 import tls from 'node:tls'
 import { sleep } from './util.ts'
@@ -98,6 +100,20 @@ async function tunnelOnce(
   onStatus: (ok: boolean, err: string, transport?: 'ws' | 'legacy') => void,
   signal: AbortSignal,
 ): Promise<boolean> {
+  const u = new URL(host)
+  const route = await tunnelRoute(u.hostname)
+  if (route.fakeIp) {
+    return tunnelOnceDial(host, key, onStatus, signal, route.tcp)
+  }
+  return tunnelOnceWS(host, key, onStatus, signal)
+}
+
+async function tunnelOnceWS(
+  host: string,
+  key: string,
+  onStatus: (ok: boolean, err: string, transport?: 'ws' | 'legacy') => void,
+  signal: AbortSignal,
+): Promise<boolean> {
   const url = tunnelURL(host)
   const WS = WebSocket as unknown as HeaderWS
   const ws = new WS(url, { headers: { Authorization: `Bearer ${key}` } })
@@ -140,18 +156,7 @@ async function tunnelOnce(
   ws.addEventListener('message', (ev) => {
     void (async () => {
       const text = typeof ev.data === 'string' ? ev.data : await readBlob(ev.data)
-      let f: TunFrame
-      try {
-        f = JSON.parse(text) as TunFrame
-      } catch {
-        return
-      }
-      if (f.t === 'ping') {
-        ws.send(JSON.stringify({ t: 'pong' }))
-        return
-      }
-      if (f.t !== 'req') return
-      ws.send(JSON.stringify(await local(f)))
+      await handleTunText(text, (s) => ws.send(s))
     })()
   })
 
@@ -169,6 +174,84 @@ async function tunnelOnce(
   }
 }
 
+/** Clash fake-ip: TCP to 198.18.0.0/15, TLS SNI still the real hostname. */
+async function tunnelOnceDial(
+  host: string,
+  key: string,
+  onStatus: (ok: boolean, err: string, transport?: 'ws' | 'legacy') => void,
+  signal: AbortSignal,
+  tcpHost: string,
+): Promise<boolean> {
+  const u = new URL(host)
+  const port = u.port ? Number(u.port) : (u.protocol === 'https:' ? 443 : 80)
+  const sock = await dial(u.hostname, port, u.protocol === 'https:', signal, tcpHost)
+  const key16 = randomBytes(16).toString('base64')
+  sock.write(
+    `GET /v1/tunnel HTTP/1.1\r\nHost: ${u.host}\r\nAuthorization: Bearer ${key}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key16}\r\n\r\n`,
+  )
+  let buf = await readHttp101(sock, signal)
+  let opened = true
+  onStatus(true, '', 'ws')
+
+  const { promise, resolve, reject } = Promise.withResolvers<void>()
+  const send = (text: string) => {
+    if (!sock.destroyed) sock.write(wsClientFrame(0x1, Buffer.from(text)))
+  }
+  const beat = setInterval(() => send(JSON.stringify({ t: 'ping' })), KEEPALIVE_MS)
+  const onAbort = () => {
+    sock.destroy()
+    reject(new Error('aborted'))
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+  sock.on('error', (e) => reject(e))
+  sock.on('end', () => resolve())
+  sock.on('close', () => resolve())
+  const onChunk = (chunk: Buffer) => {
+    buf = Buffer.concat([buf, chunk])
+    const parsed = splitWsFrames(buf)
+    buf = parsed.rest
+    void (async () => {
+      for (const fr of parsed.frames) {
+        if (fr.op === 0x8) {
+          sock.destroy()
+          return
+        }
+        if (fr.op === 0x9) {
+          if (!sock.destroyed) sock.write(wsClientFrame(0xA, fr.payload))
+          continue
+        }
+        if (fr.op !== 0x1 && fr.op !== 0x2) continue
+        await handleTunText(fr.payload.toString('utf8'), send)
+      }
+    })()
+  }
+  sock.on('data', onChunk)
+  if (buf.length) onChunk(Buffer.alloc(0))
+  try {
+    await promise
+    return opened
+  } finally {
+    clearInterval(beat)
+    signal.removeEventListener('abort', onAbort)
+    sock.destroy()
+  }
+}
+
+async function handleTunText(text: string, send: (s: string) => void): Promise<void> {
+  let f: TunFrame
+  try {
+    f = JSON.parse(text) as TunFrame
+  } catch {
+    return
+  }
+  if (f.t === 'ping') {
+    send(JSON.stringify({ t: 'pong' }))
+    return
+  }
+  if (f.t !== 'req') return
+  send(JSON.stringify(await local(f)))
+}
+
 function tunnelURL(host: string): string {
   const u = new URL(host)
   u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -176,6 +259,112 @@ function tunnelURL(host: string): string {
   u.search = ''
   u.hash = ''
   return u.toString()
+}
+
+export function isClashFakeIP(ip: string): boolean {
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(ip)
+  if (!m) return false
+  const a = Number(m[1])
+  const b = Number(m[2])
+  return a === 198 && (b === 18 || b === 19)
+}
+
+async function tunnelRoute(hostname: string): Promise<{ tcp: string, fakeIp: boolean }> {
+  if (net.isIP(hostname) || hostname === 'localhost') return { tcp: hostname, fakeIp: false }
+  let sys: string[] = []
+  try {
+    sys = await dns.resolve4(hostname)
+  } catch {
+    sys = []
+  }
+  if (!sys.length || !sys.every(isClashFakeIP)) return { tcp: hostname, fakeIp: false }
+  const real = (await dohA(hostname)).filter((ip) => !isClashFakeIP(ip))
+  if (real[0]) return { tcp: real[0], fakeIp: true }
+  return { tcp: hostname, fakeIp: false }
+}
+
+async function dohA(hostname: string): Promise<string[]> {
+  const urls = [
+    `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=A`,
+    `https://1.1.1.1/dns-query?name=${encodeURIComponent(hostname)}&type=A`,
+  ]
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        headers: { accept: 'application/dns-json' },
+        signal: AbortSignal.timeout(4000),
+      })
+      if (!res.ok) continue
+      const j = await res.json() as { Answer?: { type: number, data: string }[] }
+      const ips = (j.Answer ?? []).filter((a) => a.type === 1).map((a) => a.data)
+      if (ips.length) return ips
+    } catch {
+      /* next resolver */
+    }
+  }
+  return []
+}
+
+function wsClientFrame(op: number, payload: Buffer): Buffer {
+  const mask = randomBytes(4)
+  const len = payload.length
+  let hdr: Buffer
+  if (len < 126) {
+    hdr = Buffer.alloc(6)
+    hdr[0] = 0x80 | op
+    hdr[1] = 0x80 | len
+    mask.copy(hdr, 2)
+  } else if (len < 65536) {
+    hdr = Buffer.alloc(8)
+    hdr[0] = 0x80 | op
+    hdr[1] = 0x80 | 126
+    hdr.writeUInt16BE(len, 2)
+    mask.copy(hdr, 4)
+  } else {
+    hdr = Buffer.alloc(14)
+    hdr[0] = 0x80 | op
+    hdr[1] = 0x80 | 127
+    hdr.writeBigUInt64BE(BigInt(len), 2)
+    mask.copy(hdr, 10)
+  }
+  const body = Buffer.from(payload)
+  for (let i = 0; i < body.length; i++) body[i] ^= mask[i & 3]!
+  return Buffer.concat([hdr, body])
+}
+
+function splitWsFrames(buf: Buffer): { frames: { op: number, payload: Buffer }[], rest: Buffer } {
+  const frames: { op: number, payload: Buffer }[] = []
+  let i = 0
+  while (buf.length - i >= 2) {
+    const b1 = buf[i + 1]!
+    const masked = (b1 & 0x80) !== 0
+    let len = b1 & 0x7f
+    let hdr = 2
+    if (len === 126) {
+      if (buf.length - i < 4) break
+      len = buf.readUInt16BE(i + 2)
+      hdr = 4
+    } else if (len === 127) {
+      if (buf.length - i < 10) break
+      const n = buf.readBigUInt64BE(i + 2)
+      if (n > 8n << 20n) break
+      len = Number(n)
+      hdr = 10
+    }
+    const mlen = masked ? 4 : 0
+    if (buf.length - i < hdr + mlen + len) break
+    let payload = buf.subarray(i + hdr + mlen, i + hdr + mlen + len)
+    if (masked) {
+      const mk = buf.subarray(i + hdr, i + hdr + 4)
+      payload = Buffer.from(payload)
+      for (let j = 0; j < payload.length; j++) payload[j] ^= mk[j & 3]!
+    } else {
+      payload = Buffer.from(payload)
+    }
+    frames.push({ op: buf[i]! & 0xf, payload })
+    i += hdr + mlen + len
+  }
+  return { frames, rest: buf.subarray(i) }
 }
 
 async function local(f: TunFrame): Promise<TunFrame> {
@@ -234,7 +423,8 @@ async function tunnelLegacy(
 ): Promise<void> {
   const u = new URL(host)
   const port = u.port ? Number(u.port) : (u.protocol === 'https:' ? 443 : 80)
-  const sock = await dial(u.hostname, port, u.protocol === 'https:', signal)
+  const route = await tunnelRoute(u.hostname)
+  const sock = await dial(u.hostname, port, u.protocol === 'https:', signal, route.tcp)
   sock.write(
     `GET /v1/tunnel HTTP/1.1\r\nHost: ${u.host}\r\nAuthorization: Bearer ${key}\r\nUpgrade: tunnel\r\nConnection: Upgrade\r\n\r\n`,
   )
@@ -280,11 +470,17 @@ async function tunnelLegacy(
   })
 }
 
-function dial(hostname: string, port: number, secure: boolean, signal: AbortSignal): Promise<net.Socket> {
+function dial(
+  hostname: string,
+  port: number,
+  secure: boolean,
+  signal: AbortSignal,
+  connectHost = hostname,
+): Promise<net.Socket> {
   const { promise, resolve, reject } = Promise.withResolvers<net.Socket>()
   const onAbort = () => reject(new Error('aborted'))
   signal.addEventListener('abort', onAbort, { once: true })
-  const raw = net.connect({ host: hostname, port, timeout: 10_000 }, () => {
+  const raw = net.connect({ host: connectHost, port, timeout: 10_000 }, () => {
     if (!secure) {
       signal.removeEventListener('abort', onAbort)
       resolve(raw)
@@ -334,3 +530,4 @@ function readHttp101(sock: net.Socket, signal: AbortSignal): Promise<Buffer> {
   sock.once('close', () => finish(() => reject(new Error('tunnel http 连接被关闭'))))
   return promise
 }
+

@@ -322,6 +322,9 @@ TUI 先试 WebSocket。**只有握手从未成功**时才在同一轮试旧协�
 
 客户端每 20s 发一条应用层 `{"t":"ping"}`；网关任何读到的帧都会刷新 60s 读超时。
 
+Clash / 类似 TUN 的 **fake-ip**（解析成 `198.18.0.0/15`）会把 WebSocket 掐成 `1006`。TUI 检测到假 IP 时改走 DoH 拿真实 A 记录，TCP 连真地址、TLS SNI 仍是网关域名。用户不用关 Clash；只有 fake-ip 对这条域名的劫持需要绕开。可选：Clash `dns.fake-ip-filter` 加上网关域名。
+
+
 ### 每个 Key 一条活动隧道
 
 网关 egress Hub：**同一 Key 后连上的顶掉先连的**（重连不能 429，否则旧连接还没释放就会空窗 30s）。
