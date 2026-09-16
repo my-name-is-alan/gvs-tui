@@ -1,6 +1,6 @@
 import QRCode from 'qrcode'
 import type { GwClient } from './client.ts'
-import { asBool, asString } from './util.ts'
+import { asBool, asString, isObj } from './util.ts'
 
 export function hostIsLocal(host: string): boolean {
   try {
@@ -36,9 +36,17 @@ export async function pollYoukuQR(cli: GwClient, ticket: string): Promise<YoukuQ
   }
 }
 
-export async function importYoukuCookie(cli: GwClient, cookie: string): Promise<string> {
+export type YoukuCookieImport = {
+  sign: string
+  accountInfo?: Record<string, unknown>
+}
+
+export async function importYoukuCookie(cli: GwClient, cookie: string): Promise<YoukuCookieImport> {
   const data = await cli.invoke('youku', 'login', { method: 'cookie', cookie })
   const sign = asString(data.yk_sign) || asString(data.sign)
   if (!sign) throw new Error('没有 yk_sign，Cookie 可能缺 P_sck')
-  return sign
+  return {
+    sign,
+    accountInfo: isObj(data.account_info) ? data.account_info : undefined,
+  }
 }

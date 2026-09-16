@@ -14,6 +14,8 @@ export type YkLogin = {
   nick: string
   vip: boolean
   refreshable: boolean
+  /** 凭证创建时间（毫秒），用于避免刚扫码完立刻强制刷新。 */
+  createdAt: number
   /** 上次成功刷新的时间（毫秒），0 表示未知。 */
   lastRefreshAt: number
   lastError: string
@@ -55,9 +57,72 @@ function subApiOk(profile: unknown): boolean {
   for (const v of Object.values(profile)) {
     if (!isObj(v)) continue
     if (hasSessionExpired(v)) continue
-    if (Array.isArray(v.ret) && v.ret.length === 0) return true
+    if (!Array.isArray(v.ret)) continue
+    if (v.ret.length === 0) return true
+    if (v.ret.some((ret) => typeof ret === 'string' && /^(SUCCESS|SUCCESS::)|调用成功/i.test(ret))) return true
   }
   return false
+}
+
+type ProfileMembership = { isVip: boolean; vipUntil: string }
+
+/**
+ * 会员接口的几代返回字段并不统一；只在已经判定为成功的 profile.data 下找
+ * 明确的会员布尔值或未来到期时间，避免把 ret/error 文本误判成权益。
+ */
+function profileMembership(profile: unknown, now = Date.now()): ProfileMembership {
+  let isVip = false
+  let latest = 0
+  const seen = new Set<unknown>()
+
+  const walk = (node: unknown): void => {
+    if (node === null || node === undefined || seen.has(node)) return
+    if (Array.isArray(node)) {
+      seen.add(node)
+      for (const item of node) walk(item)
+      return
+    }
+    if (!isObj(node)) return
+    seen.add(node)
+    for (const [key, value] of Object.entries(node)) {
+      const norm = key.replace(/[^a-z0-9]/gi, '').toLowerCase()
+      if (['isvip', 'vip', 'ismember', 'memberactive', 'isactive'].includes(norm) && boolish(value)) {
+        isVip = true
+      }
+      if (['endtime', 'expiretime', 'expiresat', 'expireat', 'vipexpiretime', 'vipendtime'].includes(norm)) {
+        const at = membershipTime(value)
+        if (at > latest) latest = at
+      }
+      walk(value)
+    }
+  }
+
+  if (isObj(profile)) {
+    for (const row of Object.values(profile)) {
+      if (!isObj(row) || hasSessionExpired(row)) continue
+      const ret = Array.isArray(row.ret) ? row.ret : []
+      const ok = ret.length === 0 || ret.some((v) => typeof v === 'string' && /^(SUCCESS|SUCCESS::)|调用成功/i.test(v))
+      if (ok) walk(row.data)
+    }
+  }
+  if (latest > now) isVip = true
+  return { isVip, vipUntil: latest > 0 ? new Date(latest).toISOString().slice(0, 10) : '' }
+}
+
+function boolish(value: unknown): boolean {
+  return asBool(value) || value === 1
+}
+
+function membershipTime(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value < 10_000_000_000 ? value * 1000 : value
+  if (typeof value !== 'string' || !value.trim()) return 0
+  const raw = value.trim()
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw)
+    return Number.isFinite(n) ? (n < 10_000_000_000 ? n * 1000 : n) : 0
+  }
+  const parsed = Date.parse(raw)
+  return Number.isFinite(parsed) ? parsed : 0
 }
 
 /**
@@ -69,48 +134,60 @@ function subApiOk(profile: unknown): boolean {
  *   （`refresh` 的 `needs_relogin`），不要靠猜 ret code。
  */
 export async function ykAccount(cli: GwClient, sign: string): Promise<YkAccount> {
-  const out: YkAccount = {
-    loggedIn: false, needsScan: false, vipSource: 'none', isVip: false, vipUntil: '',
-    nick: '', uid: '', ytid: '', mobile: '', method: '', riskLevel: 'none', hint: '',
-  }
   try {
     const data = await cli.invoke('youku', 'account', { method: 'profile', app: 'session' }, sign ? { 'Yk-Sign': sign } : undefined)
-    const summary = isObj(data.summary) ? data.summary : {}
-    const session = isObj(data.session) ? data.session : {}
-    const risk = isObj(data.risk) ? data.risk : {}
-
-    out.loggedIn = asBool(summary.logged_in) || asBool(session.logged_in)
-    out.nick = asString(summary.nick) || asString(session.nick)
-    out.uid = asString(summary.uid) || asString(session.uid)
-    out.ytid = asString(summary.ytid) || asString(session.ytid)
-    out.mobile = asString(session.mobile)
-    out.method = asString(session.method)
-    out.riskLevel = asString(risk.level) || 'none'
-    out.hint = asString(risk.hint)
-
-    if (subApiOk(data.profile)) {
-      // 有网页 Cookie 时才可能走到这里 —— 权威。
-      out.vipSource = 'api'
-      out.isVip = asBool(summary.is_vip)
-      out.vipUntil = out.isVip ? asString(summary.expire_at).slice(0, 10) : ''
-    } else if (asBool(session.yktk_vip) || asBool(summary.is_vip)) {
-      // 扫码时带回来的权益快照：能显示，但别当权威（到期时间看不到）。
-      out.vipSource = 'login'
-      out.isVip = true
-      out.hint = '会员到期查看需网页 Cookie（设置 → 优酷 Cookie）'
-    } else {
-      out.hint = '会员接口需要网页 Cookie（设置 → 优酷 Cookie）；能不能放看画质页的取流结果'
-    }
-
-    // 有 App 凭证就不算掉登录 —— 会员接口失败与登录态无关。
-    out.needsScan = !out.loggedIn
+    return parseYkAccount(data)
   } catch (e) {
+    const out = emptyAccount()
     const msg = e instanceof Error ? e.message : String(e)
     out.needsScan = /invalid Yk-Sign|re-login|relogin|未登录|YOUKU_RELOGIN_REQUIRED|需要重新登录/i.test(msg)
     out.loggedIn = !out.needsScan
     out.hint = msg
+    return out
   }
+}
+
+export function parseYkAccount(data: Record<string, unknown>): YkAccount {
+  const out = emptyAccount()
+  const summary = isObj(data.summary) ? data.summary : {}
+  const session = isObj(data.session) ? data.session : {}
+  const risk = isObj(data.risk) ? data.risk : {}
+
+  out.loggedIn = asBool(summary.logged_in) || asBool(session.logged_in)
+  out.nick = asString(summary.nick) || asString(session.nick)
+  out.uid = asString(summary.uid) || asString(session.uid)
+  out.ytid = asString(summary.ytid) || asString(session.ytid)
+  out.mobile = asString(session.mobile)
+  out.method = asString(session.method)
+  out.riskLevel = asString(risk.level) || 'none'
+  out.hint = asString(risk.hint)
+
+  if (asBool(summary.membership_known) || subApiOk(data.profile)) {
+    // 新网关直接给标准化 membership_known；旧网关回退解析原始 Profile。
+    const profile = profileMembership(data.profile)
+    out.vipSource = 'api'
+    out.isVip = asBool(summary.is_vip) || profile.isVip
+    const expire = asString(summary.expire_at)
+    out.vipUntil = out.isVip ? (expire ? expire.slice(0, 10) : profile.vipUntil) : ''
+  } else if (asBool(session.yktk_vip) || asBool(summary.is_vip)) {
+    // 扫码时带回来的权益快照：能显示，但别当权威（到期时间看不到）。
+    out.vipSource = 'login'
+    out.isVip = true
+    out.hint = '会员到期查看需网页 Cookie（设置 → 优酷 Cookie）'
+  } else {
+    out.hint = '会员接口需要网页 Cookie（设置 → 优酷 Cookie）；能不能放看画质页的取流结果'
+  }
+
+  // 有 App 凭证就不算掉登录 —— 会员接口失败与登录态无关。
+  out.needsScan = !out.loggedIn
   return out
+}
+
+function emptyAccount(): YkAccount {
+  return {
+    loggedIn: false, needsScan: false, vipSource: 'none', isVip: false, vipUntil: '',
+    nick: '', uid: '', ytid: '', mobile: '', method: '', riskLevel: 'none', hint: '',
+  }
 }
 
 export function accountSummary(acc: YkAccount | null, probe?: VipProbe): string {
@@ -145,6 +222,7 @@ function view(data: Record<string, unknown>): YkLogin {
     nick: asString(data.nick) || asString(yk.nick) || '',
     vip: asBool(yk.vip) || asBool(data.vip),
     refreshable: asBool(data.refreshable) || asBool(data.has_ptoken),
+    createdAt: normalizeMillis(data.created_at),
     lastRefreshAt: Number(data.last_refresh_at ?? 0) || 0,
     lastError: asString(data.last_refresh_error),
     hint: asString(data.hint),
@@ -158,10 +236,24 @@ export async function ykLoginInfo(cli: GwClient, sign: string): Promise<YkLogin>
     return view(data)
   } catch (e) {
     return {
-      ok: false, uid: '', nick: '', vip: false, refreshable: false, lastRefreshAt: 0,
+      ok: false, uid: '', nick: '', vip: false, refreshable: false, createdAt: 0, lastRefreshAt: 0,
       lastError: '', hint: e instanceof Error ? e.message : String(e),
     }
   }
+}
+
+/** 自动续期：旧凭证从未刷新过，或距离上次刷新超过 20 分钟。 */
+export function shouldRefreshYouku(info: YkLogin | null, now = Date.now()): boolean {
+  if (!info?.ok || !info.refreshable) return false
+  if (info.lastRefreshAt > 0) return now - info.lastRefreshAt > 20 * 60_000
+  // QR 完成后的最初一分钟不强刷；否则 ptoken 尚未完全落库时可能误报重登。
+  return info.createdAt > 0 && now - info.createdAt > 60_000
+}
+
+function normalizeMillis(value: unknown): number {
+  const n = Number(value ?? 0)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return n < 10_000_000_000 ? n * 1000 : n
 }
 
 /** 续期。`needsRelogin` 为真才需要重新扫码。 */

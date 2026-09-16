@@ -6,7 +6,8 @@ import { probeOptions } from './lib/quality.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import { hostIsLocal, importYoukuCookie, pollYoukuQR, startYoukuQR } from './lib/youku-qr.ts'
 import {
-  accountSummary, loginSummary, ykAccount, ykLoginInfo, ykRefresh,
+  accountSummary, loginSummary, parseYkAccount, ykAccount, ykLoginInfo, ykRefresh,
+  shouldRefreshYouku,
   type YkAccount, type YkLogin,
 } from './lib/youku-session.ts'
 import { tmdbSearch } from './lib/tmdb.ts'
@@ -91,6 +92,7 @@ export class Runtime {
   private tunnelErr = ''
   private tunnelTransport: 'ws' | 'legacy' | undefined
   private tunnelOn = false
+  private youkuEnsure: Promise<void> | null = null
   private readonly hub: JobHub
   private readonly listeners = new Set<Listener>()
   private readonly abort = new AbortController()
@@ -341,11 +343,7 @@ export class Runtime {
     if (this.signMissing) {
       this.say('本机 Yk-Sign 在网关凭证库里已经不在了（网关重启/重新部署常见）→ 设置 → 优酷扫码 重新登录', 'warn')
     }
-    // Fresh QR logins have lastRefreshAt=0. Forcing refresh then needs_relogin
-    // is exactly "scanned and immediately dropped".
-    const stale = !!this.ykLogin?.ok && this.ykLogin.lastRefreshAt > 0
-      && Date.now() - this.ykLogin.lastRefreshAt > 20 * 60_000
-    if (stale && !this.signMissing) {
+    if (shouldRefreshYouku(this.ykLogin) && !this.signMissing) {
       try {
         const res = await ykRefresh(this.cli, this.cfg.youkuSign)
         if (res.needsRelogin) {
@@ -358,6 +356,14 @@ export class Runtime {
       }
     }
     await this.checkYoukuAccount()
+  }
+
+  /** 合并启动、隧道恢复和登录成功触发的重复账户检查。 */
+  private queueEnsureYouku(): void {
+    if (!this.cli || !this.cfg.youkuSign || this.youkuEnsure) return
+    this.youkuEnsure = this.ensureYouku().finally(() => {
+      this.youkuEnsure = null
+    })
   }
 
   /** 查账号与会员状态（会打几个上游接口，只在启动和手动刷新时调）。 */
@@ -410,10 +416,6 @@ export class Runtime {
         this.say(`${this.keyInfo.name}  scope=${this.keyInfo.all || !this.keyInfo.scope?.length ? '全部' : this.keyInfo.scope.join(',')}  ${
           this.keyInfo.permanent || !this.keyInfo.expiresAt ? '永不到期' : `剩 ${this.keyInfo.daysLeft ?? 0} 天`
         }`, 'ok')
-        // 有本地签名就问一下网关侧的登录态：能自己续期就不用重新扫码。
-        if (this.cfg.youkuSign) {
-          void this.ensureYouku()
-        }
         if (!this.tunnelOn && (this.has('youku') || this.has('tencent'))) {
           this.tunnelOn = true
           this.tunnelAbort = new AbortController()
@@ -423,6 +425,7 @@ export class Runtime {
           let announcedDrop = false
           let downSince = 0
           runTunnel(this.cfg.host, this.cfg.key, (ok, err, transport) => {
+            const wasUp = this.tunnelOk
             this.tunnelOk = ok
             this.tunnelErr = err
             if (transport) this.tunnelTransport = transport
@@ -430,6 +433,8 @@ export class Runtime {
               if (downSince && Date.now() - downSince > 8000) this.say('隧道已恢复：优酷/腾讯走本机 IP', 'ok')
               downSince = 0
               announcedDrop = false
+              // account/profile 必须走当前 Key 自己的隧道；等 OPEN 后再查。
+              if (!wasUp) this.queueEnsureYouku()
             } else {
               downSince ||= Date.now()
               if (!announcedDrop) {
@@ -442,6 +447,8 @@ export class Runtime {
             }
             this.emit()
           }, this.tunnelAbort.signal)
+        } else if (this.tunnelOk) {
+          this.queueEnsureYouku()
         }
       } catch (e) {
         this.say(`Key 无效：${e instanceof Error ? e.message : e}`, 'err')
@@ -750,10 +757,23 @@ export class Runtime {
         this.say('正在导入优酷 Cookie…')
         this.emit()
         try {
-          this.cfg.youkuSign = await this.work(() => importYoukuCookie(this.cli!, v))
+          const imported = await this.work(() => importYoukuCookie(this.cli!, v))
+          this.cfg.youkuSign = imported.sign
           saveConfig(this.cfg)
-          this.say('优酷 Cookie 已导入', 'ok')
-          void this.ensureYouku()
+          this.signMissing = false
+          this.ykLogin = null
+          this.ykAcct = imported.accountInfo ? parseYkAccount(imported.accountInfo) : null
+          if (this.ykAcct) {
+            this.ykLogin = await ykLoginInfo(this.cli, this.cfg.youkuSign)
+            this.say(`优酷 Cookie 已导入 · ${accountSummary(this.ykAcct)}`, this.ykAcct.needsScan ? 'warn' : 'ok')
+          } else if (this.tunnelOk) {
+            await this.ensureYouku()
+            const account = this.ykAcct as YkAccount | null
+            this.say(`优酷 Cookie 已导入 · ${accountSummary(account)}`, account?.needsScan ? 'warn' : 'ok')
+          } else {
+            this.say('优酷 Cookie 已导入，等待隧道连接后查询账户', 'ok')
+            this.queueEnsureYouku()
+          }
         } catch (e) {
           this.say(`Cookie 导入失败：${e instanceof Error ? e.message : e}`, 'err')
         }
@@ -1091,7 +1111,8 @@ export class Runtime {
         this.scene = 'settings'
         this.stopQR()
         this.emit()
-        void this.ensureYouku()
+        this.signMissing = false
+        this.queueEnsureYouku()
         return
       }
       if (poll.loggedIn && this.cfg.youkuSign) {
@@ -1099,7 +1120,8 @@ export class Runtime {
         this.scene = 'settings'
         this.stopQR()
         this.emit()
-        void this.ensureYouku()
+        this.signMissing = false
+        this.queueEnsureYouku()
       }
     } catch (e) {
       this.say(e instanceof Error ? e.message : String(e), 'err')
