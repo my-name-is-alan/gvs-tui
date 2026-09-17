@@ -8,7 +8,7 @@
 
 ## 运行
 
-按源码方式运行，需要 Bun ≥ 1.3（界面已在 1.3.14 和 1.4.2 验证）。Git 仓库包含源码和锁文件，不包含 `bin/`、`dist/` 或 `node_modules/`，不再制作便携包。不需要 Go。Windows x64 首次运行会自动将缺少的 ffmpeg、N_m3u8DL-RE、mkvmerge、Shaka Packager 下载到项目根目录的 `bin/`，已存在的工具直接复用。
+按源码方式运行，需要 Bun ≥ 1.3（界面已在 1.3.14 和 1.4.2 验证）。Git 仓库直接包含 Windows x64 的 FFmpeg、mkvmerge、N_m3u8DL-RE 和 Shaka Packager，位于 `bin/`，普通 `git clone/pull` 会一起下载，无需 Git LFS 或用户另装媒体工具。不包含 Bun、`dist/` 或 `node_modules/`，不制作便携包，不需要 Go。
 
 ```powershell
 git clone https://github.com/my-name-is-alan/gvs-tui.git
@@ -17,7 +17,7 @@ bun install --frozen-lockfile
 bun run start
 ```
 
-`start` 自动编译当前源码后启动，避免拉到新代码却仍运行旧 dist。第一次填自己的网关 Base URL、API Key 并登录平台。配置在用户目录 `gvs/tui.json`，不会提交到 Git。更新时执行：
+`start` 自动编译当前源码后启动，直接使用仓库的 `bin/`，避免拉到新代码却仍运行旧 dist。第一次填自己的网关 Base URL、API Key 并登录平台。配置在用户目录 `gvs/tui.json`，不会提交到 Git。更新时执行：
 
 ```powershell
 git pull
@@ -25,15 +25,14 @@ bun install --frozen-lockfile
 bun run start
 ```
 
-开发时可用热更新；提前准备工具是可选步骤：
+开发时可用热更新；也可离线检查仓库工具：
 
 ```powershell
 bun run dev
-# 可选：先下载工具，或网络恢复后重试工具安装
-bun run tools:prepare
+bun run tools:check
 ```
 
-`build` 只编译代码，不复制工具或运行库；运行时使用项目的 `node_modules/` 与 `bin/`。首次依赖安装和工具准备需要联网。如果出现“工具缺失：The socket connection was closed unexpectedly”，是工具下载网络失败；会自动重试 5 次，仍失败时检查 GitHub 连接后执行 `bun run tools:prepare`。CI 验证干净检出的安装、编译和界面渲染，不再上传 ZIP 产物。[第三方工具说明](docs/THIRD-PARTY-TOOLS.md)。
+`build` 只编译代码，不复制工具或运行库；运行时使用项目的 `node_modules/` 与 `bin/`。首次 clone 和依赖安装需要联网，但 Windows x64 正常检出后启动不会再访问第三方发行站下载工具。若工具被手动删除，可重新从 Git 恢复，或执行 `bun run tools:prepare` 使用联网兜底。其它平台需对应的工具构建。CI 校验仓库二进制哈希、禁网工具准备和独立启动，不上传 ZIP 产物。[第三方工具说明](docs/THIRD-PARTY-TOOLS.md)。
 
 `Ctrl+C` 退出。
 

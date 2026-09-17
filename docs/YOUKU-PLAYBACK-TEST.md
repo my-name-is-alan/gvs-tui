@@ -9,7 +9,7 @@ bun install --frozen-lockfile
 bun run start
 ```
 
-使用源码仓库测试，不提供便携包。`start` 会编译当前源码并启动；Windows x64 启动时自动准备缺少的媒体工具。首次依赖/工具安装需要联网。登录、网关配置和下载文件不包含在 Git，测试者使用自己的配置。工具下载失败时可执行 `bun run tools:prepare` 单独重试。
+使用源码仓库测试，不提供便携包。`start` 会编译当前源码并启动；Windows x64 所需媒体工具已在 Git 的 `bin/` 中，无需首次运行时另行下载。首次 clone 与依赖安装需要联网。登录、网关配置和下载文件不包含在 Git，测试者使用自己的配置。`bun run tools:check` 禁止联网并检查仓库工具的哈希和启动状态。
 
 ## 下载验证
 

@@ -1,0 +1,3 @@
+bin/*.exe binary
+# Preserve verbatim upstream license/build notices, including whitespace.
+bin/licenses/* -whitespace

@@ -13,6 +13,7 @@
     "build": "tsc --noEmit && vite build",
     "setup": "bun run tools:prepare",
     "tools:prepare": "bun run scripts/prepare-tools.ts",
+    "tools:check": "bun run scripts/check-repo-tools.ts",
     "start": "bun run build && bun --bun dist/main.js",
     "preview": "bun run scripts/preview.ts"
   },

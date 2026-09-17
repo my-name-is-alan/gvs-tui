@@ -1,0 +1,30 @@
+{
+  "platform": "win32",
+  "arch": "x64",
+  "tools": [
+    {
+      "name": "ffmpeg.exe",
+      "version": "9.0.1-essentials",
+      "bytes": 102856192,
+      "sha256": "72a489eccd008c2ec2c0a5856c5c75bc3d8bbfa90166c4566865c246445e6aa3"
+    },
+    {
+      "name": "mkvmerge.exe",
+      "version": "58.0.0",
+      "bytes": 13662208,
+      "sha256": "50f10f01706d7ae1795c068cf9deb83c3d3e0c1b4820fae9db3219fc9f0933a2"
+    },
+    {
+      "name": "N_m3u8DL-RE.exe",
+      "version": "0.6.0-beta (df70f0b3)",
+      "bytes": 13287936,
+      "sha256": "35e7c16983f0315bba2a3f37dc392fdfa074be614c8effb642b78376b18ba272"
+    },
+    {
+      "name": "packager-win-x64.exe",
+      "version": "3.9.3",
+      "bytes": 5266944,
+      "sha256": "ef9cdc9f09cd86321f995c4a6b8dcaf96bcc853707caaf304cb9a0e76f6d68f6"
+    }
+  ]
+}
