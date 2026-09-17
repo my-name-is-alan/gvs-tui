@@ -15,7 +15,7 @@ jobs:
         with:
           bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
-      - run: bunx tsc --noEmit
+      - run: bun run build
       - run: bun test src/lib
       - run: bun run preview
 
@@ -35,7 +35,7 @@ jobs:
       - run: bun test src/lib/template-props.test.ts
       - run: bun run preview
 
-  windows-package:
+  windows-source:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,11 +44,6 @@ jobs:
           bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
       - run: bun test src/lib
-      - run: bun run package:windows
-      - run: bun run check:portable
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gvs-tui-windows-x64
-          path: .build/releases/gvs-tui-*-windows-x64.zip*
-          if-no-files-found: error
-          retention-days: 14
+      - run: bun run tools:prepare
+      - run: bun run build
+      - run: bun run preview

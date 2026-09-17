@@ -6,12 +6,10 @@
 
 ```powershell
 bun install --frozen-lockfile
-bun run tools:prepare
-bun run build
 bun run start
 ```
 
-源码检出不包含依赖或媒体工具，上面的安装/准备步骤需要联网。给普通测试者应发送 `bun run package:windows` 生成的完整 ZIP，解压后双击 `start.cmd`；它包含 Bun、OpenTUI 运行库及四个媒体工具。登录、网关配置和下载文件不包含在 Git 或便携包中，测试者使用自己的配置。
+使用源码仓库测试，不提供便携包。`start` 会编译当前源码并启动；Windows x64 启动时自动准备缺少的媒体工具。首次依赖/工具安装需要联网。登录、网关配置和下载文件不包含在 Git，测试者使用自己的配置。工具下载失败时可执行 `bun run tools:prepare` 单独重试。
 
 ## 下载验证
 

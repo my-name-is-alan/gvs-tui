@@ -8,35 +8,32 @@
 
 ## 运行
 
-源码运行需要 Bun ≥ 1.3。Git 仓库包含源码和锁文件，不包含 `bin/`、`dist/` 或 `node_modules/`；首次安装必须联网获取依赖及 ffmpeg、N_m3u8DL-RE、mkvmerge、Shaka Packager。不需要 Go。工具优先从程序旁的 `bin/` 读取，不依赖启动目录或系统 PATH。
+按源码方式运行，需要 Bun ≥ 1.3（界面已在 1.3.14 和 1.4.2 验证）。Git 仓库包含源码和锁文件，不包含 `bin/`、`dist/` 或 `node_modules/`，不再制作便携包。不需要 Go。Windows x64 首次运行会自动将缺少的 ffmpeg、N_m3u8DL-RE、mkvmerge、Shaka Packager 下载到项目根目录的 `bin/`，已存在的工具直接复用。
 
 ```powershell
+git clone https://github.com/my-name-is-alan/gvs-tui.git
+cd gvs-tui
 bun install --frozen-lockfile
-bun run setup
-bun run dev
-```
-
-第一次填网关 Base URL + 管理台发的 API Key。配置在用户目录 `gvs/tui.json`。
-
-```powershell
-bun run build
 bun run start
 ```
 
-`bun run build` 会将工具复制到 `dist/bin/`，并将 OpenTUI 和原生 DLL/WASM 运行依赖复制到 `dist/node_modules/`。普通 `dist` 仍需本机安装 Bun。源码首次启动缺少工具时会自动准备，也可提前执行 `bun run tools:prepare`。如果出现“工具缺失：The socket connection was closed unexpectedly”，是获取工具时的网络失败；下载会自动重试 5 次，仍失败时检查 GitHub 连接或使用下面的完整便携包。[第三方工具说明](docs/THIRD-PARTY-TOOLS.md)。
-
-### Windows 完整便携包
-
-在仓库 Actions 中打开当前提交的 `tui` 任务，下载 `gvs-tui-windows-x64` 构建产物，解压其中的 ZIP 后双击 `start.cmd`。完整包包含 Bun、界面运行依赖及四个媒体工具，无需额外安装 Node/Bun 或联网下载工具；网关地址、API Key 和平台登录仍由使用者自己填写。不要只发送 `main.js`。
-
-开发者可在 Windows x64 生成和验证同一份包：
+`start` 自动编译当前源码后启动，避免拉到新代码却仍运行旧 dist。第一次填自己的网关 Base URL、API Key 并登录平台。配置在用户目录 `gvs/tui.json`，不会提交到 Git。更新时执行：
 
 ```powershell
-bun run package:windows
-bun run check:portable
+git pull
+bun install --frozen-lockfile
+bun run start
 ```
 
-产物在 `.build/releases/`。验证会将 ZIP 解压到仓库外，使用包内 Bun 并关闭自动安装，检查原生界面渲染与四个工具能否启动。CI 从干净检出构建并验证这个包，避免本机已装工具掩盖遗漏。
+开发时可用热更新；提前准备工具是可选步骤：
+
+```powershell
+bun run dev
+# 可选：先下载工具，或网络恢复后重试工具安装
+bun run tools:prepare
+```
+
+`build` 只编译代码，不复制工具或运行库；运行时使用项目的 `node_modules/` 与 `bin/`。首次依赖安装和工具准备需要联网。如果出现“工具缺失：The socket connection was closed unexpectedly”，是工具下载网络失败；会自动重试 5 次，仍失败时检查 GitHub 连接后执行 `bun run tools:prepare`。CI 验证干净检出的安装、编译和界面渲染，不再上传 ZIP 产物。[第三方工具说明](docs/THIRD-PARTY-TOOLS.md)。
 
 `Ctrl+C` 退出。
 

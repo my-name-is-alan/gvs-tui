@@ -52,5 +52,5 @@ export async function fetchToolBytes(url: string, options: {
       await wait(delay, options.signal)
     }
   }
-  throw new Error(`${options.label} 下载失败：${last}。请检查 GitHub 连接后运行 bun run tools:prepare，或使用包含 bin 的完整便携包`)
+  throw new Error(`${options.label} 下载失败：${last}。请检查 GitHub 连接后运行 bun run tools:prepare 重试`)
 }

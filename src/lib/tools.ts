@@ -19,7 +19,7 @@ export function ensureFFmpeg(note?: (s: string) => void, signal?: AbortSignal): 
   const hit = lookBundledFFmpeg()
   if (hit) return Promise.resolve(hit)
   if (process.platform !== 'win32' || process.arch !== 'x64') {
-    return Promise.reject(new Error('此平台缺少内置 ffmpeg，请使用对应平台的完整发行包'))
+    return Promise.reject(new Error(`此平台不支持自动准备 ffmpeg，请将可执行文件放到 ${tuiBinDir()}`))
   }
   ffmpegInflight ||= pullGithub({
     repo: 'GyanD/codexffmpeg',

@@ -2,11 +2,16 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-/** Source tree and portable dist both locate tools relative to the app, never cwd. */
-export function tuiBinDir(): string {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const adjacent = join(here, 'bin')
-  if (existsSync(adjacent)) return adjacent
+/** Both src/lib and the compiled dist use the checkout's shared bin directory.
+ * Prefer the repository over stale bin folders from an earlier packaged build.
+ */
+export function toolDirectoryFrom(modulePath: string): string {
+  const here = dirname(modulePath)
   if (existsSync(join(here, '..', '..', 'package.json'))) return join(here, '..', '..', 'bin')
-  return adjacent
+  if (existsSync(join(here, '..', 'package.json'))) return join(here, '..', 'bin')
+  return join(here, 'bin')
+}
+
+export function tuiBinDir(): string {
+  return toolDirectoryFrom(fileURLToPath(import.meta.url))
 }
