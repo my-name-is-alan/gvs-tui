@@ -25,6 +25,12 @@
       "version": "3.9.3",
       "bytes": 5266944,
       "sha256": "ef9cdc9f09cd86321f995c4a6b8dcaf96bcc853707caaf304cb9a0e76f6d68f6"
+    },
+    {
+      "name": "MP4Box.exe",
+      "version": "26.03-DEV-rev317-g260872025 (static mini)",
+      "bytes": 9315328,
+      "sha256": "a041820fc9a3a8d08eda5b8c6f315f05bf3ef8d636213e3d24314f3fe6db8a0e"
     }
   ]
 }

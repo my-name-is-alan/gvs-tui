@@ -6,6 +6,7 @@ dist/
 !bin/mkvmerge.exe
 !bin/N_m3u8DL-RE.exe
 !bin/packager-win-x64.exe
+!bin/MP4Box.exe
 !bin/manifest.json
 !bin/README.md
 !bin/licenses/

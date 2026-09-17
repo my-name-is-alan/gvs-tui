@@ -4,7 +4,8 @@ import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
 import { ffmpegDecryptCopy, ffmpegRemux, validateAudio } from './ffmpeg.ts'
 import { mkvmergeMux, mkvmergeRemux, type MuxAudio } from './mkvmerge.ts'
-import { ensureFFmpeg, ensureMkvmerge } from './tools.ts'
+import { ensureFFmpeg, ensureMkvmerge, ensureMP4Box } from './tools.ts'
+import { isDtsAudio, mp4boxMux, readMp4Tracks } from './mp4box.ts'
 import { filename, folder, sourceTag } from './name.ts'
 import type { MediaKind, Naming } from './name.ts'
 import { writeEpisodeNFO, writeMovieNFO, writeTvShowNFO } from './nfo.ts'
@@ -126,11 +127,12 @@ async function runTask(
       source: sourceTag(t.provider),
       group: t.provider === 'douyin' ? '' : (t.group.trim() || cfg.releaseGroup),
       tmdbId: t.tmdbId,
-      container: t.provider === 'douyin' ? 'mp4' : t.provider === 'hongguo' && cfg.hongguoFmt ? cfg.hongguoFmt : 'mkv',
+      container: t.provider === 'douyin' || (t.provider === 'youku' && t.audioTracks?.some(isDtsAudio))
+        ? 'mp4' : t.provider === 'hongguo' && cfg.hongguoFmt ? cfg.hongguoFmt : 'mkv',
     }
     const dir = t.provider === 'douyin' ? cfg.outDir : folder(n, cfg.outDir)
     mkdirSync(dir, { recursive: true })
-    const out = join(dir, filename(n))
+    let out = join(dir, filename(n))
     const ffmpeg = t.provider === 'hongguo' ? await ensureFFmpeg() : ''
     const mkvmerge = n.container === 'mkv' ? await ensureMkvmerge() : ''
     if (n.container === 'mkv' && !mkvmerge) throw new Error('没有 mkvmerge')
@@ -140,7 +142,7 @@ async function runTask(
         await dlHongguo(cli, t, dir, out, ffmpeg, mkvmerge, emit, retryNote, cfg.threads)
         break
       case 'youku':
-        await dlYouku(cli, cfg, t, dir, out, mkvmerge, emit, retryNote)
+        out = await dlYouku(cli, cfg, t, dir, out, mkvmerge, emit, retryNote)
         break
       case 'tencent':
         await dlTencent(cli, cfg, t, dir, out, mkvmerge, emit, retryNote)
@@ -278,7 +280,7 @@ async function dlYouku(
   cli: GwClient, cfg: FileConfig, t: DlTask, dir: string, out: string, mkvmerge: string,
   emit: (s: string, p: number, l: string) => void,
   retryNote: RetryNote,
-): Promise<void> {
+): Promise<string> {
   const tracks = t.audioTracks?.length ? t.audioTracks : [{ id: '', label: '默认音轨', lang: '' }]
   const videoPath = join(dir, `.${t.vid}.video.mp4`)
   const muxInputs: MuxAudio[] = []
@@ -361,20 +363,31 @@ async function dlYouku(
       retryNote(retry, total, `CDN ${status}，${delayMs / 1000} 秒后重新取链`)
     })
 
-    emit('校验', 0.85, '检查音轨完整解码')
+    // Inspect the actual sample entry as well as the selected label: a default
+    // track may be DTS without an explicit selection in the task.
+    const mp4box = await ensureMP4Box()
+    const audioInfo = []
+    for (const input of muxInputs) audioInfo.push(await readMp4Tracks(mp4box, input.path))
+    const dts = tracks.some(isDtsAudio) || audioInfo.some(list => list.some(t => /^dts[cehlxy]$/.test(t.codec)))
+    if (dts) out = out.slice(0, out.length - extname(out).length) + '.mp4'
+    emit('校验', 0.85, dts ? '检查 MP4 轨道和时间戳（DTS 使用 MP4Box）' : '检查音轨完整解码')
     const ffmpeg = await ensureFFmpeg()
-    for (const input of muxInputs) await validateAudio(ffmpeg, input.path)
+    for (const [i, input] of muxInputs.entries()) {
+      if (!isDtsAudio(tracks[i]!) && !audioInfo[i]!.some(t => /^dts[cehlxy]$/.test(t.codec))) await validateAudio(ffmpeg, input.path)
+    }
     emit('封装', 0.86, muxInputs.length > 1 ? `封装 ${muxInputs.length} 条音轨` : out)
     const muxProgress = (n: number, total: number) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`)
-    const partial = join(dir, `.${t.vid}.mux-partial.mkv`)
+    const partial = join(dir, `.${t.vid}.mux-partial${dts ? '.mp4' : '.mkv'}`)
     temps.add(partial)
     try {
-      if (muxInputs.length) await mkvmergeMux(mkvmerge, videoPath, muxInputs, partial, muxProgress)
+      if (dts) await mp4boxMux(mp4box, videoPath, muxInputs, partial, muxProgress)
+      else if (muxInputs.length) await mkvmergeMux(mkvmerge, videoPath, muxInputs, partial, muxProgress)
       else await mkvmergeRemux(mkvmerge, videoPath, partial, muxProgress)
-      await validateAudio(ffmpeg, partial)
+      if (!dts) await validateAudio(ffmpeg, partial)
       renameSync(partial, out)
       if (existsSync(`${partial}.timing.json`)) renameSync(`${partial}.timing.json`, `${out}.timing.json`)
       succeeded = true
+      return out
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (/channel element|Prediction is not allowed|is not allocated|Error submitting packet/i.test(msg)) {

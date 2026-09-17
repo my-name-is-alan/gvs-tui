@@ -19,4 +19,9 @@
   - [对应源代码及构建说明](https://github.com/shaka-project/shaka-packager/tree/v3.9.3)
   - BSD 3-Clause 及 Chromium 附录；许可证见 `licenses/Shaka-Packager-BSD.txt`。
 
-FFmpeg、RE、mkvmerge 的下载归档已与 GitHub 发行资产 SHA-256 核对；Shaka 文件已与发行资产摘要核对。更新工具时须同步修改哈希清单，重新运行 `tools:check` 及媒体回归测试。不要提交日志、用户配置、其它平台程序或重复的工具副本。
+- `MP4Box.exe`：GPAC `26.03-DEV-rev317-g260872025-master`，静态 MINI 构建，9,315,328 字节，不依赖额外 DLL。用于 DTS 音轨的 MP4 封装及不依赖解码器的样本检查。
+  - 从 [StaxRip v2.52.5 原始发行包](https://github.com/staxrip/staxrip/releases/download/v2.52.5/StaxRip-v2.52.5-x64.7z) 的 `Apps/Support/MP4Box/MP4Box.exe` 原样提取，仅包含该可执行文件。归档 SHA-256：`3ced91af31743d6e6611c700c265066bd85cb6954c251bd3dc218209299dcdd0`，已与 GitHub 资产摘要核对。
+  - [对应 GPAC 源码](https://github.com/gpac/gpac/tree/260872025)，[构建说明](https://wiki.gpac.io/Build/archives/GPAC-build-MP4Box-only-all-platforms/)。程序报告的构建配置为 `--static-bin --use-zlib=no`，MINI build。
+  - LGPL v2.1+；许可证原文见 `licenses/GPAC-LGPL-2.1.txt`。不附带 StaxRip 的凭据、配置、旧 gpac.exe 或其它程序。
+
+FFmpeg、RE、mkvmerge、MP4Box 的下载归档已与 GitHub 发行资产 SHA-256 核对；Shaka 文件已与发行资产摘要核对。更新工具时须同步修改哈希清单，重新运行 `tools:check` 及媒体回归测试。不要提交日志、用户配置、其它平台程序或重复的工具副本。

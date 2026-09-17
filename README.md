@@ -8,7 +8,7 @@
 
 ## 运行
 
-按源码方式运行，需要 Bun ≥ 1.3（界面已在 1.3.14 和 1.4.2 验证）。Git 仓库直接包含 Windows x64 的 FFmpeg、mkvmerge、N_m3u8DL-RE 和 Shaka Packager，位于 `bin/`，普通 `git clone/pull` 会一起下载，无需 Git LFS 或用户另装媒体工具。不包含 Bun、`dist/` 或 `node_modules/`，不制作便携包，不需要 Go。
+按源码方式运行，需要 Bun ≥ 1.3（界面已在 1.3.14 和 1.4.2 验证）。Git 仓库直接包含 Windows x64 的 FFmpeg、mkvmerge、N_m3u8DL-RE、Shaka Packager 和 MP4Box，位于 `bin/`，普通 `git clone/pull` 会一起下载，无需 Git LFS 或用户另装媒体工具。不包含 Bun、`dist/` 或 `node_modules/`，不制作便携包，不需要 Go。
 
 ```powershell
 git clone https://github.com/my-name-is-alan/gvs-tui.git
@@ -35,6 +35,8 @@ bun run tools:check
 `build` 只编译代码，不复制工具或运行库；运行时使用项目的 `node_modules/` 与 `bin/`。首次 clone 和依赖安装需要联网，但 Windows x64 正常检出后启动不会再访问第三方发行站下载工具。若工具被手动删除，可重新从 Git 恢复，或执行 `bun run tools:prepare` 使用联网兜底。其它平台需对应的工具构建。CI 校验仓库二进制哈希、禁网工具准备和独立启动，不上传 ZIP 产物。[第三方工具说明](docs/THIRD-PARTY-TOOLS.md)。
 
 `Ctrl+C` 退出。
+
+优酷选中 DTS / DTS:X（或默认音轨实际是 DTS）时，自动用 MP4Box 输出 `.mp4`，保留所有选中的音轨；其它音轨继续输出 MKV。DTS 路径不要求 FFmpeg 解码 DTS，而是检查 MP4 样本、音频数据 SHA-256、各轨道时间戳及相对起点。封装失败会保留源轨道与 `.timing.json`；这种检查验证封装完整性，不代表已经验证 DTS:X 解码或播放器性能。已有成品不自动修改。
 
 ## 结构
 

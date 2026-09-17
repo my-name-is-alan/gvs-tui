@@ -89,6 +89,17 @@ export function lookMkvmerge(): string {
     || existsFile(join(pf, 'MKVToolNix', 'mkvmerge.exe'))
 }
 
+export function lookMP4Box(): string {
+  return existsFile(join(tuiBinDir(), process.platform === 'win32' ? 'MP4Box.exe' : 'MP4Box'))
+    || existsFile(process.env.MP4BOX?.trim() ?? '') || which('MP4Box')
+}
+
+export async function ensureMP4Box(): Promise<string> {
+  const hit = lookMP4Box()
+  if (hit) return hit
+  throw new Error(`缺少 MP4Box，请 git restore bin/MP4Box.exe 恢复仓库工具；其它平台请安装 GPAC 或设置 MP4BOX`)
+}
+
 export function packagerName(platform = process.platform, arch = process.arch): string {
   if (platform === 'win32') return 'packager-win-x64.exe'
   if (platform === 'darwin') return arch === 'arm64' ? 'packager-osx-arm64' : 'packager-osx-x64'
@@ -215,6 +226,7 @@ export async function ensureTools(note?: (s: string) => void, signal?: AbortSign
   await ensureM3u8dl(note, signal)
   await ensureMkvmerge(note, signal)
   await ensurePackager(note, signal)
+  await ensureMP4Box()
 }
 
 async function pullGithub(opts: {

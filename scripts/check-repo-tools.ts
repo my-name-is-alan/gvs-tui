@@ -11,7 +11,7 @@ if (resolve(tuiBinDir()) !== expectedDir) throw new Error('工具路径没有指
 const manifest = JSON.parse(readFileSync(join(expectedDir, 'manifest.json'), 'utf8')) as {
   tools: Array<{ name: string; bytes: number; sha256: string }>
 }
-const required = ['ffmpeg.exe', 'mkvmerge.exe', 'N_m3u8DL-RE.exe', 'packager-win-x64.exe']
+const required = ['ffmpeg.exe', 'mkvmerge.exe', 'N_m3u8DL-RE.exe', 'packager-win-x64.exe', 'MP4Box.exe']
 if (manifest.tools.length !== required.length || required.some(name => !manifest.tools.some(t => t.name === name))) throw new Error('媒体工具清单不完整')
 for (const tool of manifest.tools) {
   const data = readFileSync(join(expectedDir, tool.name))
@@ -21,7 +21,7 @@ globalThis.fetch = (() => { throw new Error('仓库工具校验禁止联网') })
 await ensureTools()
 for (const name of required) {
   await new Promise<void>((resolve, reject) => {
-    const p = spawn(join(expectedDir, name), [name === 'ffmpeg.exe' ? '-version' : '--version'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const p = spawn(join(expectedDir, name), [name === 'ffmpeg.exe' || name === 'MP4Box.exe' ? '-version' : '--version'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     let info = ''
     const timeout = setTimeout(() => { p.kill(); reject(new Error(`${name} 启动超时`)) }, 20000)
     p.stdout.on('data', b => { info += b })
