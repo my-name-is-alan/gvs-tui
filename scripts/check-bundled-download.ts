@@ -161,5 +161,9 @@ try {
 } finally {
   process.chdir(originalCwd)
   server.closeAllConnections()
-  server.close()
+  await new Promise<void>(resolve => server.close(() => resolve()))
 }
+// Bun on Windows may keep fetch/child-process handles alive after the fixture
+// server has closed. Reach this only after every assertion and cleanup passed;
+// an uncaught failure above still exits nonzero instead of being masked.
+process.exit(0)

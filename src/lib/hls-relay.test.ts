@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { createServer } from 'node:http'
-import { createHlsRelay, hlsAbsoluteUrl, hlsContentPath, rewriteHls } from './hls-relay.ts'
+import { createHlsRelay, HlsRefreshError, hlsAbsoluteUrl, hlsContentPath, rewriteHls } from './hls-relay.ts'
+import { ReloginRequired } from './client.ts'
 
 test('Youku refresh may rotate only the signed directory, not the content id', () => {
   const a = 'https://zreal.cp12.wasu.tv/' + 'a'.repeat(24) + '/asset_video_001.mp4?s=old'
@@ -209,5 +210,87 @@ test('four media requests reach the CDN concurrently through the relay', async (
   } finally {
     await relay.close(); origin.closeAllConnections()
     await new Promise<void>(r => origin.close(() => r()))
+  }
+})
+
+test('temporary play/playlist failures consume the same refresh budget and recover', async () => {
+  for (const mode of ['play', 'playlist', 'mixed-budget'] as const) {
+    let calls = 0, oldSegmentHits = 0
+    const waits: number[] = [], attempts: number[] = []
+    const origin = createServer((req, res) => {
+      const url = new URL(req.url!, 'http://localhost')
+      const version = Number(url.searchParams.get('v') ?? 0)
+      if (url.pathname === '/media.m3u8') {
+        if (mode === 'playlist' && version === 1) { res.writeHead(503).end('temporarily unavailable'); return }
+        res.end(`#EXTM3U\n#EXTINF:1,\nseg.mp4?v=${version}\n#EXT-X-ENDLIST\n`)
+        return
+      }
+      if (!version) oldSegmentHits++
+      if (!version || mode === 'mixed-budget') res.writeHead(403).end('expired')
+      else res.end('exact segment')
+    })
+    await new Promise<void>(r => origin.listen(0, '127.0.0.1', r))
+    const base = `http://127.0.0.1:${(origin.address() as { port: number }).port}`
+    const relay = await createHlsRelay(`${base}/media.m3u8?v=0`, {}, false, {
+      maxAttempts: 1, maxRefreshes: 3,
+      wait: async ms => { waits.push(ms) }, onRefresh: n => { attempts.push(n) },
+      refreshSource: async () => {
+        calls++
+        if (calls === 1 && mode !== 'playlist') throw new Error('http 503: gateway temporarily unavailable')
+        return `${base}/media.m3u8?v=${calls}`
+      },
+    })
+    try {
+      const playlist = await (await fetch(relay.url)).text()
+      const segment = playlist.split('\n').find(l => l.startsWith('http'))!
+      const result = await fetch(segment)
+      const body = await result.text()
+      expect(oldSegmentHits).toBe(1)
+      if (mode === 'mixed-budget') {
+        expect(result.status).toBe(502)
+        expect(calls).toBe(3)
+        expect(attempts).toEqual([1, 2, 3])
+        expect(waits).toEqual([1000, 2000])
+        expect(relay.error()).toBeInstanceOf(HlsRefreshError)
+      } else {
+        expect(result.status).toBe(200)
+        expect(body).toBe('exact segment')
+        expect(calls).toBe(2)
+        expect(attempts).toEqual([1, 2])
+        expect(waits).toEqual([1000])
+        expect(relay.error()).toBeUndefined()
+      }
+    } finally {
+      await relay.close(); origin.closeAllConnections()
+      await new Promise<void>(r => origin.close(() => r()))
+    }
+  }
+})
+
+test('refresh stops immediately for login, key and structural failures', async () => {
+  for (const failure of [new ReloginRequired('http 403: requires re-login'), new Error('重新取链后解密密钥改变'), new HlsRefreshError('分片结构改变')]) {
+    let calls = 0
+    const origin = createServer((req, res) => {
+      if (req.url === '/media.m3u8') res.end('#EXTM3U\n#EXTINF:1,\nseg.mp4\n#EXT-X-ENDLIST\n')
+      else res.writeHead(403).end('expired')
+    })
+    await new Promise<void>(r => origin.listen(0, '127.0.0.1', r))
+    const base = `http://127.0.0.1:${(origin.address() as { port: number }).port}`
+    const relay = await createHlsRelay(`${base}/media.m3u8`, {}, false, {
+      maxAttempts: 1, wait: async () => { throw new Error('must not wait') },
+      refreshSource: async () => { calls++; throw failure },
+    })
+    try {
+      const playlist = await (await fetch(relay.url)).text()
+      const segment = playlist.split('\n').find(l => l.startsWith('http'))!
+      const result = await fetch(segment)
+      expect(result.status).toBe(502)
+      await result.text()
+      expect(calls).toBe(1)
+      expect(relay.error()?.message).toBe(failure.message)
+    } finally {
+      await relay.close(); origin.closeAllConnections()
+      await new Promise<void>(r => origin.close(() => r()))
+    }
   }
 })

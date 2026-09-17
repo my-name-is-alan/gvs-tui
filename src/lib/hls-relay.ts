@@ -8,6 +8,15 @@ type Resource = { url: string; playlist: boolean }
 export class HlsRefreshError extends Error {
   constructor(message: string) { super(message); this.name = 'HlsRefreshError' }
 }
+
+function isTransientRefreshError(error: unknown): boolean {
+  if (!(error instanceof Error) || error instanceof HlsRefreshError || error.name === 'ReloginRequired') return false
+  const code = (error as NodeJS.ErrnoException).code ?? ''
+  return /^(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|UND_ERR_CONNECT_TIMEOUT|ConnectionRefused)$/.test(code)
+    || /^(?:TimeoutError|AbortError)$/.test(error.name)
+    || /(?:HTTP\s*|status(?:\s+code)?[\s:=]+)(?:403|408|410|425|429|500|502|503|504)\b/i.test(error.message)
+    || /fetch failed|unable to connect|timed?\s*out|隧道未连接/i.test(error.message)
+}
 export type RelayEvent = {
   resource: string; kind: 'playlist' | 'segment'; host: string; status: number; attempt: number
   elapsedMs: number; range?: string; cdnAuth?: string; via?: string
@@ -88,7 +97,7 @@ export async function createHlsRelay(source: string, headers: Record<string, str
   let peakConcurrentRequests = 0, refreshes = 0, refreshElapsedMs = 0
   const lifetime = new AbortController()
   let generation = 0
-  let refreshInFlight: Promise<void> | undefined
+  let refreshInFlight: Promise<number> | undefined
   let fatal: Error | undefined
   let rootUrl = sourceUrl
   let rootText = ''
@@ -127,39 +136,51 @@ export async function createHlsRelay(source: string, headers: Record<string, str
     })
     rootText = rewriteHls(text, url, register, clear)
   }
-  const refresh = async (observedGeneration: number, attempt: number) => {
+  const refresh = async (observedGeneration: number, usedAttempts: number): Promise<number> => {
     if (fatal) throw fatal
-    if (generation !== observedGeneration) return
+    if (generation !== observedGeneration) return 0
     if (!refreshInFlight) {
       refreshInFlight = (async () => {
         const refreshStarted = Date.now()
-        refreshes++
-        options.onRefresh?.(attempt, maxRefreshes)
-        // Most expired URLs recover on the first refresh. Do not artificially
-        // pause all waiting workers; back off only if a fresh URL is rejected.
-        if (attempt > 1) await (options.wait ?? waitForRetry)(Math.min(1000 * (attempt - 1), 5000), lifetime.signal)
-        const next = hlsAbsoluteUrl(await options.refreshSource!(), rootUrl)
-        if (lifetime.signal.aborted) throw new Error('aborted')
-        const response = await fetch(next, { headers, signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(45000)]) })
-        if (!response.ok) { await response.body?.cancel(); throw new Error(`重新取链播放列表 HTTP ${response.status}`) }
-        const text = await response.text()
-        const parsed = snapshot(text, response.url || next)
-        // Never mix a new edition, timeline, init, byte range or segment order
-        // with already downloaded bytes. Only host and URL signatures may vary.
-        if (parsed.structure !== shape || parsed.entries.length !== members.length || parsed.entries.some((r, i) =>
-          r.playlist !== members[i]!.playlist || hlsContentPath(r.url) !== hlsContentPath(members[i]!.url))) {
-          throw new Error('重新取链后分片结构或内容标识改变，已保留下载进度并停止，避免混入不同片源')
+        try {
+          for (let attempt = usedAttempts + 1; attempt <= maxRefreshes; attempt++) {
+            if (lifetime.signal.aborted) throw new Error('aborted')
+            options.onRefresh?.(attempt, maxRefreshes)
+            // Reissuing play/playlist after a transient failure consumes the
+            // same per-fragment budget as replacing a rejected signed URL.
+            if (attempt > 1) await (options.wait ?? waitForRetry)(Math.min(1000 * (attempt - 1), 5000), lifetime.signal)
+            refreshes++
+            try {
+              const next = hlsAbsoluteUrl(await options.refreshSource!(), rootUrl)
+              if (lifetime.signal.aborted) throw new Error('aborted')
+              const response = await fetch(next, { headers, signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(45000)]) })
+              if (!response.ok) { await response.body?.cancel(); throw new Error(`重新取链播放列表 HTTP ${response.status}`) }
+              const text = await response.text()
+              const parsed = snapshot(text, response.url || next)
+              // Never mix a new edition, timeline, init, byte range or segment
+              // order with downloaded bytes. Only host/signatures may vary.
+              if (parsed.structure !== shape || parsed.entries.length !== members.length || parsed.entries.some((r, i) =>
+                r.playlist !== members[i]!.playlist || hlsContentPath(r.url) !== hlsContentPath(members[i]!.url))) {
+                throw new HlsRefreshError('重新取链后分片结构或内容标识改变，已保留下载进度并停止，避免混入不同片源')
+              }
+              parsed.entries.forEach((r, i) => { members[i]!.url = r.url })
+              root.url = rootUrl = next
+              generation++
+              return attempt - usedAttempts
+            } catch (e) {
+              if (lifetime.signal.aborted || !isTransientRefreshError(e) || attempt === maxRefreshes) throw e
+            }
+          }
+          throw new HlsRefreshError('重新取链次数已耗尽，下载进度已保留')
+        } finally {
+          refreshElapsedMs += Date.now() - refreshStarted
         }
-        parsed.entries.forEach((r, i) => { members[i]!.url = r.url })
-        root.url = rootUrl = next
-        generation++
-        refreshElapsedMs += Date.now() - refreshStarted
       })().catch(e => {
         fatal = new HlsRefreshError(e instanceof Error ? e.message : String(e))
         throw fatal
       }).finally(() => { refreshInFlight = undefined })
     }
-    await refreshInFlight
+    return await refreshInFlight
   }
   const server = createServer(async (req, res) => {
     const prefix = `/${capability}/`
@@ -202,7 +223,7 @@ export async function createHlsRelay(source: string, headers: Record<string, str
               fatal = new HlsRefreshError(`失败分片重新取 CDN 链接 ${maxRefreshes} 次后仍返回 ${upstream.status}；下载进度已保留`)
               throw fatal
             }
-            await refresh(observedGeneration, ++refreshCount)
+            refreshCount += await refresh(observedGeneration, refreshCount)
             attempt-- // fresh-URL budget is separate from transport retries
             continue
           }
