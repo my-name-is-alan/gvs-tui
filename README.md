@@ -92,6 +92,8 @@ Remove-Item -Recurse -Force node_modules/.vite, node_modules/.vite-temp
 判断方法：`Get-NetTCPConnection -OwningProcess <bun pid> | ? RemotePort -eq 443`，
 没有连接就说明应用没起来（正常时至少有 1 条到网关）。
 
+如果 Bun 1.4.2 报 `bun:ffi cannot convert argument to 'f32'`，请更新代码后重新构建。Vue 模板的数字布局属性必须写成 `:flexGrow="1"`，不能写成静态字符串 `flexGrow="1"`；旧版依赖隐式转换的写法已修正。CI 在 Bun 1.3.14 和 1.4.2 上运行全部界面预览，渲染异常会使检查失败。
+
 ## 优酷登录态（不用每次重新扫码）
 
 网关按 Yk-Sign 维度存了优酷会话，并支持**自己续期**（stoken/ptoken），TUI 现在会用它：

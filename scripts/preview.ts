@@ -64,15 +64,22 @@ async function renderScene(scene: string): Promise<string> {
     consoleMode: 'disabled',
     screenMode: 'main-screen',
   })
-  app.mount()
-  await new Promise((resolve) => setTimeout(resolve, 250))
-
-  const buffer = renderer!.currentRenderBuffer.getRealCharBytes(true)
-  const frame = new TextDecoder().decode(buffer)
-
-  app.unmount()
-  renderer!.destroy()
-  return frame.replace(/\s+$/, '')
+  // vue-termui's default handler only logs render/FFI errors. Make the preview
+  // a real smoke test: a blank/broken screen must fail CI, even with exit 0.
+  const renderErrors: unknown[] = []
+  app.config.errorHandler = (error) => { renderErrors.push(error) }
+  try {
+    app.mount()
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    if (renderErrors.length) throw new Error(`Scene ${scene} failed to render`, { cause: renderErrors[0] })
+    const buffer = renderer!.currentRenderBuffer.getRealCharBytes(true)
+    const frame = new TextDecoder().decode(buffer).replace(/\s+$/, '')
+    if (!frame.includes('GVS')) throw new Error(`Scene ${scene} did not render the application header`)
+    return frame
+  } finally {
+    app.unmount()
+    renderer?.destroy()
+  }
 }
 
 const RootComponent = (await import('../src/Root.vue')).default as Parameters<typeof h>[0]

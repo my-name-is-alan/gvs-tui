@@ -503,11 +503,11 @@ function jobLine(job: Job): StyledText {
     <Text v-if="showRule" :content="'─'.repeat(W)" :width="W" :height="1" :fg="c.line" />
 
     <!-- body -->
-    <Box flexGrow="1" flexDirection="column" :width="W" :paddingLeft="1" :paddingRight="1">
+    <Box :flexGrow="1" flexDirection="column" :width="W" :paddingLeft="1" :paddingRight="1">
       <!-- setup -->
       <Box
         v-if="state.scene === 'setup'"
-        flexGrow="1"
+        :flexGrow="1"
         flexDirection="row"
         justifyContent="center"
         alignItems="center"
