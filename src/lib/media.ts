@@ -9,6 +9,7 @@ import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web'
 import { asString, human, isObj, sleep } from './util.ts'
 import { mkvmergeRemux } from './mkvmerge.ts'
 import { ensureFFmpeg, ensureM3u8dl, ensureMkvmerge, ensurePackager } from './tools.ts'
+import { createHlsRelay, type RelayEvent } from './hls-relay.ts'
 
 /** A CDN refused us (403/410 …) — usually the signed URL expired mid-flight. */
 export class CdnDenied extends Error {
@@ -306,6 +307,7 @@ function pickREOutput(dir: string): string {
 export function cleanRELog(s: string): string {
   return s
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\b[a-f\d]{32}(?::[a-f\d]{32})?\b/gi, '[已隐藏]')
     .split(/\r?\n|\r/)
     .filter((line) => !/输出.*重定向|[Oo]utput.*redirected/i.test(line))
     .map((line) => line.replace(/https?:\/\/[^\s"<>]+/g, '[媒体地址]'))
@@ -339,7 +341,7 @@ export function hlsKeyArgs(key?: string): string[] {
   return ['--key', key, '--custom-hls-key', key.split(':').at(-1)!, '--custom-hls-method', 'CENC']
 }
 
-/** Stop a rejected batch instead of retrying every remaining segment for minutes. */
+/** Recognize status messages without treating a recoverable retry as failure. */
 export function reHttpFailureMonitor(): { feed: (chunk: string) => number } {
   let tail = ''
   return {
@@ -355,8 +357,8 @@ export function reHttpFailureMonitor(): { feed: (chunk: string) => number } {
   }
 }
 
-export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: (n: number, total: number) => void): Promise<void> {
-  const { promise, resolve, reject } = Promise.withResolvers<void>()
+export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: (n: number, total: number) => void, fatalError?: () => Error | undefined): Promise<string> {
+  const { promise, resolve, reject } = Promise.withResolvers<string>()
   const child = spawn(bin, args, {
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -364,14 +366,18 @@ export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: (n:
   })
   let output = ''
   let deniedStatus = 0
+  let exhausted = false
   const failures = reHttpFailureMonitor()
   const progress = reProgress(cb)
   const collect = (chunk: string) => {
     output = (output + chunk).slice(-16384)
     progress(chunk)
     const status = failures.feed(chunk)
-    if (status && !deniedStatus) {
-      deniedStatus = status
+    if (status) deniedStatus = status
+    // RE retries a failed segment itself. Interrupt only after it explicitly
+    // gives up, never on the first 403 (or a historical 403 followed by success).
+    if (deniedStatus && /retry attempts have been exhausted/i.test(output)) {
+      exhausted = true
       child.kill()
     }
   }
@@ -379,19 +385,42 @@ export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: (n:
   child.stderr.setEncoding('utf8')
   child.stdout.on('data', collect)
   child.stderr.on('data', collect)
-  child.once('error', (e) => reject(new Error(`无法启动 N_m3u8DL-RE: ${e.message}`)))
+  const logWatch = logFile ? setInterval(() => {
+    if (fatalError?.()) { child.kill(); return }
+    if (exhausted) return
+    try {
+      const log = readFileSync(logFile, 'utf8').slice(-16384)
+      const status = reHttpFailureMonitor().feed(log + '\n')
+      if (status) deniedStatus = status
+      if (deniedStatus && /retry attempts have been exhausted/i.test(log)) {
+        exhausted = true
+        child.kill()
+      }
+    } catch { /* log is not created yet */ }
+  }, 250) : undefined
+  const stopLogWatch = () => { if (logWatch) clearInterval(logWatch) }
+  child.once('error', (e) => { stopLogWatch(); reject(new Error(`无法启动 N_m3u8DL-RE: ${e.message}`)) })
   child.once('close', (code, signal) => {
-    if (deniedStatus) { reject(new CdnDenied(deniedStatus, '')); return }
+    stopLogWatch()
+    const fatal = fatalError?.()
+    if (fatal) { reject(fatal); return }
     let file = ''
     try { file = readFileSync(logFile, 'utf8') } catch { /* no log */ }
-    const text = cleanRELog(output || file).replace(/\b[a-f\d]{32}(?::[a-f\d]{32})?\b/gi, '[已隐藏]')
-    if (code === 0) resolve()
-    else reject(new Error(`N_m3u8DL-RE 下载失败 (${signal || code}): ${text.slice(-4000)}`))
+    // Some RE errors are written only to the log or have no final newline.
+    const status = deniedStatus || reHttpFailureMonitor().feed(file + '\n' + output + '\n')
+    if (status && (code !== 0 || exhausted)) { reject(new CdnDenied(status, '')); return }
+    const text = cleanRELog(file + '\n' + output)
+    const failed = /ERROR:\s*Failed|分片数量校验不通过|Segment count check not pass|Decryption failed|解密失败/i.test(text)
+    if (code === 0 && !failed) resolve(text)
+    else {
+      const slow = /Download speed too slow/i.test(text) ? 'Download speed too slow! ' : ''
+      reject(new Error(`N_m3u8DL-RE 下载失败 (${signal || code}): ${slow}${text.slice(-4000)}`))
+    }
   })
   return promise
 }
 
-/** HLS/DASH via N_m3u8DL-RE. CENC goes through shaka, segments binary-merged so DV P5/P7 RPU survives. */
+/** HLS/DASH via N_m3u8DL-RE. Merge fragments before decrypting the complete track. */
 export async function downloadPlaylist(opts: {
   src: string
   dest: string
@@ -402,16 +431,40 @@ export async function downloadPlaylist(opts: {
   threads?: number
   cb?: (n: number, total: number) => void
   select?: 'video' | 'audio'
+  /** Use the original JS CDN transport while RE handles HLS/merge/decryption. */
+  transport?: 'node' | 're'
+  refreshSource?: () => Promise<{ src: string; key?: string }>
+  onRefresh?: (attempt: number, total: number) => void
 }): Promise<void> {
   const executable = await ensureM3u8dl()
   mkdirSync(dirname(opts.dest), { recursive: true })
   const workDir = mkdtempSync(join(resolvePath(dirname(opts.dest)), '.re-'))
+  const logFile = join(workDir, 're.log')
+  const errorLog = `${opts.dest}.download-error.log`
+  let diagnostics = ''
+  const relayEvents: RelayEvent[] = []
+  let relay: Awaited<ReturnType<typeof createHlsRelay>> | undefined
+  let succeeded = false
   try {
     const threads = Number.isFinite(opts.threads) ? Math.max(1, Math.floor(opts.threads!)) : 1
     const ffmpeg = await ensureFFmpeg()
     const keyArgs = hlsKeyArgs(opts.key)
     let source = opts.src
-    if (opts.clear) {
+    if (opts.transport === 'node') {
+      // The supplied CENC key replaces remote/skd key discovery entirely.
+      relay = await createHlsRelay(opts.src, headersFor(opts.ref), opts.clear || !!opts.key, {
+        // 403/410 refreshes the authenticated source in-place, not the old URL.
+        maxAttempts: 1,
+        refreshSource: opts.refreshSource ? async () => {
+          const next = await opts.refreshSource!()
+          if (next.key !== opts.key) throw new Error('重新取链后解密密钥改变，已停止以免混入不同加密内容')
+          return next.src
+        } : undefined,
+        onRefresh: opts.onRefresh,
+        onResponse: event => { relayEvents.push(event); if (relayEvents.length > 1500) relayEvents.shift() },
+      })
+      source = relay.url
+    } else if (opts.clear) {
       const response = await cdnResponse(source, opts.ref)
       const playlist = await response.text()
       if (!playlist.trimStart().startsWith('#EXTM3U') || playlist.includes('#EXT-X-STREAM-INF')) {
@@ -425,7 +478,6 @@ export async function downloadPlaylist(opts: {
           : line.trim() ? new URL(line.trim(), base).href : '').join('\n')
       writeFileSync(source, normalized)
     }
-    const logFile = join(workDir, 're.log')
     const args = [
       source,
       '--save-dir', workDir,
@@ -443,29 +495,65 @@ export async function downloadPlaylist(opts: {
       '--disable-update-check',
       '--log-file-path', logFile,
       '--thread-count', String(threads),
-      '--download-retry-count', String(MAX_ATTEMPTS - 1),
+      '--download-retry-count', String(opts.refreshSource ? 0 : MAX_ATTEMPTS - 1),
+      ...(opts.refreshSource ? ['--http-request-timeout', '360'] : []),
     ]
     if (ffmpeg) args.push('--ffmpeg-binary-path', ffmpeg)
-    if (opts.ref) args.push('--header', `Referer: ${opts.ref}`)
+    if (relay) args.push('--use-system-proxy', 'false')
+    for (const [name, value] of Object.entries(headersFor(opts.ref))) args.push('--header', `${name.toLowerCase()}: ${value}`)
     if (opts.key) {
       const packager = await ensurePackager()
       args.push(
         ...keyArgs,
         '--decryption-engine', 'SHAKA_PACKAGER',
         '--decryption-binary-path', packager,
-        '--mp4-real-time-decryption',
+        // Decrypt the whole track once. Per-segment Shaka output consists of
+        // standalone MP4 movies; byte-concatenating those repeats moov/edit lists.
       )
     }
     opts.cb?.(0, 1)
-    await runM3u8dl(executable, args, logFile, opts.cb)
+    let progress = 0
+    const report = (n: number, total: number) => {
+      progress = Math.max(progress, total > 1 ? n / total : n)
+      opts.cb?.(progress, 1)
+    }
+    for (let slowRestart = 0; ; slowRestart++) {
+      try {
+        diagnostics = await runM3u8dl(executable, args, logFile, report, relay?.error)
+        break
+      } catch (e) {
+        // RE's hard-coded 20s zero-speed watchdog may fire while play() is
+        // issuing fresh signed URLs. Wait for that same refresh, then reuse
+        // the exact RE work directory and stable local playlist/segment ids.
+        if (!relay || !opts.refreshSource || slowRestart >= 2 || !/Download speed too slow/i.test(e instanceof Error ? e.message : String(e))) throw e
+        await relay.waitForRefresh()
+      }
+    }
     const found = pickREOutput(workDir)
-    if (!found) throw new Error('N_m3u8DL-RE 未生成文件')
+    if (!found) {
+      const status = reHttpFailureMonitor().feed(diagnostics + '\n')
+      if (status) throw new CdnDenied(status, '')
+      throw new Error(`N_m3u8DL-RE 未生成文件：${diagnostics.slice(-3000) || '下载器未返回诊断信息'}`)
+    }
     try { unlinkSync(opts.dest) } catch { /* first write */ }
     renameSync(found, opts.dest)
     if (statSync(opts.dest).size === 0) throw new Error('N_m3u8DL-RE 生成的文件为空')
+    if (relay) writeFileSync(`${opts.dest}.transport.json`, JSON.stringify({ transport: 'node', completed: true, threads, ...relay.stats(), requests: relayEvents }, null, 2))
+    try { unlinkSync(errorLog) } catch { /* no previous failure */ }
     opts.cb?.(1, 1)
+    succeeded = true
+  } catch (e) {
+    try {
+      let log = ''
+      try { log = readFileSync(logFile, 'utf8') } catch { /* downloader did not start */ }
+      writeFileSync(errorLog, cleanRELog(`${e instanceof Error ? e.message : String(e)}\n${log}\n${diagnostics}\n${JSON.stringify({ transport: opts.transport ?? 're', workDirectory: workDir, requests: relayEvents }, null, 2)}`))
+    } catch { /* preserve the original failure if the diagnostic cannot be saved */ }
+    throw e
   } finally {
-    rmSync(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    await relay?.close()
+    // Completed fragments stay in place throughout RE's local retries. Keep
+    // failed work for diagnosis instead of destroying the only recovery data.
+    if (succeeded || !readdirSync(workDir).length) rmSync(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   }
 }
 
@@ -668,6 +756,22 @@ export async function parseCMAF(playlistURL: string, ref: string): Promise<{ ini
   }
   return { initURL, segs }
 }
+
+export function hlsExtinfSeconds(text: string): number[] {
+  const out: number[] = []
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.startsWith('#EXTINF:')) continue
+    const n = Number.parseFloat(line.slice(8))
+    if (Number.isFinite(n) && n > 0) out.push(n)
+  }
+  return out
+}
+
+export async function hlsExtinfList(url: string, ref: string): Promise<number[]> {
+  const res = await cdnResponse(url, ref)
+  return hlsExtinfSeconds(await res.text())
+}
+
 
 export async function youkuStreamURLs(data: Record<string, unknown>, want: string): Promise<string[]> {
   if (want && Array.isArray(data.streams)) {

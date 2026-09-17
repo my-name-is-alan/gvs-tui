@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { jobTitle, patchJob, type DlTask } from './jobs.ts'
+import { jobTitle, patchJob, youkuDRM, type DlTask } from './jobs.ts'
 import { youkuAudioPlaylist, youkuVideoPlaylist } from './media.ts'
 
 function task(partial: Partial<DlTask>): DlTask {
@@ -21,6 +21,14 @@ function task(partial: Partial<DlTask>): DlTask {
     ...partial,
   }
 }
+
+test('audio 0:0 is full-block CBC and must be decrypted', () => {
+  const drm = youkuDRM({ drm: { need_decrypt: true, pattern_audio: '0:0', content_key_hex: 'a'.repeat(32) } })
+  expect(drm.audioEnc).toBe(true)
+  expect(drm.reKey).toBe('a'.repeat(32))
+  expect(youkuDRM({ drm: { actually_clear: true } }).audioEnc).toBe(false)
+  expect(youkuDRM({ drm: { need_decrypt: false } }).videoEnc).toBe(false)
+})
 
 test('movie job title uses 英语版 not E01', () => {
   expect(jobTitle(task({ kind: 'movie', edition: '英语版' }))).toBe('第九区 英语版 4K')

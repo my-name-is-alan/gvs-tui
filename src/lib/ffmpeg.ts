@@ -107,7 +107,7 @@ function run(ffmpeg: string, args: string[], phase?: PhaseWatcher): Promise<void
   child.on('error', (e) => { stop(); reject(e) })
   child.on('close', (code) => {
     stop()
-    if (code === 0) {
+    if (code === 0 && !/File ended prematurely|partial file|Invalid data found|Error during demuxing/i.test(out)) {
       if (phase?.cb) phase.cb(sizes(phase.inputs), Math.max(1, sizes(phase.inputs)))
       resolve()
     } else {
@@ -140,6 +140,15 @@ export function ffmpegRemux(
     { out: outPath, inputs: [inPath], cb: onProgress })
 }
 
+/** Fail before muxing if an encrypted/damaged audio track cannot decode. */
+export async function validateAudio(ffmpeg: string, path: string): Promise<void> {
+  try {
+    await run(ffmpeg, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-xerror', '-err_detect', 'explode', '-i', path, '-map', '0:a', '-f', 'null', '-'])
+  } catch (e) {
+    throw new Error(`音轨解码校验失败，未生成成品：${e instanceof Error ? e.message : String(e)}`)
+  }
+}
+
 /**
  * Mux one or more audio tracks into the video file. Each selected track becomes
  * its own stream in the mkv, tagged with title/language so players can tell an
@@ -152,7 +161,9 @@ export function ffmpegMux(
   outPath: string,
   onProgress?: (n: number, total: number) => void,
 ): Promise<void> {
-  const args = ['-hide_banner', '-loglevel', 'error', '-y', '-i', videoPath]
+  // Preserve cross-input timestamps; any shift needed for negative DTS must
+  // be global. -start_at_zero would normalize each input independently.
+  const args = ['-hide_banner', '-loglevel', 'error', '-y', '-copyts', '-i', videoPath]
   for (const a of audios) args.push('-i', a.path)
   args.push('-map', '0:v:0')
   audios.forEach((_, i) => args.push('-map', `${i + 1}:a:0`))
@@ -162,6 +173,7 @@ export function ffmpegMux(
     if (a.lang) args.push(`-metadata:s:a:${i}`, `language=${a.lang}`)
   })
   args.push('-disposition:a:0', 'default')
+  args.push('-avoid_negative_ts', 'make_non_negative')
   args.push(outPath)
   return run(ffmpeg, args, { out: outPath, inputs: [videoPath, ...audios.map((a) => a.path)], cb: onProgress })
 }

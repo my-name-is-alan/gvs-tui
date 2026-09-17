@@ -1,9 +1,9 @@
-import { mkdirSync, renameSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
-import { ffmpegDecryptCopy, ffmpegRemux } from './ffmpeg.ts'
-import { mkvmergeMux, mkvmergeRemux } from './mkvmerge.ts'
+import { ffmpegDecryptCopy, ffmpegRemux, validateAudio } from './ffmpeg.ts'
+import { mkvmergeMux, mkvmergeRemux, type MuxAudio } from './mkvmerge.ts'
 import { ensureFFmpeg, ensureMkvmerge } from './tools.ts'
 import { filename, folder, sourceTag } from './name.ts'
 import type { MediaKind, Naming } from './name.ts'
@@ -13,6 +13,7 @@ import {
   youkuAudioPlaylist, youkuVideoPlaylist,
 } from './media.ts'
 import type { RetryNote } from './media.ts'
+import { retryCdnRefresh } from './cdn-retry.ts'
 import { asString, human, isObj } from './util.ts'
 import type { Job } from '../types.ts'
 
@@ -39,6 +40,15 @@ export type DlTask = {
 }
 
 export type JobEvt = { id: number; status: string; pct: number; log: string; err: string; done?: boolean }
+
+export function youkuDRM(payload: Record<string, unknown>) {
+  const drm = isObj(payload.drm) ? payload.drm : {}
+  const key = asString(drm.content_key_hex).replace(/^0x/i, '').replace(/-/g, '').toLowerCase()
+  const kid = (asString(drm.kid) || asString(drm.key_id)).replace(/^0x/i, '').replace(/-/g, '').toLowerCase()
+  const clear = drm.actually_clear === true || drm.need_decrypt === false
+  // 0:0 is full-block CBC encryption, NOT a clear audio track.
+  return { reKey: key ? (/^[a-f\d]{32}$/i.test(kid) ? `${kid}:${key}` : key) : '', videoEnc: !clear, audioEnc: !clear }
+}
 
 let jobSeq = 0
 export function nextJobID(): number {
@@ -269,28 +279,12 @@ async function dlYouku(
   emit: (s: string, p: number, l: string) => void,
   retryNote: RetryNote,
 ): Promise<void> {
-  let data = await playYouku(cli, cfg, t)
   const tracks = t.audioTracks?.length ? t.audioTracks : [{ id: '', label: '默认音轨', lang: '' }]
   const videoPath = join(dir, `.${t.vid}.video.mp4`)
-  const muxInputs: Array<{ path: string; title?: string; lang?: string }> = []
+  const muxInputs: MuxAudio[] = []
   const temps = new Set<string>()
-
-  const drmOf = (payload: Record<string, unknown>) => {
-    const drm = isObj(payload.drm) ? payload.drm : {}
-    const key = asString(drm.content_key_hex).replace(/^0x/i, '').replace(/-/g, '').toLowerCase()
-    const kid = (asString(drm.kid) || asString(drm.key_id)).replace(/-/g, '').toLowerCase()
-    const reKey = key ? (kid.length >= 16 ? `${kid}:${key}` : key) : ''
-    const clear = drm.actually_clear === true || drm.need_decrypt === false
-    const enc = (pattern: string, dflt: string) => {
-      const p = pattern || dflt
-      return !clear && p !== '' && p !== '0:0'
-    }
-    return {
-      reKey,
-      videoEnc: enc(asString(drm.pattern_video), '1:9'),
-      audioEnc: enc(asString(drm.pattern_audio), '0:0'),
-    }
-  }
+  const completedTracks = new Set<string>()
+  let succeeded = false
 
   const pull = async (
     src: string,
@@ -300,7 +294,11 @@ async function dlYouku(
     base: number,
     span: number,
     select: 'video' | 'audio',
+    trackId = '',
   ) => {
+    // A later audio failure must not download an already completed video again.
+    // This set belongs to one task/quality and is never inferred from old files.
+    if (completedTracks.has(dest)) return
     await downloadPlaylist({
       src,
       dest,
@@ -309,65 +307,74 @@ async function dlYouku(
       clear: !key,
       threads: cfg.threads,
       select,
+      transport: 'node',
+      refreshSource: async () => {
+        const payload = await playYouku(cli, cfg, t)
+        const drm = youkuDRM(payload)
+        const src = select === 'video' ? youkuVideoPlaylist(payload, t.quality) : youkuAudioPlaylist(payload, trackId)
+        if (!src) throw new Error('重新取链后缺少所选轨道')
+        return { src, key: (select === 'video' ? drm.videoEnc : drm.audioEnc) ? drm.reKey : undefined }
+      },
+      onRefresh: (retry, total) => retryNote(retry, total, `${label} 失败分片换新 CDN 链接，保留已下载进度`),
       cb: (n, total) => {
         const pct = total > 1 ? n / total : n
         emit(label, base + span * pct, label)
       },
     })
+    completedTracks.add(dest)
   }
 
   const run = async (payload: Record<string, unknown>) => {
     muxInputs.length = 0
     temps.add(videoPath)
-    const drm = drmOf(payload)
+    const drm = youkuDRM(payload)
     if ((drm.videoEnc || drm.audioEnc) && !drm.reKey) throw new Error('优酷加密轨道未返回密钥，请重试取流或检查登录状态')
     const playlist = youkuVideoPlaylist(payload, t.quality)
     if (!playlist) throw new Error('优酷 play 没有 playlist_url')
     emit('下载', 0.05, playlist.split(/[?#]/)[0]?.split('/').pop() ?? '')
     await pull(playlist, videoPath, drm.videoEnc ? drm.reKey : undefined, '下载', 0.05, 0.62, 'video')
     for (const [i, track] of tracks.entries()) {
-      const audioPl = youkuAudioPlaylist(payload, track.id)
-      if (!audioPl) continue
+      // Video download/decryption can outlive the original audio URL lease.
+      const audioPayload = await playYouku(cli, cfg, t)
+      const audioDrm = youkuDRM(audioPayload)
+      if (audioDrm.audioEnc && !audioDrm.reKey) throw new Error('重新取得的音轨缺少解密密钥')
+      const audioPl = youkuAudioPlaylist(audioPayload, track.id)
+      if (!audioPl) throw new Error(`所选音轨没有播放列表：${track.label}`)
       const audioPath = join(dir, `.${t.vid}.audio${i}.mp4`)
       temps.add(audioPath)
       await pull(
         audioPl,
         audioPath,
-        drm.audioEnc ? drm.reKey : undefined,
+        audioDrm.audioEnc ? audioDrm.reKey : undefined,
         `音轨 ${track.label}`,
         0.67 + 0.18 * i / tracks.length,
         0.18 / Math.max(1, tracks.length),
         'audio',
+        track.id,
       )
       muxInputs.push({ path: audioPath, title: track.label, lang: track.lang })
     }
   }
 
   try {
-    try {
-      await run(data)
-    } catch (e) {
-      const expired = e instanceof CdnDenied && (e.status === 403 || e.status === 410)
-        || /403|410|Forbidden/i.test(e instanceof Error ? e.message : String(e))
-      if (!expired) throw e
-      emit('重取', 0.05, 'CDN 拒绝访问，正在重新取链')
-      retryNote(1, 2, 'CDN 拒绝访问，重新取链')
-      data = await playYouku(cli, cfg, t)
-      try {
-        await run(data)
-      } catch (retryError) {
-        if (retryError instanceof CdnDenied && (retryError.status === 403 || retryError.status === 410)) {
-          throw new Error(`重新取链后 CDN 仍返回 ${retryError.status}，下载已停止；请检查该片源的播放权限或稍后重试`)
-        }
-        throw retryError
-      }
-    }
+    await retryCdnRefresh(async () => run(await playYouku(cli, cfg, t)), (retry, total, delayMs, status) => {
+      retryNote(retry, total, `CDN ${status}，${delayMs / 1000} 秒后重新取链`)
+    })
 
+    emit('校验', 0.85, '检查音轨完整解码')
+    const ffmpeg = await ensureFFmpeg()
+    for (const input of muxInputs) await validateAudio(ffmpeg, input.path)
     emit('封装', 0.86, muxInputs.length > 1 ? `封装 ${muxInputs.length} 条音轨` : out)
     const muxProgress = (n: number, total: number) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`)
+    const partial = join(dir, `.${t.vid}.mux-partial.mkv`)
+    temps.add(partial)
     try {
-      if (muxInputs.length) await mkvmergeMux(mkvmerge, videoPath, muxInputs, out, muxProgress)
-      else await mkvmergeRemux(mkvmerge, videoPath, out, muxProgress)
+      if (muxInputs.length) await mkvmergeMux(mkvmerge, videoPath, muxInputs, partial, muxProgress)
+      else await mkvmergeRemux(mkvmerge, videoPath, partial, muxProgress)
+      await validateAudio(ffmpeg, partial)
+      renameSync(partial, out)
+      if (existsSync(`${partial}.timing.json`)) renameSync(`${partial}.timing.json`, `${out}.timing.json`)
+      succeeded = true
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (/channel element|Prediction is not allowed|is not allocated|Error submitting packet/i.test(msg)) {
@@ -376,7 +383,9 @@ async function dlYouku(
       throw e
     }
   } finally {
-    await cleanupTemporaryFiles(temps)
+    // Failed muxes retain original tracks for diagnosis/retry. Developers can
+    // opt into retaining successful downloads too, without editing config.
+    if (succeeded && process.env.GVS_KEEP_INTERMEDIATES !== '1') await cleanupTemporaryFiles(temps)
   }
 }
 
@@ -402,7 +411,9 @@ export async function cleanupTemporaryFiles(paths: Iterable<string>): Promise<vo
 }
 
 async function playYouku(cli: GwClient, cfg: FileConfig, t: DlTask): Promise<Record<string, unknown>> {
-  const input: Record<string, unknown> = { vid: t.vid, expand: '1', tier: t.quality ? 'multi' : 'single' }
+  // RE/relay reads the selected playlist; expanding every track here fetches
+  // unused playlists and adds latency to every signed-URL refresh.
+  const input: Record<string, unknown> = { vid: t.vid, expand: '0', tier: t.quality ? 'multi' : 'single', nocache: '1' }
   return cli.invoke('youku', 'play', input, cli.extra(cfg, 'youku'))
 }
 
