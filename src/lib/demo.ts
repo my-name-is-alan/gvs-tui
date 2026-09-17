@@ -81,7 +81,7 @@ const TMDB: TMDBHit[] = [
 const JOBS: Job[] = [
   { id: 1, title: '斗破苍穹年番 E01 1080P', status: '完成', pct: 1, log: 'D:\\downloads\\斗破苍穹年番\\S01E01.mkv', err: '' },
   { id: 2, title: '斗破苍穹年番 E02 1080P', status: '下载', pct: 0.43, log: '12.4 MB/s', err: '' },
-  { id: 3, title: '斗破苍穹年番 E03 1080P', status: '封装', pct: 0.92, log: 'ffmpeg remux', err: '' },
+  { id: 3, title: '斗破苍穹年番 E03 1080P', status: '封装', pct: 0.92, log: '封装 420 MB/680 MB', err: '' },
   { id: 4, title: '斗破苍穹年番 E04 1080P', status: '排队', pct: 0, log: '', err: '' },
   { id: 5, title: '完美世界 E118 720P', status: '失败', pct: 0, log: '', err: '腾讯没有 video.url' },
 ]
@@ -101,7 +101,6 @@ const SETTINGS = [
   { label: '红果合并', value: '开' },
   { label: '红果 NFO', value: '开' },
   { label: '红果封装', value: 'mkv' },
-  { label: 'ffmpeg', value: 'ffmpeg' },
 ]
 
 /** A deterministic stand-in for a scannable QR block, sized like a real one. */

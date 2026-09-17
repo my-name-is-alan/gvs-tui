@@ -15,6 +15,7 @@ import { clipTitle, extractDouyinURL } from './lib/link.ts'
 import { pickDouyinURL } from './lib/media.ts'
 import { dots, tierHeight } from './lib/name.ts'
 import { anyInt, asBool, asString, firstStr, isObj } from './lib/util.ts'
+import { ensureTools } from './lib/tools.ts'
 import type { Audio, Detail, Episode, Job, OptionTab, Quality, Row, Scene, Snapshot, StatusKind, TMDBHit, VipProbe } from './types.ts'
 
 const ALL_PROVIDERS = ['youku', 'tencent', 'hongguo', 'douyin']
@@ -118,7 +119,7 @@ export class Runtime {
       this.scene = 'home'
     }
     this.snapshot = this.build()
-    if (this.scene === 'home') void this.refreshKey()
+    void this.boot()
   }
 
   onSnapshot(fn: Listener): () => void {
@@ -222,7 +223,6 @@ export class Runtime {
     if (this.has('youku')) f.push('优酷扫码', '优酷 Cookie', '优酷登录')
     if (this.has('tencent')) f.push('腾讯 Cookie')
     if (this.has('hongguo')) f.push('红果合并', '红果 NFO', '红果封装')
-    f.push('ffmpeg')
     return f
   }
 
@@ -250,7 +250,6 @@ export class Runtime {
       case '红果合并': return this.cfg.hongguoMerge ? '开' : '关'
       case '红果 NFO': return this.cfg.hongguoNfo ? '开' : '关'
       case '红果封装': return this.cfg.hongguoFmt
-      case 'ffmpeg': return this.cfg.ffmpeg
       default: return ''
     }
   }
@@ -264,7 +263,6 @@ export class Runtime {
       case '发布组': return this.cfg.releaseGroup
       case 'TMDB Key': return this.cfg.tmdbKey
       case '腾讯 Cookie': return this.cfg.tencentCookie
-      case 'ffmpeg': return this.cfg.ffmpeg
       default: return ''
     }
   }
@@ -412,6 +410,23 @@ export class Runtime {
       this.say(`优酷续期失败：${e instanceof Error ? e.message : e}`, 'err')
       this.emit()
       return false
+    }
+  }
+
+  private async boot(): Promise<void> {
+    await this.ensureBins()
+    if (this.scene === 'home') await this.refreshKey()
+  }
+
+  private async ensureBins(): Promise<void> {
+    try {
+      await ensureTools((s) => {
+        this.say(s)
+        this.emit()
+      }, this.abort.signal)
+    } catch (e) {
+      this.say(`工具缺失：${e instanceof Error ? e.message : e}`, 'warn')
+      this.emit()
     }
   }
 
@@ -714,7 +729,11 @@ export class Runtime {
         this.qrAscii = qr.ascii
         this.qrPngPaths = qr.pngPaths
         this.scene = 'qr'
-        this.say(qr.pngPaths.length ? `等待扫码 · ${qr.pngPaths[0]}` : '等待扫码确认', 'info')
+        const qrPath = qr.pngPaths[0]
+        this.say(
+          qr.imageOpened ? `二维码图片已打开 · ${qrPath}` : qrPath ? `二维码图片已生成 · ${qrPath}` : '等待扫码确认',
+          qr.imageOpened ? 'ok' : 'info',
+        )
         this.startQRPoll()
       } catch (e) {
         this.say(e instanceof Error ? e.message : String(e), 'err')
@@ -760,7 +779,6 @@ export class Runtime {
       case '发布组': this.cfg.releaseGroup = v; break
       case 'TMDB Key': this.cfg.tmdbKey = v; break
       case '腾讯 Cookie': this.cfg.tencentCookie = v; break
-      case 'ffmpeg': this.cfg.ffmpeg = v; break
       case '优酷 Cookie':
         if (!v) { this.say('Cookie 为空', 'warn'); this.scene = 'settings'; this.emit(); return }
         if (!this.cli) return

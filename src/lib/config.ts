@@ -14,7 +14,6 @@ export type FileConfig = {
   hongguoMerge: boolean
   hongguoNfo: boolean
   hongguoFmt: string
-  ffmpeg: string
   /** Parallel connections per download (分片并发 / Range 并发). */
   threads: number
 }
@@ -41,7 +40,6 @@ export function defaultConfig(): FileConfig {
     hongguoMerge: true,
     hongguoNfo: true,
     hongguoFmt: 'mkv',
-    ffmpeg: 'ffmpeg',
     threads: 4,
   }
 }
@@ -66,7 +64,7 @@ export function loadConfig(): FileConfig {
   if (!cfg.outDir) cfg.outDir = join('.', 'downloads')
   if (!cfg.releaseGroup) cfg.releaseGroup = 'ADWeb'
   if (!cfg.hongguoFmt) cfg.hongguoFmt = 'mkv'
-  if (!cfg.ffmpeg) cfg.ffmpeg = 'ffmpeg'
+  delete (cfg as unknown as Record<string, unknown>).ffmpeg
   if (!cfg.tmdbLang) cfg.tmdbLang = 'zh-CN'
   cfg.threads = clampThreads(cfg.threads)
   return cfg

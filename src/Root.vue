@@ -836,9 +836,10 @@ function jobLine(job: Job): StyledText {
         <Box :height="1" />
         <Text
           v-if="qrOverflow"
-          :content="ink(c.warn, '窗口太小画不下完整二维码，请扫下面的 PNG，或把窗口拉高')"
+          :content="ink(c.warn, '窗口太小画不下完整二维码，请打开下面路径的 PNG')"
         />
-        <Text v-else :content="qrBlock" :fg="c.text" wrapMode="none" />
+        <Text v-else-if="qrBlock" :content="qrBlock" :fg="c.text" wrapMode="none" />
+        <Text v-else :content="ink(c.ok, '二维码图片已生成，并已尝试用系统图片查看器打开')" :height="1" />
         <Text v-if="qrPngHint" :content="ink(c.warn, qrPngHint)" wrapMode="wrap" :marginTop="1" />
         <Text :content="ink(c.faint, '扫完按回车继续轮询（Win10 1809 控制台会把定时器卡住）')" :height="1" :marginTop="1" />
       </Box>

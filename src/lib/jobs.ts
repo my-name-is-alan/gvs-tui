@@ -2,13 +2,15 @@ import { mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
-import { ffmpegDecryptCopy, ffmpegMux, ffmpegRemux, lookFFmpeg } from './ffmpeg.ts'
+import { ffmpegDecryptCopy, ffmpegRemux } from './ffmpeg.ts'
+import { mkvmergeMux, mkvmergeRemux } from './mkvmerge.ts'
+import { ensureFFmpeg, ensureMkvmerge } from './tools.ts'
 import { filename, folder, sourceTag } from './name.ts'
 import type { MediaKind, Naming } from './name.ts'
 import { writeEpisodeNFO, writeMovieNFO, writeTvShowNFO } from './nfo.ts'
 import {
-  CdnDenied, appendURLs, downloadProgress, pickDouyinURL, pickHongguo, pickURL, referer, speedCB,
-  youkuAudioURLs, youkuStreamURLs,
+  CdnDenied, downloadPlaylist, downloadProgress, pickDouyinURL, pickHongguo, pickURL, referer, speedCB,
+  youkuAudioPlaylist, youkuVideoPlaylist,
 } from './media.ts'
 import type { RetryNote } from './media.ts'
 import { asString, human, isObj } from './util.ts'
@@ -93,8 +95,8 @@ async function runTask(
   // Surface CDN retries in the job row instead of letting the bar sit still.
   let lastPct = 0
   const emit = (status: string, pct: number, log: string) => {
-    lastPct = pct
-    emitEvt({ id, status, pct, log, err: '' })
+    lastPct = Math.max(lastPct, Math.min(0.99, Number.isFinite(pct) ? pct : lastPct))
+    emitEvt({ id, status, pct: lastPct, log, err: '' })
   }
   const retryNote = (attempt: number, total: number, why: string) => {
     emitEvt({ id, status: '重试', pct: lastPct, log: `第 ${attempt}/${total} 次 · ${why}`, err: '' })
@@ -119,18 +121,19 @@ async function runTask(
     const dir = t.provider === 'douyin' ? cfg.outDir : folder(n, cfg.outDir)
     mkdirSync(dir, { recursive: true })
     const out = join(dir, filename(n))
-    const ffmpeg = t.provider === 'douyin' ? '' : lookFFmpeg(cfg.ffmpeg)
-    if (t.provider !== 'douyin' && !ffmpeg) throw new Error('没有 ffmpeg。设置页填 ffmpeg.exe 完整路径，或安装后重开 TUI')
+    const ffmpeg = t.provider === 'hongguo' ? await ensureFFmpeg() : ''
+    const mkvmerge = n.container === 'mkv' ? await ensureMkvmerge() : ''
+    if (n.container === 'mkv' && !mkvmerge) throw new Error('没有 mkvmerge')
     emit('取链', 0.01, out.split(/[/\\]/).pop() ?? out)
     switch (t.provider) {
       case 'hongguo':
-        await dlHongguo(cli, t, dir, out, ffmpeg, emit, retryNote, cfg.threads)
+        await dlHongguo(cli, t, dir, out, ffmpeg, mkvmerge, emit, retryNote, cfg.threads)
         break
       case 'youku':
-        await dlYouku(cli, cfg, t, dir, out, ffmpeg, emit, retryNote)
+        await dlYouku(cli, cfg, t, dir, out, mkvmerge, emit, retryNote)
         break
       case 'tencent':
-        await dlTencent(cli, cfg, t, dir, out, ffmpeg, emit, retryNote)
+        await dlTencent(cli, cfg, t, dir, out, mkvmerge, emit, retryNote)
         break
       case 'douyin':
         await dlDouyin(cli, t, out, emit, retryNote)
@@ -152,12 +155,12 @@ async function runTask(
     }
     emitEvt({ id, status: '完成', pct: 1, log: out, err: '', done: true })
   } catch (e) {
-    emitEvt({ id, status: '失败', pct: 0, log: '', err: e instanceof Error ? e.message : String(e), done: true })
+    emitEvt({ id, status: '失败', pct: lastPct, log: '', err: e instanceof Error ? e.message : String(e), done: true })
   }
 }
 
 async function dlHongguo(
-  cli: GwClient, t: DlTask, dir: string, out: string, ffmpeg: string,
+  cli: GwClient, t: DlTask, dir: string, out: string, ffmpeg: string, mkvmerge: string,
   emit: (s: string, p: number, l: string) => void,
   retryNote: RetryNote,
   threads: number,
@@ -172,9 +175,10 @@ async function dlHongguo(
     try {
       const kd = await cli.invoke('hongguo', 'key', { spade: picked.spade })
       key = asString(kd.key) || asString(kd.content_key_hex)
-    } catch {
-      key = ''
+    } catch (e) {
+      throw new Error(`红果获取密钥失败：${e instanceof Error ? e.message : String(e)}`)
     }
+    if (!/^[a-f\d]{32}$/i.test(key)) throw new Error('红果未返回有效解密密钥')
   }
   const enc = join(dir, `.${t.vid}.enc.mp4`)
   emit('下载', 0.08, '')
@@ -189,25 +193,29 @@ async function dlHongguo(
     await downloadProgress(again.cdn, enc, referer(t.provider), speedCB(emit, '下载', 0.08, 0.7), retryNote, threads)
   }
   const tmp = join(dir, `.${t.vid}.mp4`)
-  emit('解密', 0.66, '')
+  emit('解密', 0.78, '')
   if (key) {
-    await ffmpegDecryptCopy(ffmpeg, key, enc, tmp, (n, total) => emit('解密', 0.66 + 0.16 * (n / total), `解密 ${human(n)}/${human(total)}`))
+    await ffmpegDecryptCopy(ffmpeg, key, enc, tmp, (n, total) => emit('解密', 0.78 + 0.07 * Math.min(1, n / total), `解密 ${human(n)}/${human(total)}`))
     try { unlinkSync(enc) } catch { /* keep */ }
   } else {
     renameSync(enc, tmp)
   }
   emit('封装', 0.86, out)
   try {
-    await ffmpegRemux(ffmpeg, tmp, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
+    if (mkvmerge) {
+      await mkvmergeRemux(mkvmerge, tmp, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
+    } else {
+      await ffmpegRemux(ffmpeg, tmp, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
+    }
   } catch {
     renameSync(tmp, out.slice(0, out.length - extname(out).length) + '.mp4')
-    throw new Error('ffmpeg remux failed')
+    throw new Error('封装失败')
   }
   try { unlinkSync(tmp) } catch { /* keep */ }
 }
 
 async function dlTencent(
-  cli: GwClient, cfg: FileConfig, t: DlTask, dir: string, out: string, ffmpeg: string,
+  cli: GwClient, cfg: FileConfig, t: DlTask, dir: string, out: string, mkvmerge: string,
   emit: (s: string, p: number, l: string) => void,
   retryNote: RetryNote,
 ): Promise<void> {
@@ -215,7 +223,6 @@ async function dlTencent(
   const play = () => cli.invoke('tencent', 'play', { vid: t.vid, defn: t.quality || 'fhd' }, cli.extra(cfg, 'tencent'))
   let cdn = pickURL(await play())
   if (!cdn) throw new Error('腾讯没有 video.url')
-  if (cdn.toLowerCase().includes('.m3u8')) throw new Error('HLS 下一期；当前片源是 m3u8')
   const raw = join(dir, `.${t.vid}.bin`)
   emit('下载', 0.1, '')
   try {
@@ -228,7 +235,7 @@ async function dlTencent(
     await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote, cfg.threads)
   }
   emit('封装', 0.86, out)
-  await ffmpegRemux(ffmpeg, raw, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
+  await mkvmergeRemux(mkvmerge, raw, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
   try { unlinkSync(raw) } catch { /* keep */ }
 }
 
@@ -258,106 +265,140 @@ async function dlDouyin(
 }
 
 async function dlYouku(
-  cli: GwClient, cfg: FileConfig, t: DlTask, dir: string, out: string, ffmpeg: string,
+  cli: GwClient, cfg: FileConfig, t: DlTask, dir: string, out: string, mkvmerge: string,
   emit: (s: string, p: number, l: string) => void,
   retryNote: RetryNote,
 ): Promise<void> {
   let data = await playYouku(cli, cfg, t)
-  let urls = await youkuStreamURLs(data, t.quality)
-  if (!urls.length) throw new Error('优酷 play 没有分片')
-  const raw = join(dir, `.${t.vid}.fmp4`)
-  // 空格勾选的音轨才下载；一条没勾就只封平台默认音轨。
-  const tracks = (t.audioTracks?.length ? t.audioTracks : [{ id: '', label: '默认音轨', lang: '' }])
-  const segProgress = (base: number, span: number, label: string) => (done: number, total: number) =>
-    emit(label, base + span * done / Math.max(1, total), `${done}/${total} · ${cfg.threads} 并发`)
-  const audioRaws: string[] = []
-  const audioProgress = (index: number, label: string) => segProgress(0.67 + 0.04 * index / tracks.length, 0.04 / tracks.length, label)
-  try {
-    await appendURLs(raw, urls, referer('youku'), cfg.threads, segProgress(0.05, 0.62, '下载'), retryNote)
-    for (const [i, track] of tracks.entries()) {
-      const audioRaw = join(dir, `.${t.vid}.audio${i}.fmp4`)
-      const audioURLs = await youkuAudioURLs(data, track.id)
-      if (audioURLs.length > 1) {
-        await appendURLs(audioRaw, audioURLs, referer('youku'), cfg.threads, audioProgress(i, `音轨 ${track.label}`), retryNote)
-        audioRaws.push(audioRaw)
-      }
-    }
-  } catch (e) {
-    // 分片链接带 expire，长片下到一半会 403：重新取一次 play 再续传一遍。
-    const expired = e instanceof CdnDenied && (e.status === 403 || e.status === 410)
-    if (!expired) throw e
-    emit('重取', 0.05, `CDN ${e.status}，重新取链后重试`)
-    data = await playYouku(cli, cfg, t)
-    urls = await youkuStreamURLs(data, t.quality)
-    if (!urls.length) throw new Error('优酷重新取链后仍没有分片')
-    await appendURLs(raw, urls, referer('youku'), cfg.threads, segProgress(0.05, 0.62, '下载'), retryNote)
-  }
-
-  const drm = isObj(data.drm) ? data.drm : {}
-  const key = asString(drm.content_key_hex)
-  const clear = drm.actually_clear === true || drm.need_decrypt === false
-  // CENC pattern 决定这条流加没加密：优酷常见 video 1:9（加密）、audio 0:0（明文）。
-  // 对明文音轨套 -decryption_key 会把 AAC 搅成乱码，mux 直接失败（exit 234）。
-  const encrypted = (pattern: string, dflt: string): boolean => {
-    const p = pattern || dflt
-    return Boolean(key) && !clear && p !== '' && p !== '0:0'
-  }
-  const videoEnc = encrypted(asString(drm.pattern_video), '1:9')
-  const audioEnc = encrypted(asString(drm.pattern_audio), '0:0')
-
-  let tmp = join(dir, `.${t.vid}.mp4`)
-  emit('解密', 0.78, '')
-  if (videoEnc) {
-    try {
-      await ffmpegDecryptCopy(ffmpeg, key, raw, tmp, (n, total) => emit('解密', 0.78 + 0.06 * (n / total), `解密 ${human(n)}/${human(total)}`))
-      try { unlinkSync(raw) } catch { /* keep */ }
-    } catch {
-      emit('解密', 0.78, 'ffmpeg 解密失败，尝试直接封装')
-      tmp = raw
-    }
-  } else {
-    tmp = raw
-  }
-
+  const tracks = t.audioTracks?.length ? t.audioTracks : [{ id: '', label: '默认音轨', lang: '' }]
+  const videoPath = join(dir, `.${t.vid}.video.mp4`)
   const muxInputs: Array<{ path: string; title?: string; lang?: string }> = []
-  const audioTmps: string[] = []
-  for (const [i, audioRaw] of audioRaws.entries()) {
-    const track = tracks[i]
-    let audioPath = audioRaw
-    if (audioEnc) {
-      const dec = join(dir, `.${t.vid}.audio${i}.mp4`)
-      try {
-        await ffmpegDecryptCopy(ffmpeg, key, audioRaw, dec, (n, total) =>
-          emit('音轨解密', 0.84 + 0.02 * ((i + n / total) / audioRaws.length), `音轨解密 ${human(n)}/${human(total)}`))
-        audioPath = dec
-        audioTmps.push(dec)
-      } catch {
-        /* 解密失败就直接封原片 */
-      }
+  const temps = new Set<string>()
+
+  const drmOf = (payload: Record<string, unknown>) => {
+    const drm = isObj(payload.drm) ? payload.drm : {}
+    const key = asString(drm.content_key_hex).replace(/^0x/i, '').replace(/-/g, '').toLowerCase()
+    const kid = (asString(drm.kid) || asString(drm.key_id)).replace(/-/g, '').toLowerCase()
+    const reKey = key ? (kid.length >= 16 ? `${kid}:${key}` : key) : ''
+    const clear = drm.actually_clear === true || drm.need_decrypt === false
+    const enc = (pattern: string, dflt: string) => {
+      const p = pattern || dflt
+      return !clear && p !== '' && p !== '0:0'
     }
-    muxInputs.push({ path: audioPath, title: track?.label, lang: track?.lang })
+    return {
+      reKey,
+      videoEnc: enc(asString(drm.pattern_video), '1:9'),
+      audioEnc: enc(asString(drm.pattern_audio), '0:0'),
+    }
   }
 
-  emit('封装', 0.86, muxInputs.length > 1 ? `封装 ${muxInputs.length} 条音轨` : out)
-  const muxProgress = (n: number, total: number) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`)
-  try {
-    if (muxInputs.length) await ffmpegMux(ffmpeg, tmp, muxInputs, out, muxProgress)
-    else await ffmpegRemux(ffmpeg, tmp, out, muxProgress)
-  } catch (e) {
-    // 匿名/非会员只拿到试看段，后面的流解不开：ffmpeg 会报 AAC/HEVC 帧解析错误。
-    const msg = e instanceof Error ? e.message : String(e)
-    if (/channel element|Prediction is not allowed|is not allocated|Error submitting packet/i.test(msg)) {
-      throw new Error('片源超出试看段后无法解码（未登录或非会员）：设置 → 优酷扫码 登录后重下')
+  const pull = async (
+    src: string,
+    dest: string,
+    key: string | undefined,
+    label: string,
+    base: number,
+    span: number,
+    select: 'video' | 'audio',
+  ) => {
+    await downloadPlaylist({
+      src,
+      dest,
+      ref: referer('youku'),
+      key,
+      clear: !key,
+      threads: cfg.threads,
+      select,
+      cb: (n, total) => {
+        const pct = total > 1 ? n / total : n
+        emit(label, base + span * pct, label)
+      },
+    })
+  }
+
+  const run = async (payload: Record<string, unknown>) => {
+    muxInputs.length = 0
+    temps.add(videoPath)
+    const drm = drmOf(payload)
+    if ((drm.videoEnc || drm.audioEnc) && !drm.reKey) throw new Error('优酷加密轨道未返回密钥，请重试取流或检查登录状态')
+    const playlist = youkuVideoPlaylist(payload, t.quality)
+    if (!playlist) throw new Error('优酷 play 没有 playlist_url')
+    emit('下载', 0.05, playlist.split(/[?#]/)[0]?.split('/').pop() ?? '')
+    await pull(playlist, videoPath, drm.videoEnc ? drm.reKey : undefined, '下载', 0.05, 0.62, 'video')
+    for (const [i, track] of tracks.entries()) {
+      const audioPl = youkuAudioPlaylist(payload, track.id)
+      if (!audioPl) continue
+      const audioPath = join(dir, `.${t.vid}.audio${i}.mp4`)
+      temps.add(audioPath)
+      await pull(
+        audioPl,
+        audioPath,
+        drm.audioEnc ? drm.reKey : undefined,
+        `音轨 ${track.label}`,
+        0.67 + 0.18 * i / tracks.length,
+        0.18 / Math.max(1, tracks.length),
+        'audio',
+      )
+      muxInputs.push({ path: audioPath, title: track.label, lang: track.lang })
     }
-    throw e
   }
-  try { unlinkSync(tmp) } catch { /* keep */ }
-  for (const dec of audioTmps) {
-    try { unlinkSync(dec) } catch { /* keep */ }
+
+  try {
+    try {
+      await run(data)
+    } catch (e) {
+      const expired = e instanceof CdnDenied && (e.status === 403 || e.status === 410)
+        || /403|410|Forbidden/i.test(e instanceof Error ? e.message : String(e))
+      if (!expired) throw e
+      emit('重取', 0.05, 'CDN 拒绝访问，正在重新取链')
+      retryNote(1, 2, 'CDN 拒绝访问，重新取链')
+      data = await playYouku(cli, cfg, t)
+      try {
+        await run(data)
+      } catch (retryError) {
+        if (retryError instanceof CdnDenied && (retryError.status === 403 || retryError.status === 410)) {
+          throw new Error(`重新取链后 CDN 仍返回 ${retryError.status}，下载已停止；请检查该片源的播放权限或稍后重试`)
+        }
+        throw retryError
+      }
+    }
+
+    emit('封装', 0.86, muxInputs.length > 1 ? `封装 ${muxInputs.length} 条音轨` : out)
+    const muxProgress = (n: number, total: number) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`)
+    try {
+      if (muxInputs.length) await mkvmergeMux(mkvmerge, videoPath, muxInputs, out, muxProgress)
+      else await mkvmergeRemux(mkvmerge, videoPath, out, muxProgress)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/channel element|Prediction is not allowed|is not allocated|Error submitting packet/i.test(msg)) {
+        throw new Error('片源超出试看段后无法解码（未登录或非会员）：设置 → 优酷扫码 登录后重下')
+      }
+      throw e
+    }
+  } finally {
+    await cleanupTemporaryFiles(temps)
   }
-  for (const audioRaw of audioRaws) {
-    try { unlinkSync(audioRaw) } catch { /* keep */ }
+}
+
+/** Clean only paths owned by this job; never scan or delete another active job. */
+export async function cleanupTemporaryFiles(paths: Iterable<string>): Promise<void> {
+  const failed: string[] = []
+  for (const path of paths) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try { unlinkSync(path); break }
+      catch (e) {
+        const code = (e as NodeJS.ErrnoException).code
+        if (code === 'ENOENT') break
+        if (attempt < 4 && (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES')) {
+          await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
+          continue
+        }
+        failed.push(path)
+        break
+      }
+    }
   }
+  if (failed.length) throw new Error(`临时文件清理失败：${failed.join('、')}`)
 }
 
 async function playYouku(cli: GwClient, cfg: FileConfig, t: DlTask): Promise<Record<string, unknown>> {
@@ -372,6 +413,6 @@ export function patchJob(jobs: Job[], e: JobEvt): void {
   if (!row) return
   row.status = e.status
   row.pct = e.pct
-  if (e.log) row.log = e.log
+  row.log = e.log
   row.err = e.err
 }

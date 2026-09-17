@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "bun --bun vite --force",
     "dev:clean": "bun run scripts/dev-clean.ts && bun --bun vite --force",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && bun run scripts/bundle-tools.ts",
+    "tools:prepare": "bun run scripts/bundle-tools.ts --prepare",
     "start": "bun --bun dist/main.js",
     "preview": "bun run scripts/preview.ts"
   },

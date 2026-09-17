@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import QRCode from 'qrcode'
@@ -86,11 +87,38 @@ export function youkuQrPngTargets(): string[] {
   return app === folder ? [app] : [app, folder]
 }
 
+/** Open the generated PNG through the default Windows image viewer. */
+export async function openQrPng(
+  file: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  if (platform !== 'win32' || !file) return false
+  try {
+    const child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '', resolve(file)], {
+      windowsHide: true,
+      stdio: 'ignore',
+    })
+    return await new Promise<boolean>((done) => {
+      let settled = false
+      const finish = (ok: boolean) => {
+        if (settled) return
+        settled = true
+        done(ok)
+      }
+      child.once('error', () => finish(false))
+      child.once('close', (code) => finish(code === 0))
+    })
+  } catch {
+    return false
+  }
+}
+
 export type YoukuQRStart = {
   ticket: string
   loginToken: string
   ascii: string
   pngPaths: string[]
+  imageOpened: boolean
 }
 
 export async function startYoukuQR(cli: GwClient): Promise<YoukuQRStart> {
@@ -108,7 +136,10 @@ export async function startYoukuQR(cli: GwClient): Promise<YoukuQRStart> {
       // cwd may be unwritable; AppData copy is enough
     }
   }
-  return { ticket, loginToken, ascii: await qrAscii(url), pngPaths }
+  const imageOpened = await openQrPng(pngPaths[0] ?? '')
+  // Classic Win10 conhost cannot reliably display Unicode or double-width QR output.
+  const ascii = qrNeedsAscii() && pngPaths.length ? '' : await qrAscii(url)
+  return { ticket, loginToken, ascii, pngPaths, imageOpened }
 }
 
 export type YoukuQRPoll = {

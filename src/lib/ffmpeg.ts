@@ -3,6 +3,7 @@ import { existsSync, globSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
 import { truncate } from './util.ts'
+import { tuiBinDir } from './tool-paths.ts'
 
 function existsFile(p: string): string {
   if (!p || p === 'ffmpeg' || p === 'ffmpeg.exe') return ''
@@ -25,6 +26,8 @@ function which(bin: string): string {
 }
 
 export function lookFFmpeg(bin: string): string {
+  const bundled = existsFile(join(tuiBinDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))
+  if (bundled) return bundled
   const direct = existsFile(bin)
   if (direct) return direct
   const onPath = which('ffmpeg')
