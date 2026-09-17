@@ -10,7 +10,10 @@
   "scripts": {
     "dev": "bun --bun vite --force",
     "dev:clean": "bun run scripts/dev-clean.ts && bun --bun vite --force",
-    "build": "tsc --noEmit && vite build && bun run scripts/bundle-tools.ts",
+    "build": "tsc --noEmit && vite build && bun run scripts/bundle-tools.ts && bun run scripts/bundle-runtime.ts",
+    "setup": "bun run tools:prepare",
+    "package:windows": "bun run build && bun run scripts/package-windows.ts",
+    "check:portable": "bun run scripts/check-portable.ts",
     "tools:prepare": "bun run scripts/bundle-tools.ts --prepare",
     "start": "bun --bun dist/main.js",
     "preview": "bun run scripts/preview.ts"

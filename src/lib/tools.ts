@@ -3,9 +3,9 @@ import { chmodSync, copyFileSync, mkdirSync, readdirSync, renameSync, rmSync, st
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { tuiBinDir } from './tool-paths.ts'
+import { fetchToolBytes } from './tool-download.ts'
 export { tuiBinDir } from './tool-paths.ts'
 
-const UA = 'gvs-tui'
 const M3U8_REPO = 'nilaoda/N_m3u8DL-RE'
 const MKV_REPO = 'Jesseatgao/MKVToolNix-static-builds'
 const SHAKA_REPO = 'shaka-project/shaka-packager'
@@ -227,12 +227,12 @@ async function pullGithub(opts: {
   signal?: AbortSignal
 }): Promise<string> {
   opts.note?.(`正在从 GitHub 拉取 ${opts.label}…`)
-  const assets = await githubLatest(opts.repo, opts.signal)
+  const assets = await githubLatest(opts.repo, opts.signal, opts.note)
   const name = opts.pick(assets.map((a) => a.name))
   const asset = assets.find((a) => a.name === name)
   if (!asset) throw new Error(`GitHub 发行包没有 ${opts.label}`)
   opts.note?.(`下载 ${name}…`)
-  const buf = await download(asset.browser_download_url, opts.signal)
+  const buf = await fetchToolBytes(asset.browser_download_url, { label: opts.label, signal: opts.signal, note: opts.note })
   const dir = tuiBinDir()
   mkdirSync(dir, { recursive: true })
   const dest = join(dir, opts.destName)
@@ -268,28 +268,13 @@ async function pullGithub(opts: {
   }
 }
 
-async function githubLatest(repo: string, signal?: AbortSignal): Promise<Asset[]> {
-  const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-    headers: { 'User-Agent': UA, Accept: 'application/vnd.github+json' },
-    signal,
+async function githubLatest(repo: string, signal?: AbortSignal, note?: (s: string) => void): Promise<Asset[]> {
+  const bytes = await fetchToolBytes(`https://api.github.com/repos/${repo}/releases/latest`, {
+    label: `${repo} 版本列表`, accept: 'application/vnd.github+json', signal, note,
   })
-  if (!res.ok) {
-    const body = (await res.text()).slice(0, 180)
-    throw new Error(`GitHub API ${res.status}${body ? `: ${body}` : ''}`)
-  }
-  const data = await res.json() as { assets?: Asset[] }
+  const data = JSON.parse(bytes.toString('utf8')) as { assets?: Asset[] }
   if (!data.assets?.length) throw new Error(`GitHub 发行包列表为空（${repo}）`)
   return data.assets
-}
-
-async function download(url: string, signal?: AbortSignal): Promise<Buffer> {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': UA, Accept: 'application/octet-stream' },
-    redirect: 'follow',
-    signal,
-  })
-  if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`)
-  return Buffer.from(await res.arrayBuffer())
 }
 
 function extract(archive: string, dest: string): Promise<void> {

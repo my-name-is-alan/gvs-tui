@@ -51,6 +51,7 @@ writeFileSync(join(dir, 'encrypted-audio.m3u8'), withDeadKey('encrypted-audio.m3
 let keyRequests = 0
 let wrongHeaders = 0
 let transientDenied = 0
+const deniedVersions = new Set<number>()
 let refreshCalls = 0
 const requestPaths: string[] = []
 const server = createServer((req, res) => {
@@ -67,6 +68,7 @@ const server = createServer((req, res) => {
   if (path === '/missing-key') { keyRequests++; res.writeHead(404).end(); return }
   // The old signed URL NEVER recovers: only refreshing it can make progress.
   if (path === '/video-3.m4s' && Number(requestUrl.searchParams.get('v') ?? 0) < 3) {
+    deniedVersions.add(Number(requestUrl.searchParams.get('v') ?? 0))
     transientDenied++; res.writeHead(403).end('expired URL'); return
   }
   try {
@@ -139,7 +141,9 @@ try {
   assertAudioContinuity(await inspectMediaTiming(ffmpeg, join(dir, 'result.mkv')))
   if (keyRequests !== 0) throw new Error(`Unexpected key URI requests: ${keyRequests}`)
   if (wrongHeaders !== 0) throw new Error(`CDN requests bypassed JS transport: ${wrongHeaders}`)
-  if (transientDenied !== 3 || refreshCalls !== 3) throw new Error(`Expected 3 new URLs: failures=${transientDenied}, refreshes=${refreshCalls}`)
+  // RE may retry the in-flight local request during the intentional 22s wait.
+  // Count distinct expired signatures and play refreshes, not socket attempts.
+  if (transientDenied < 3 || deniedVersions.size !== 3 || refreshCalls !== 3) throw new Error(`Expected 3 new URLs: failures=${transientDenied}, versions=${deniedVersions.size}, refreshes=${refreshCalls}`)
   if (requestPaths.filter(p => p.startsWith('/video-1.m4s')).length !== 1) throw new Error('Already completed segment was downloaded again')
   console.log('PASS: three expired URLs replaced with fresh URLs in the same RE task; completed segment not downloaded again')
   console.log('PASS: playlist, redirect, init and every media segment use the original JS request headers')

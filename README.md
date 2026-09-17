@@ -8,10 +8,11 @@
 
 ## 运行
 
-需要 Bun ≥ 1.3。Windows x64 构建内置 ffmpeg、N_m3u8DL-RE、mkvmerge 和 Shaka Packager，无需用户下载或设置工具路径。不需要 Go。工具优先从程序旁的 `bin/` 读取，不依赖启动目录或系统 PATH。
+源码运行需要 Bun ≥ 1.3。Git 仓库包含源码和锁文件，不包含 `bin/`、`dist/` 或 `node_modules/`；首次安装必须联网获取依赖及 ffmpeg、N_m3u8DL-RE、mkvmerge、Shaka Packager。不需要 Go。工具优先从程序旁的 `bin/` 读取，不依赖启动目录或系统 PATH。
 
 ```powershell
-bun install
+bun install --frozen-lockfile
+bun run setup
 bun run dev
 ```
 
@@ -22,7 +23,20 @@ bun run build
 bun run start
 ```
 
-`bun run build` 会实际将工具复制到 `dist/bin/`，分发时保留整个 `dist/`。源码首次启动缺少工具时会自动准备，也可提前执行 `bun run tools:prepare`。[第三方工具说明](docs/THIRD-PARTY-TOOLS.md)。
+`bun run build` 会将工具复制到 `dist/bin/`，并将 OpenTUI 和原生 DLL/WASM 运行依赖复制到 `dist/node_modules/`。普通 `dist` 仍需本机安装 Bun。源码首次启动缺少工具时会自动准备，也可提前执行 `bun run tools:prepare`。如果出现“工具缺失：The socket connection was closed unexpectedly”，是获取工具时的网络失败；下载会自动重试 5 次，仍失败时检查 GitHub 连接或使用下面的完整便携包。[第三方工具说明](docs/THIRD-PARTY-TOOLS.md)。
+
+### Windows 完整便携包
+
+在仓库 Actions 中打开当前提交的 `tui` 任务，下载 `gvs-tui-windows-x64` 构建产物，解压其中的 ZIP 后双击 `start.cmd`。完整包包含 Bun、界面运行依赖及四个媒体工具，无需额外安装 Node/Bun 或联网下载工具；网关地址、API Key 和平台登录仍由使用者自己填写。不要只发送 `main.js`。
+
+开发者可在 Windows x64 生成和验证同一份包：
+
+```powershell
+bun run package:windows
+bun run check:portable
+```
+
+产物在 `.build/releases/`。验证会将 ZIP 解压到仓库外，使用包内 Bun 并关闭自动安装，检查原生界面渲染与四个工具能否启动。CI 从干净检出构建并验证这个包，避免本机已装工具掩盖遗漏。
 
 `Ctrl+C` 退出。
 
