@@ -140,6 +140,45 @@ export function ffmpegRemux(
     { out: outPath, inputs: [inPath], cb: onProgress })
 }
 
+/** Labels reflect detected codec/profile and channels, never the platform title. */
+export function audioLabelFromProbe(output: string): string {
+  // Only inspect the first input audio stream; ignore titles and other metadata.
+  const line = output.split(/\r?\n/).find(s => /^\s*Stream #0:\d+.*: Audio: /.test(s))
+  const description = line?.split(': Audio: ')[1] ?? ''
+  const codec = /^(\w+)/.exec(description)?.[1]?.toLowerCase()
+  const format = description.split(',')[0] ?? ''
+  const layout = /,\s*(mono|stereo|\d+\.\d+(?:\([^)]*\))?|\d+ channels)\s*,/.exec(description)?.[1]
+  const channels = layout === 'mono' ? '1.0' : layout === 'stereo' ? '2.0' : layout?.replace(/\([^)]*\)/g, '')
+  let name = ''
+  if (codec === 'eac3') name = /atmos|\bJOC\b/i.test(format) ? '杜比全景声' : 'DDP'
+  else if (codec === 'truehd') name = /atmos/i.test(format) ? '杜比全景声（TrueHD）' : 'TrueHD'
+  else if (codec === 'ac3') name = 'Dolby Digital'
+  else if (codec === 'dts') {
+    if (/DTS:X/i.test(format)) name = 'DTS:X'
+    else if (/DTS-HD MA/i.test(format)) name = 'DTS-HD MA'
+    else if (/DTS-HD HRA/i.test(format)) name = 'DTS-HD HRA'
+    else name = 'DTS'
+  } else if (codec === 'aac') name = 'AAC'
+  else if (codec && codec !== 'none' && codec !== 'unknown') name = codec.toUpperCase()
+  return name ? `${name}${channels ? ` ${channels}` : ''}` : '音轨（编码未确认）'
+}
+
+/** Probe local input metadata without transcoding; failure must not invent a codec. */
+export function audioTrackLabel(ffmpeg: string, path: string): Promise<string> {
+  return new Promise(resolve => {
+    const child = spawn(ffmpeg, ['-nostdin', '-hide_banner', '-i', path], {
+      windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
+    })
+    let output = ''
+    const timer = setTimeout(() => { child.kill(); resolve('音轨（编码未确认）') }, 15000)
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (s: string) => { output = (output + s).slice(-262144) })
+    child.once('error', () => { clearTimeout(timer); resolve('音轨（编码未确认）') })
+    // ffmpeg -i without an output deliberately exits nonzero after probing.
+    child.once('close', () => { clearTimeout(timer); resolve(audioLabelFromProbe(output)) })
+  })
+}
+
 /** Fail before muxing if an encrypted/damaged audio track cannot decode. */
 export async function validateAudio(ffmpeg: string, path: string): Promise<void> {
   try {

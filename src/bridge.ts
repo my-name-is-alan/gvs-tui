@@ -21,14 +21,14 @@ export class Bridge {
 
   constructor() {
     const preview = previewRequest()
-    if (preview) {
+    if (preview && preview !== 'interactive') {
       const raw = Number.parseInt(process.env.GVS_PREVIEW_CURSOR ?? '0', 10)
       this.runtime = null
       this.preview = true
       this.snapshot = demoSnapshot(preview, Number.isFinite(raw) ? raw : 0)
       return
     }
-    this.runtime = new Runtime()
+    this.runtime = new Runtime({simulate:preview === 'interactive'})
     this.preview = false
     this.snapshot = this.runtime.snapshot
   }
@@ -40,6 +40,8 @@ export class Bridge {
     }
     return this.runtime.onSnapshot(listener)
   }
+
+  resize(width:number,height:number):void {this.runtime?.resize(width,height)}
 
   key(name: string, modifiers: { ctrl?: boolean; alt?: boolean; shift?: boolean } = {}): void {
     this.runtime?.handleKey(name, modifiers)

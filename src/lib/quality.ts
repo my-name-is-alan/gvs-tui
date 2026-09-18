@@ -2,7 +2,8 @@ import type { Audio, Episode, Quality, VipProbe } from '../types.ts'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
 import { anyInt, asBool, asString, isObj } from './util.ts'
-import { hongguoItem } from './media.ts'
+import { hongguoItem, pickHongguo } from './media.ts'
+import { hongguoResolveInput } from './hongguo.ts'
 
 export type StreamOptions = { qualities: Quality[]; audios: Audio[]; vip?: VipProbe }
 
@@ -11,7 +12,7 @@ export function youkuAudiosFromPlay(data: Record<string, unknown>): Audio[] {
   const audios: Audio[] = []
   const addAudio = (id: string, label: string, lang: string, codec: string, isDefault: boolean) => {
     if (!id || audios.some((a) => a.id === id)) return
-    audios.push({ id, label, lang, codec, isDefault, selected: isDefault })
+    audios.push({ id, label, lang, codec, isDefault, selected: true })
   }
 
   const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
@@ -59,8 +60,15 @@ export function youkuAudiosFromPlay(data: Record<string, unknown>): Audio[] {
   }
 
   if (!audios.some((a) => a.isDefault) && audios.length) audios[0].isDefault = true
-  for (const a of audios) if (a.isDefault) a.selected = true
-  audios.sort((a, b) => Number(b.isDefault) - Number(a.isDefault))
+  // Platform format preference, not a measurement of the downloaded audio.
+  const rank = (a: Audio): number => {
+    const s = a.id.toLowerCase()
+    if (/atmos|cmfa4|dolby/.test(s)) return 0
+    if (/dts|cmfa3/.test(s)) return 1
+    if (/aac|cmfa1/.test(s)) return 2
+    return 3
+  }
+  audios.sort((a, b) => rank(a) - rank(b) || Number(b.isDefault) - Number(a.isDefault))
   return audios
 }
 
@@ -122,7 +130,7 @@ export async function probeOptions(
   opts: { skipSign?: boolean } = {},
 ): Promise<StreamOptions> {
   switch (provider) {
-    case 'hongguo': return { qualities: await probeHongguo(cli, vid), audios: [] }
+    case 'hongguo': return probeHongguo(cli, vid)
     case 'youku': return probeYouku(cli, cfg, vid, opts)
     case 'tencent': return { qualities: tencentQualityList(), audios: [] }
     case 'douyin': return { qualities: await probeDouyin(cli, vid), audios: [] }
@@ -140,33 +148,38 @@ function tencentQualityList(): Quality[] {
   ]
 }
 
-async function probeHongguo(cli: GwClient, vid: string): Promise<Quality[]> {
-  const data = await cli.invoke('hongguo', 'resolve', { vid, platform: 'ios' })
-  const item = hongguoItem(data, vid)
-  const why = asString(item.err)
-  if (why) throw new Error(why)
-  const out: Quality[] = []
-  const streams = Array.isArray(item.streams) ? item.streams : []
-  for (const s of streams) {
-    if (!isObj(s)) continue
-    const qid = asString(s.quality)
-    const u = asString(s.url)
-    if (!qid || !u) continue
-    const h = Number.parseInt(qid.toLowerCase().replace(/p$/, ''), 10) || 0
-    out.push({
-      id: qid,
-      label: qid.toUpperCase(),
-      title: qid.toUpperCase(),
-      size: anyInt(s.size),
-      width: 0,
-      height: h,
-      codec: asString(s.codec) || 'H265',
-      drm: 'CENC',
-    })
-  }
-  if (!out.length) throw new Error('红果没有可用画质')
-  out.sort((a, b) => b.height - a.height)
-  return out
+function hongguoCodec(value: unknown): string {
+ const codec = asString(value).toLowerCase()
+ if (/^(hevc|h265|h265_hvc1|hvc1|hev1)$/.test(codec)) return 'H265'
+ if (/^(h264|avc1|avc)$/.test(codec)) return 'H264'
+ return codec.toUpperCase()
+}
+
+export function hongguoStreamOptions(data: Record<string, unknown>, vid: string): StreamOptions {
+ const item = hongguoItem(data, vid)
+ const picked = pickHongguo(data, vid, '')
+ if (!picked.cdn) throw new Error(picked.why || '红果没有可用视频地址')
+ const streams = Array.isArray(item.streams) ? item.streams.filter(isObj).filter(s => asString(s.url)) : []
+ const qualities: Quality[] = streams.map(s => {
+   const quality = asString(s.quality)
+   const codec = hongguoCodec(s.codec)
+   const audio = isObj(s.audio) ? s.audio : {}
+   const audioCodec = asString(audio.codec).toUpperCase()
+   const profile = asString(audio.profile)
+   const channels = anyInt(audio.channels)
+   const sampleRate = anyInt(audio.sample_rate)
+   const bitrate = anyInt(audio.bitrate)
+   const label = [audioCodec || '编码未提供', profile, channels ? `${channels}声道` : '', sampleRate ? `${sampleRate/1000}kHz` : '', bitrate ? `${Math.round(bitrate/1000)}kbps` : ''].filter(Boolean).join(' ')
+   const audios: Audio[] = [{id:'embedded',label,lang:asString(audio.language) || '未提供',codec:audioCodec,isDefault:true,selected:true,embedded:true}]
+   const height = anyInt(s.height) || Number(/^(\d+)p$/i.exec(quality)?.[1] || 0)
+   return {tier:Number(/^(\d+)p$/i.exec(quality)?.[1] || 0),id:asString(s.id) || quality,label:quality || '分辨率未提供',title:quality || '分辨率未提供',width:anyInt(s.width),height,codec,size:anyInt(s.size),drm:asString(s.key) ? 'CENC' : '',audios}
+ })
+ if (!qualities.length) qualities.push({id:'',label:'默认流',title:'默认流（网关未提供媒体信息）',size:0,width:0,height:0,codec:'',drm:picked.key?'CENC':'',audios:[{id:'embedded',label:'编码未提供',lang:'未提供',codec:'',isDefault:true,selected:true,embedded:true}]})
+ return { qualities, audios: qualities[0].audios ?? [] }
+}
+
+async function probeHongguo(cli: GwClient, vid: string): Promise<StreamOptions> {
+ return hongguoStreamOptions(await cli.invoke('hongguo', 'resolve', hongguoResolveInput(vid)), vid)
 }
 
 async function probeDouyin(cli: GwClient, vid: string): Promise<Quality[]> {

@@ -85,3 +85,14 @@ export function joinColumns(cells: number, ...cols: Array<string | null | undefi
 export function rule(cells: number): string {
   return '─'.repeat(Math.max(0, cells))
 }
+
+/** Wrap long logs without splitting Chinese glyphs or hiding their tail. */
+export function wrapLines(text:string,width:number):string[]{
+ const lines:string[]=[]
+ for(const source of text.split('\n')){
+  let line='',used=0
+  for(const ch of source){const n=charWidth(ch.codePointAt(0)??0);if(used+n>Math.max(2,width)){lines.push(line);line='';used=0}line+=ch;used+=n}
+  lines.push(line)
+ }
+ return lines
+}

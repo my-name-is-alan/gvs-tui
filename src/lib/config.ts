@@ -10,6 +10,10 @@ export type FileConfig = {
   tmdbKey: string
   tmdbLang: string
   youkuSign: string
+  tencentMode?: "cookie" | "web" | "app" | "tv"
+  tencentTVDevice?: string
+  tencentTVQUA?: string
+  tencentTVVersion?: string
   tencentCookie: string
   hongguoMerge: boolean
   hongguoNfo: boolean

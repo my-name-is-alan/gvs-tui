@@ -32,7 +32,7 @@ jobs:
         with:
           bun-version: ${{ matrix.bun }}
       - run: bun install --frozen-lockfile
-      - run: bun test src/lib/template-props.test.ts
+      - run: bun test src/lib/template-props.test.ts scripts/dev-startup.test.ts
       - run: bun run preview
 
   windows-source:

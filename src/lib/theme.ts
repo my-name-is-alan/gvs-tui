@@ -4,27 +4,27 @@
 
 export const c = {
   /** Screen background. */
-  bg: '#0b1017',
+  bg: '#101715',
   /** Bars and cards that sit above the background. */
-  panel: '#131b26',
+  panel: '#18221e',
   /** Recessed surfaces (inputs). */
-  sunken: '#0e151f',
+  sunken: '#121b17',
   /** Hairlines and box borders. */
-  line: '#1e2a3a',
+  line: '#30463c',
   /** Text hierarchies, brightest first. */
-  text: '#e8eef6',
-  dim: '#9aa8b8',
-  faint: '#5f7086',
+  text: '#e8eee9',
+  dim: '#a2b2a8',
+  faint: '#748a7d',
   /** The one accent color. Cursor, focus, brand, progress. */
-  accent: '#7dd3fc',
+  accent: '#6fd6af',
   /** Selected row background — a lifted slate, not a saturated block. */
-  sel: '#17293c',
+  sel: '#243e32',
   /** Semantic tones. Only for state, never for decoration. */
   ok: '#34d399',
   warn: '#fbbf24',
   err: '#f87171',
   /** Reserved for metadata chips (DRM/codec), used sparingly. */
-  violet: '#a78bfa',
+  violet: '#a2b2a8',
 } as const
 
 export type Tone = 'info' | 'ok' | 'warn' | 'err'

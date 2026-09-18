@@ -77,18 +77,20 @@ $env:GVS_PREVIEW='jobs'; bun run dev     # 顶栏会显示 PREVIEW
 
 ## 起不来的时候
 
-dev server 编译缓存坏掉时，画面会停住或报
-`failed to launch /src/main.ts` + `null is not an object (evaluating 'compiler.parse')`，
-看起来很像"隧道断了"，其实是 UI 根本没跑起来。清缓存即可：
+如果报 `failed to launch /src/main.ts` +
+`null is not an object (evaluating 'compiler.parse')`，是开发模式的启动时序问题：
+`vue-termui` 可能在 Vue 插件的 `buildStart` 初始化编译器之前就开始编译入口。
+`vite.config.ts` 已通过 `vue/compiler-sfc` 显式传入编译器；更新代码后停止旧进程，
+重新执行 `bun dev` 即可。清缓存或 `--force` 不能保证消除这个竞态。
+
+其它缓存问题仍可在停止 dev server 后清理：
 
 ```powershell
-bun run dev:clean      # 先删 node_modules/.vite，再用 bun --bun vite --force 起
-# 还不行就手动删：
-Remove-Item -Recurse -Force node_modules/.vite, node_modules/.vite-temp
+bun run dev:clean      # 清理 Vite 缓存后重新启动
 ```
 
-判断方法：`Get-NetTCPConnection -OwningProcess <bun pid> | ? RemotePort -eq 443`，
-没有连接就说明应用没起来（正常时至少有 1 条到网关）。
+是否进入首页或配置页是启动成功的直接判断依据；网关连接失败会显示在界面上，
+没有 443 连接不能单独证明应用未启动。
 
 如果 Bun 1.4.2 报 `bun:ffi cannot convert argument to 'f32'`，请更新代码后重新构建。Vue 模板的数字布局属性必须写成 `:flexGrow="1"`，不能写成静态字符串 `flexGrow="1"`；旧版依赖隐式转换的写法已修正。CI 在 Bun 1.3.14 和 1.4.2 上运行全部界面预览，渲染异常会使检查失败。
 
@@ -142,7 +144,7 @@ VIP 专享片源在**非 VIP 账号**下只能拿到约 2 分 20 秒的试看段
   一条不勾就只封平台默认音轨。每条音轨在 mkv 里是独立 stream，并写入标题与语言。
 - **优酷封装**：原始分片先合并，再整轨解密，避免逐片解密产生多个独立 MP4 后再拼接。不会仅凭分片长度或某一片的 `tfdt` 自动添加音轨延迟；成品经音轨解码检查后才发布到最终文件名。
 - **优酷网络请求**：播放列表、初始化分片和媒体分片统一走原 Node/Bun `fetch`，保持相同请求头和网络栈。RE 通过仅监听 `127.0.0.1` 的随机地址读取数据，继续负责分片调度、合并和解密；RE 访问本机时关闭系统代理，不修改系统代理设置。签名 URL 不经 .NET URI 重新序列化，重定向按最终播放列表地址解析，Range 请求保留。CDN 本身返回的 403/410 仍会如实传递并触发重新取链。
-- **同步验证**：封装前读取实际 PTS（包含 MP4 的 edit list 和 composition offset），封装后复测各轨道起点。若 mkvmerge 将独立输入归零，按同一个公共时间原点补回相对差值，并再次验证；音频早于视频时移动公共原点，不裁掉开头。每个成品旁保存 `.timing.json`，记录源起点、封装起点、修正值和验证结果。
+- **同步验证**：封装前读取实际 PTS（包含 MP4 的 edit list 和 composition offset），封装后复测各轨道起点。若 mkvmerge 将独立输入归零，按同一个公共时间原点补回相对差值，并再次验证；音频早于视频时移动公共原点，不裁掉开头。`.timing.json` 记录源起点、封装起点、修正值和验证结果；下载成功后随临时文件清理，失败或设置 `GVS_KEEP_INTERMEDIATES=1` 时保留。NFO 仅在红果开启对应设置时生成，优酷和腾讯匹配 TMDB 不会生成 NFO。
 - **排查文件**：失败任务保留原始音视频中间文件。设置环境变量 `GVS_KEEP_INTERMEDIATES=1` 可在成功后也保留（会额外占用磁盘），避免重下才能排查。默认成功后清理中间文件，但保留时间戳报告。
 - **并发**：单文件（红果/腾讯/抖音）走 HTTP Range 分段并发；优酷 HLS/CMAF 分片并发拉取、写盘严格保序。
   实测同一批优酷分片（688 MB / 40 片）：`1 路 32.1s` → `8 路 7.2s`，两种方式输出 sha256 一致。

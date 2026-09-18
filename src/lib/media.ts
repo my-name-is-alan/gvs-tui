@@ -84,37 +84,38 @@ export function hongguoItem(data: Record<string, unknown>, vid: string): Record<
   if (isObj(data.videos)) {
     const hit = data.videos[vid]
     if (isObj(hit)) return hit
-    for (const v of Object.values(data.videos)) {
-      if (isObj(v)) return v
-    }
+    return { err: "红果未返回所请求的分集" }
   }
   if (isObj(data.video)) return data.video
   return data
 }
 
-export function pickHongguo(data: Record<string, unknown>, vid: string, want: string): { cdn: string; spade: string; why: string } {
+export function pickHongguo(data: Record<string, unknown>, vid: string, want: string): { cdn: string; key: string; spade: string; why: string } {
   const item = hongguoItem(data, vid)
   const why = asString(item.err)
-  let spade = asString(item.template) || asString(item.spade)
+  if (why) return { cdn: '', key: '', spade: '', why }
+  const streams = Array.isArray(item.streams) ? item.streams.filter(isObj).filter(s => asString(s.url)) : []
   const wantQ = want.toLowerCase().trim()
-  const rank: Record<string, number> = { '1080p': 0, '720p': 1, '540p': 2, '480p': 3, '360p': 4 }
-  let best = 99
-  let cdn = ''
-  const streams = Array.isArray(item.streams) ? item.streams : []
-  for (const s of streams) {
-    if (!isObj(s)) continue
-    const u = asString(s.url)
-    const q = asString(s.quality).toLowerCase()
-    if (!u) continue
-    if (wantQ && q === wantQ) return { cdn: u, spade, why }
-    const r = rank[q] ?? 8
-    if (r < best) {
-      best = r
-      cdn = u
-    }
+  // New variants own their key, including an explicitly empty key for clear media.
+  const variants = streams.filter(s => Object.hasOwn(s, 'key'))
+  if (variants.length) {
+    const chosen = wantQ ? variants.find(s => asString(s.id).toLowerCase() === wantQ || asString(s.quality).toLowerCase() === wantQ) : variants[0]
+    if (!chosen) throw new Error('所选红果画质已不可用，请重新选择')
+    const key = asString(chosen.key)
+    if (key && !/^[a-f\d]{32}$/i.test(key)) throw new Error('红果未返回有效解密密钥')
+    return { cdn: asString(chosen.url), key, spade: '', why: '' }
   }
-  if (!cdn) cdn = asString(item.url)
-  return { cdn, spade, why }
+  const spade = asString(item.template) || asString(item.spade)
+  const key = asString(item.key)
+  if (key && !/^[a-f\d]{32}$/i.test(key)) throw new Error('红果未返回有效解密密钥')
+  if (asString(item.url)) {
+    if (wantQ) throw new Error('网关未返回所选红果画质，请更新网关并重新选择')
+    return { cdn: asString(item.url), key, spade, why }
+  }
+  const chosen = wantQ ? streams.find(s => asString(s.quality).toLowerCase() === wantQ) : streams[0]
+  if (wantQ && !chosen) throw new Error('所选红果画质已不可用，请重新选择')
+  return { cdn: chosen ? asString(chosen.url) : '', key, spade, why }
+
 }
 
 export function pickURL(data: Record<string, unknown>): string {

@@ -3,6 +3,8 @@ export type Row = {
   title: string
   id: string
   sub: string
+  rank?: number
+  target?: { type: string; id?: string; query?: string; sectionId?: string; reason?: string }
   /** One-line blurb from the platform (e.g. `玄幻脑洞·全151集`). */
   desc?: string
   score?: string
@@ -19,9 +21,9 @@ export type Episode = {
   group?: string
 }
 export type TMDBHit = { id: number; name: string; title: string; year: number; overview?: string }
-export type Quality = { id: string; label: string; title: string; size: number; width: number; height: number; codec: string; drm: string }
+export type Quality = { id: string; label: string; title: string; size: number; width: number; height: number; codec: string; drm: string; tier?: number; audios?: Audio[] }
 /** Selectable audio track (only some platforms expose more than one). */
-export type Audio = { id: string; label: string; lang: string; codec: string; isDefault: boolean; selected: boolean }
+export type Audio = { id: string; label: string; lang: string; codec: string; isDefault: boolean; selected: boolean; embedded?: boolean }
 export type Detail = {
   title: string
   desc: string
@@ -58,6 +60,11 @@ export type OptionTab = 'quality' | 'audio'
 
 export type Snapshot = {
   scene: string
+  workspace?: import('./lib/discovery').DiscoveryView
+  confirmation?: { title: string; episodes: string; quality: string; audio: string; directory: string; name: string }
+  jobDetailLines?: string[]
+  logOffset?: number
+  simulated?: boolean
   host: string
   status: string
   /** How to color `status` — the runtime classifies it at the call site. */
@@ -117,10 +124,11 @@ export type Snapshot = {
   keyConfigured: boolean
   editField?: string
   editValue?: string
+  qrHint?: string
   qrAscii?: string
   qrPngPaths?: string[]
 }
 
 export type Scene =
   | 'setup' | 'home' | 'search' | 'results' | 'detail'
-  | 'quality' | 'tmdb' | 'jobs' | 'settings' | 'qr' | 'edit'
+  | 'quality' | 'tmdb' | 'jobs' | 'settings' | 'qr' | 'edit' | 'workspace' | 'filters' | 'confirm' | 'help' | 'job-detail'

@@ -15,7 +15,8 @@
     "tools:prepare": "bun run scripts/prepare-tools.ts",
     "tools:check": "bun run scripts/check-repo-tools.ts",
     "start": "bun run build && bun --bun dist/main.js",
-    "preview": "bun run scripts/preview.ts"
+    "preview": "bun run scripts/preview.ts",
+    "demo": "bun run build && bun run scripts/demo.ts"
   },
   "dependencies": {
     "@opentui/core": "^0.5.11",

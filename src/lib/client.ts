@@ -37,7 +37,8 @@ export class GwClient {
   }
 
   allows(scope: string[] | undefined, all: boolean, name: string): boolean {
-    if (all || !scope || scope.length === 0) return true
+    if (all) return true
+    if (!scope || scope.length === 0) return false
     return scope.includes(name)
   }
 
@@ -45,7 +46,7 @@ export class GwClient {
   extra(cfg: FileConfig, provider: string, skipSign = false): Record<string, string> {
     const h: Record<string, string> = {}
     if (provider === 'youku' && cfg.youkuSign && !skipSign) h['Yk-Sign'] = cfg.youkuSign
-    if (provider === 'tencent' && cfg.tencentCookie) h['Tx-Cookie'] = cfg.tencentCookie
+    if (provider === 'tencent' && (!cfg.tencentMode || cfg.tencentMode === 'cookie') && cfg.tencentCookie) h['Tx-Cookie'] = cfg.tencentCookie
     return h
   }
 

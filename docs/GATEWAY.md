@@ -455,3 +455,7 @@ Snapshot：`src/types.ts`。场景：
 - 新功能（取消任务、海报、聚合搜、腾讯真实画质、HLS）要改 `src/runtime.ts` 和 `src/lib/`，不能只改 `Root.vue`。
 
 栈：Bun + Vue 3 + vue-termui + OpenTUI。终端 UI，没有 DOM/CSS。组件基本是 `Box` / `Text` / `Input`。不需要 Go。
+
+## 平台工作台更新
+
+新版发现接口和兼容行为见 [DISCOVERY.md](DISCOVERY.md)。交互式演示使用 `bun run demo`，验收与预览说明见 [TUI-WORKSPACE.md](TUI-WORKSPACE.md)。

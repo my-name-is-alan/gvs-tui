@@ -1,16 +1,18 @@
-import { existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
-import { dirname, extname, join } from 'node:path'
+import { tencentPlayInput } from './tencent-qr.ts'
+import { resolveHongguoDownload } from './hongguo.ts'
+import { mkdirSync, renameSync, unlinkSync } from 'node:fs'
+import { extname, join } from 'node:path'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
-import { ffmpegDecryptCopy, ffmpegRemux, validateAudio } from './ffmpeg.ts'
+import { audioTrackLabel, ffmpegDecryptCopy, ffmpegRemux, validateAudio } from './ffmpeg.ts'
 import { mkvmergeMux, mkvmergeRemux, type MuxAudio } from './mkvmerge.ts'
 import { ensureFFmpeg, ensureMkvmerge, ensureMP4Box } from './tools.ts'
 import { isDtsAudio, mp4boxMux, readMp4Tracks } from './mp4box.ts'
 import { filename, folder, sourceTag } from './name.ts'
 import type { MediaKind, Naming } from './name.ts'
-import { writeEpisodeNFO, writeMovieNFO, writeTvShowNFO } from './nfo.ts'
+import { writeEpisodeNFO, writeTvShowNFO } from './nfo.ts'
 import {
-  CdnDenied, downloadPlaylist, downloadProgress, pickDouyinURL, pickHongguo, pickURL, referer, speedCB,
+  CdnDenied, downloadPlaylist, downloadProgress, pickDouyinURL, pickURL, referer, speedCB,
   youkuAudioPlaylist, youkuVideoPlaylist,
 } from './media.ts'
 import type { RetryNote } from './media.ts'
@@ -157,14 +159,6 @@ async function runTask(
       writeTvShowNFO(dir, t.series, t.plot, 0)
       writeEpisodeNFO(out, t.title, t.season, t.episode, '')
     }
-    if ((t.provider === 'youku' || t.provider === 'tencent') && t.tmdbId > 0) {
-      if (kind === 'movie') {
-        writeMovieNFO(dir, t.series, t.plot, t.tmdbId, t.year)
-      } else {
-        writeTvShowNFO(t.season > 0 ? dirname(dir) : dir, t.series, t.plot, t.tmdbId)
-        writeEpisodeNFO(out, t.title, t.season, t.episode, '')
-      }
-    }
     emitEvt({ id, status: '完成', pct: 1, log: out, err: '', done: true })
   } catch (e) {
     emitEvt({ id, status: '失败', pct: lastPct, log: '', err: e instanceof Error ? e.message : String(e), done: true })
@@ -178,36 +172,24 @@ async function dlHongguo(
   threads: number,
 ): Promise<void> {
   emit('取链', 0.02, t.vid)
-  const data = await cli.invoke('hongguo', 'resolve', { vid: t.vid, platform: 'ios' })
-  const picked = pickHongguo(data, t.vid, t.quality)
-  if (!picked.cdn) throw new Error(picked.why ? `红果: ${picked.why}` : `红果没有 CDN  vid=${t.vid}`)
-  let key = ''
-  if (picked.spade) {
-    emit('密钥', 0.05, '')
-    try {
-      const kd = await cli.invoke('hongguo', 'key', { spade: picked.spade })
-      key = asString(kd.key) || asString(kd.content_key_hex)
-    } catch (e) {
-      throw new Error(`红果获取密钥失败：${e instanceof Error ? e.message : String(e)}`)
-    }
-    if (!/^[a-f\d]{32}$/i.test(key)) throw new Error('红果未返回有效解密密钥')
-  }
+  let picked = await resolveHongguoDownload(cli, t.vid, t.quality)
   const enc = join(dir, `.${t.vid}.enc.mp4`)
   emit('下载', 0.08, '')
   try {
     await downloadProgress(picked.cdn, enc, referer(t.provider), speedCB(emit, '下载', 0.08, 0.7), retryNote, threads)
   } catch (e) {
-    // 红果直链带 expire；403 说明链接过期，重新 resolve 一次再续传。
+    // CDN 拒绝旧链接时重新获取成对的 URL 和 key。
     if (!(e instanceof CdnDenied)) throw e
-    emit('重取', 0.08, `CDN ${e.status}，重新取链后续传`)
-    const again = pickHongguo(await cli.invoke('hongguo', 'resolve', { vid: t.vid, platform: 'ios' }), t.vid, t.quality)
-    if (!again.cdn) throw new Error('红果重新取链失败')
-    await downloadProgress(again.cdn, enc, referer(t.provider), speedCB(emit, '下载', 0.08, 0.7), retryNote, threads)
+    emit('重取', 0.08, `CDN ${e.status}，重新取链后下载`)
+    picked = await resolveHongguoDownload(cli, t.vid, t.quality)
+    // A refreshed URL may identify different bytes; restart to keep CDN and key paired.
+    try { unlinkSync(enc) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    await downloadProgress(picked.cdn, enc, referer(t.provider), speedCB(emit, '下载', 0.08, 0.7), retryNote, threads)
   }
   const tmp = join(dir, `.${t.vid}.mp4`)
   emit('解密', 0.78, '')
-  if (key) {
-    await ffmpegDecryptCopy(ffmpeg, key, enc, tmp, (n, total) => emit('解密', 0.78 + 0.07 * Math.min(1, n / total), `解密 ${human(n)}/${human(total)}`))
+  if (picked.key) {
+    await ffmpegDecryptCopy(ffmpeg, picked.key, enc, tmp, (n, total) => emit('解密', 0.78 + 0.07 * Math.min(1, n / total), `解密 ${human(n)}/${human(total)}`))
     try { unlinkSync(enc) } catch { /* keep */ }
   } else {
     renameSync(enc, tmp)
@@ -232,7 +214,7 @@ async function dlTencent(
   retryNote: RetryNote,
 ): Promise<void> {
   emit('取链', 0.05, t.vid)
-  const play = () => cli.invoke('tencent', 'play', { vid: t.vid, defn: t.quality || 'fhd' }, cli.extra(cfg, 'tencent'))
+  const play = () => cli.invoke('tencent', 'play', { vid: t.vid, defn: t.quality || 'fhd', ...tencentPlayInput(cfg) }, cli.extra(cfg, 'tencent'))
   let cdn = pickURL(await play())
   if (!cdn) throw new Error('腾讯没有 video.url')
   const raw = join(dir, `.${t.vid}.bin`)
@@ -241,7 +223,7 @@ async function dlTencent(
     await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote, cfg.threads)
   } catch (e) {
     if (!(e instanceof CdnDenied)) throw e
-    emit('重取', 0.1, `CDN ${e.status}，重新取链后续传`)
+    emit('重取', 0.1, `CDN ${e.status}，重新取链后下载`)
     cdn = pickURL(await play())
     if (!cdn) throw new Error('腾讯重新取链失败')
     await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote, cfg.threads)
@@ -373,19 +355,20 @@ async function dlYouku(
     emit('校验', 0.85, dts ? '检查 MP4 轨道和时间戳（DTS 使用 MP4Box）' : '检查音轨完整解码')
     const ffmpeg = await ensureFFmpeg()
     for (const [i, input] of muxInputs.entries()) {
+      input.title = await audioTrackLabel(ffmpeg, input.path)
       if (!isDtsAudio(tracks[i]!) && !audioInfo[i]!.some(t => /^dts[cehlxy]$/.test(t.codec))) await validateAudio(ffmpeg, input.path)
     }
     emit('封装', 0.86, muxInputs.length > 1 ? `封装 ${muxInputs.length} 条音轨` : out)
     const muxProgress = (n: number, total: number) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`)
     const partial = join(dir, `.${t.vid}.mux-partial${dts ? '.mp4' : '.mkv'}`)
     temps.add(partial)
+    temps.add(`${partial}.timing.json`)
     try {
       if (dts) await mp4boxMux(mp4box, videoPath, muxInputs, partial, muxProgress)
       else if (muxInputs.length) await mkvmergeMux(mkvmerge, videoPath, muxInputs, partial, muxProgress)
       else await mkvmergeRemux(mkvmerge, videoPath, partial, muxProgress)
       if (!dts) await validateAudio(ffmpeg, partial)
       renameSync(partial, out)
-      if (existsSync(`${partial}.timing.json`)) renameSync(`${partial}.timing.json`, `${out}.timing.json`)
       succeeded = true
       return out
     } catch (e) {
