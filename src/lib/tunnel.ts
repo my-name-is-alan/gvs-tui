@@ -37,6 +37,12 @@ export function runTunnel(
   onStatus: (ok: boolean, err: string, transport?: 'ws' | 'legacy') => void,
   signal: AbortSignal,
 ): void {
+  const registryKey = Symbol.for('gvs.tunnel.active')
+  const registry = globalThis as unknown as Record<symbol, AbortController | undefined>
+  registry[registryKey]?.abort()
+  const owner = new AbortController()
+  registry[registryKey] = owner
+  signal = AbortSignal.any([signal, owner.signal])
   const loop = async () => {
     // Every round starts on WebSocket. Legacy is only a handshake fallback
     // for an old gateway — never after a WS session that actually opened,
@@ -102,6 +108,7 @@ async function tunnelOnce(
 ): Promise<boolean> {
   const u = new URL(host)
   const route = await tunnelRoute(u.hostname)
+  signal.throwIfAborted()
   if (route.fakeIp) {
     return tunnelOnceDial(host, key, onStatus, signal, route.tcp)
   }
@@ -114,6 +121,7 @@ async function tunnelOnceWS(
   onStatus: (ok: boolean, err: string, transport?: 'ws' | 'legacy') => void,
   signal: AbortSignal,
 ): Promise<boolean> {
+  signal.throwIfAborted()
   const url = tunnelURL(host)
   const WS = WebSocket as unknown as HeaderWS
   const ws = new WS(url, { headers: { Authorization: `Bearer ${key}` } })
@@ -130,6 +138,7 @@ async function tunnelOnceWS(
   }
   signal.addEventListener('abort', onAbort, { once: true })
   ws.addEventListener('open', () => {
+    if (signal.aborted) { ws.close(); return }
     opened = true
     onStatus(true, '', 'ws')
     beat = setInterval(() => {
@@ -378,7 +387,7 @@ async function local(f: TunFrame): Promise<TunFrame> {
   }
 }
 
-async function localFetch(f: TunFrame): Promise<TunFrame> {
+export async function localFetch(f: TunFrame): Promise<TunFrame> {
   const raw = f.body ? Buffer.from(f.body, 'base64') : undefined
   const headers = new Headers()
   if (f.header) {
@@ -394,6 +403,7 @@ async function localFetch(f: TunFrame): Promise<TunFrame> {
   try {
     res = await fetch(f.url ?? '', {
       method,
+      redirect: 'manual',
       headers,
       body: method === 'GET' || method === 'HEAD' || !raw?.byteLength ? undefined : new Uint8Array(raw),
       signal: ac.signal,
@@ -408,6 +418,8 @@ async function localFetch(f: TunFrame): Promise<TunFrame> {
   res.headers.forEach((val, k) => {
     header[k] = header[k] ? [...header[k], val] : [val]
   })
+  const cookies = res.headers.getSetCookie()
+  if (cookies.length) header['set-cookie'] = cookies
   return { t: 'res', id: f.id, status: res.status, header, body: body.toString('base64') }
 }
 

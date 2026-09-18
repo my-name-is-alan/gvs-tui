@@ -463,14 +463,15 @@ export class Runtime {
       f.push('发布组')
     if (this.has('youku') || this.has('tencent')) f.push('TMDB Key')
     if (this.has('youku')) f.push('优酷扫码', '优酷 Cookie', '优酷登录')
-    if (this.has('tencent')) f.push('腾讯播放会话', ...Object.values(tencentLabels), '腾讯 TV 设备 ID', '腾讯 TV QUA', '腾讯 TV 版本', '腾讯 Cookie')
+    if (this.has('tencent')) f.push('腾讯登录方式', '腾讯扫码', '腾讯 Cookie')
     if (this.has('hongguo')) f.push('红果合并', '红果 NFO', '红果封装')
     return f
   }
 
   private settingValue(f: string): string {
     if (Object.values(tencentLabels).includes(f)) return '独立扫码 · 不覆盖其他 Cookie'
-    if (f === '腾讯播放会话') return this.cfg.tencentMode || 'cookie'
+    if (f === '腾讯登录方式') return ({cookie:'手动 Cookie',web:'网页 QQ',app:'腾讯 App（网页授权）',tv:'极光 TV'} as const)[this.cfg.tencentMode || 'cookie']
+    if (f === '腾讯扫码') return this.cfg.tencentMode === 'cookie' || !this.cfg.tencentMode ? '先选择扫码登录方式' : '回车出码 · 会话独立保存'
     if (f === '腾讯 TV 设备 ID') return this.cfg.tencentTVDevice ? '已配置' : '未配置'
     if (f === '腾讯 TV QUA') return this.cfg.tencentTVQUA ? '已配置' : '未配置'
     if (f === '腾讯 TV 版本') return this.cfg.tencentTVVersion || '未配置'
@@ -792,6 +793,7 @@ export class Runtime {
             this.cfg.host,
             this.cfg.key,
             (ok, err, transport) => {
+              if (this.abort.signal.aborted) return
               const wasUp = this.tunnelOk
               this.tunnelOk = ok
               this.tunnelErr = err
@@ -1422,7 +1424,7 @@ export class Runtime {
         '优酷登录',
         '优酷扫码',
         '优酷 Cookie',
-        '腾讯 Cookie',
+        '腾讯 Cookie', '腾讯扫码',
       ].includes(f)
     ) {
       this.say('离线演示不连接账号服务；可测试目录、命名和封装设置')
@@ -1473,16 +1475,17 @@ export class Runtime {
       this.emit()
       return
     }
-    if (f === '腾讯播放会话') {
+    if (f === '腾讯登录方式') {
       const modes = ['cookie','web','app','tv'] as const
       this.cfg.tencentMode = modes[(modes.indexOf(this.cfg.tencentMode || 'cookie')+1)%modes.length]
       this.persistConfig(); this.emit(); return
     }
-    const txMode = (Object.keys(tencentLabels) as TencentMode[]).find(m => tencentLabels[m] === f)
+    if (f === '腾讯扫码' && (!this.cfg.tencentMode || this.cfg.tencentMode === 'cookie')) { this.say('先在腾讯登录方式选择网页 QQ 或极光 TV', 'info'); this.emit(); return }
+    const txMode = f === '腾讯扫码' ? this.cfg.tencentMode as TencentMode : undefined
     if (txMode && this.cli) {
       this.stopQR()
       this.qrTencent = txMode
-      this.qrHint = txMode === 'web' ? '手机 QQ 扫码（网页方式历史上有风控）；独立保存网页会话' : txMode === 'tv' ? '云视听极光扫码；独立保存 TV 会话' : '腾讯视频 App 扫码；独立保存 App 会话'
+      this.qrHint = txMode === 'web' ? '手机 QQ 扫码（网页方式历史上有风控）；独立保存网页会话' : txMode === 'tv' ? '云视听极光扫码；独立保存 TV 会话' : '腾讯视频 App 扫码；保存网页授权，手机播放尚未适配'
       try {
         const path = await this.work(() => startTencentQR(this.cli!, this.cfg, txMode))
         this.qrPngPaths = [path]; this.qrAscii = ''; this.scene = 'qr'
@@ -2268,9 +2271,9 @@ export class Runtime {
         const data = await pollTencentQR(this.cli, mode)
         if (this.scene !== 'qr' || this.qrTencent !== mode) return
         if (data.logged_in === true) {
-          this.say(`${tencentLabels[mode]}成功；在腾讯播放会话中选择 ${mode} 使用`, 'ok')
+          this.say(`${tencentLabels[mode]}成功；当前登录方式已选择该独立会话`, 'ok')
           this.scene = 'settings'; this.stopQR()
-        } else if (data.status === 'expired') { this.say('二维码已过期，请重新扫码', 'warn'); this.stopQR() }
+        } else if (data.status === 'expired' || data.status === 'cancelled') { this.say(data.status === 'cancelled' ? '已取消授权，请重新出码' : '二维码已过期，请重新扫码', 'warn'); this.stopQR() }
         else this.say(data.status === 'scanned' ? '已扫码，等待手机确认' : '等待扫码确认', 'info')
         this.emit(); return
       }

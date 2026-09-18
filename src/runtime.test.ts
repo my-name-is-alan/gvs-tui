@@ -202,3 +202,12 @@ test('embedded audio follows quality and cannot become a separate mux track', as
  expect(internal.pending[0].height).toBe(720)
  expect(internal.pending[0].audioTracks).toEqual([])
 })
+
+test('Tencent settings hide device internals and expose App website authorization',async()=>{
+ const r=await start();const x=r as any
+ x.keyInfo={all:true,scope:[]};x.emit()
+ expect(x.settingFields().filter((f:string)=>f.startsWith('腾讯'))).toEqual(['腾讯登录方式','腾讯扫码','腾讯 Cookie'])
+ x.cfg.tencentMode='app'
+ expect(x.settingValue('腾讯登录方式')).toContain('网页授权')
+ expect(x.settingValue('腾讯扫码')).toContain('回车出码')
+})
