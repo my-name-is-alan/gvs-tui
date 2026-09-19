@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { youkuAudiosFromPlay, youkuEditionLabel, youkuEditionsFromDetail } from './quality.ts'
+import { moviePlayables, youkuAudiosFromPlay, youkuEditionLabel, youkuEditionsFromDetail } from './quality.ts'
 describe('youkuAudiosFromPlay', () => {
   test('format priority, platform default within a format, stable ties and all selected', () => {
     const rows = youkuAudiosFromPlay({ audio_tracks: [
@@ -77,4 +77,50 @@ describe('youkuEditionsFromDetail', () => {
 test('youkuEditionLabel', () => {
   expect(youkuEditionLabel('普通话', 'guoyu')).toBe('国语版')
   expect(youkuEditionLabel('英语', 'en')).toBe('英语版')
+})
+
+describe('moviePlayables', () => {
+  test('第九区 detail has no episodes: title vid is 正片', () => {
+    const rows = moviePlayables({
+      title: '第九区',
+      category: '电影',
+      vid: 'XMTQwNzMzMDIwNA==',
+      episodes: [],
+      duration: 6671,
+    })
+    expect(rows).toEqual([
+      {
+        title: '正片',
+        vid: 'XMTQwNzMzMDIwNA==',
+        number: 1,
+        selected: false,
+        duration: 6671,
+        group: 'edition',
+      },
+    ])
+  })
+
+  test('play languages replace the single 正片 row', () => {
+    const rows = moviePlayables(
+      { vid: 'XEN', episodes: [] },
+      {
+        languages: [
+          { lang: '英语', langcode: 'en', vid: 'XEN' },
+          { lang: '普通话', langcode: 'guoyu', vid: 'XCN' },
+        ],
+      },
+    )
+    expect(rows.map((e) => e.title)).toEqual(['英语版', '国语版'])
+    expect(rows.map((e) => e.vid)).toEqual(['XEN', 'XCN'])
+  })
+
+  test('failed play still keeps title vid', () => {
+    expect(moviePlayables({ vid: 'X1' })).toEqual([
+      expect.objectContaining({ title: '正片', vid: 'X1', group: 'edition' }),
+    ])
+  })
+
+  test('no vid and no languages → empty, not a fake episode', () => {
+    expect(moviePlayables({ title: '第九区', episodes: [] })).toEqual([])
+  })
 })

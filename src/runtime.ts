@@ -22,7 +22,7 @@ import {
   patchJob,
   type DlTask,
 } from './lib/jobs.ts'
-import { probeOptions, youkuEditionsFromDetail } from './lib/quality.ts'
+import { moviePlayables, probeOptions, youkuEditionsFromDetail } from './lib/quality.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import {
   hostIsLocal,
@@ -2207,12 +2207,12 @@ export class Runtime {
   ): Promise<void> {
     if (this.detailInfo?.kind !== 'movie') return
     const generation = this.requestGeneration
-    let editions = provider === 'youku' ? youkuEditionsFromDetail(data) : []
-    if (!editions.length && provider === 'youku') {
+    let play: Record<string, unknown> | undefined
+    if (provider === 'youku' && !youkuEditionsFromDetail(data).length) {
       const vid = this.eps[0]?.vid || asString(data.vid)
       if (vid && this.cli) {
         try {
-          const play = await this.work(() =>
+          play = await this.work(() =>
             this.cli!.invoke('youku', 'play', {
               vid,
               tier: 'single',
@@ -2220,16 +2220,16 @@ export class Runtime {
             }),
           )
           if (generation !== this.requestGeneration) return
-          editions = youkuEditionsFromDetail(play)
         } catch {
-          // keep the episode list
+          // 正片来自详情 vid，不依赖这次 play。
         }
       }
     }
     if (generation !== this.requestGeneration) return
-    if (editions.length) {
+    const rows = moviePlayables(data, play)
+    if (rows.length) {
       const dur = this.eps[0]?.duration
-      this.eps = editions.map((e) =>
+      this.eps = rows.map((e) =>
         dur ? { ...e, duration: e.duration ?? dur } : e,
       )
       return

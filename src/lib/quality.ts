@@ -120,6 +120,28 @@ export function youkuEditionsFromDetail(data: Record<string, unknown>): Episode[
   return out
 }
 
+/** Movies are not episode lists. Title `vid` is the 正片 when languages are absent. */
+export function moviePlayables(
+  data: Record<string, unknown>,
+  play?: Record<string, unknown>,
+): Episode[] {
+  const editions = youkuEditionsFromDetail(play ?? data)
+  if (editions.length) return editions
+  const vid = asString(data.vid)
+  if (!vid) return []
+  const duration = anyInt(data.duration)
+  return [
+    {
+      title: '正片',
+      vid,
+      number: 1,
+      selected: false,
+      duration: duration > 0 ? duration : undefined,
+      group: 'edition',
+    },
+  ]
+}
+
 
 /** Everything the picker needs: one entry per quality, one per audio track. */
 export async function probeOptions(

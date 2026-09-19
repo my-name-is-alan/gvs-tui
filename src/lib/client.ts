@@ -1,6 +1,6 @@
 import { truncate } from './util.ts'
 import type { FileConfig } from './config.ts'
-
+import { fetchRemote } from './proxy.ts'
 export type KeyInfo = {
   id: string
   name: string
@@ -82,7 +82,7 @@ export class GwClient {
     const timer = setTimeout(() => ac.abort(), 45_000)
     let res: Response
     try {
-      res = await fetch(`${this.host}${path}`, { method, headers, body: payload, signal: ac.signal })
+      res = await fetchRemote(`${this.host}${path}`, { method, headers, body: payload, signal: ac.signal })
     } finally {
       clearTimeout(timer)
     }

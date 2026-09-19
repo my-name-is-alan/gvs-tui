@@ -1,4 +1,5 @@
 import { dots } from './name.ts'
+import { fetchRemote } from './proxy.ts'
 
 export type TmdbResult = {
   id: number
@@ -17,7 +18,7 @@ export async function tmdbSearch(apiKey: string, lang: string, query: string, tv
   const timer = setTimeout(() => ac.abort(), 20_000)
   let res: Response
   try {
-    res = await fetch(u, { signal: ac.signal })
+    res = await fetchRemote(u, { signal: ac.signal })
   } finally {
     clearTimeout(timer)
   }
