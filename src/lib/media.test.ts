@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { cleanRELog, hlsExtinfSeconds, hlsKeyArgs, reProgress, reHttpFailureMonitor, runM3u8dl, CdnDenied } from './media.ts'
+import { cleanRELog, hlsExtinfSeconds, hlsKeyArgs, playlistOverall, playlistStatus, reProgress, reHttpFailureMonitor, reSidecarProgress, reWorkPhase, runM3u8dl, CdnDenied } from './media.ts'
 
 test('CENC key is also supplied to the HLS parser, skipping the key URI fetch', () => {
   const key = '0123456789abcdef0123456789abcdef'
@@ -95,3 +95,59 @@ test('RE explicit final failure is rejected even when the process exits zero', a
   const script = `console.log('WARN: Download speed too slow!'); console.log('ERROR: Segment count check not pass'); console.log('ERROR: Failed')`
   await expect(runM3u8dl(process.execPath, ['-e', script], '')).rejects.toThrow('Download speed too slow')
 })
+
+test('RE log lines switch work from download to merge then decrypt', () => {
+  expect(reWorkPhase('Vid ━━ 8/8 100%')).toBe('download')
+  expect(reWorkPhase('16:46:15.37 二进制合并中...')).toBe('merge')
+  expect(reWorkPhase('Binary merging...\nDecrypting using SHAKA_PACKAGER...')).toBe('decrypt')
+})
+
+test('sidecar merge and shaka tempfile sizes become visible progress', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gvs-re-bytes-'))
+  try {
+    mkdirSync(join(dir, 'download'))
+    writeFileSync(join(dir, 'download', 'a'), Buffer.alloc(600))
+    writeFileSync(join(dir, 'download', 'b'), Buffer.alloc(400))
+    writeFileSync(join(dir, 'download.mp4'), Buffer.alloc(250))
+    const merge = reSidecarProgress(dir, 'merge')
+    expect(merge.ratio).toBeCloseTo(0.25)
+    expect(merge.log).toContain('250 B')
+    writeFileSync(join(dir, 'download.mp4'), Buffer.alloc(1000))
+    expect(reSidecarProgress(dir, 'decrypt').log).toContain('读取')
+    writeFileSync(join(dir, 'packager-tempfile-1'), Buffer.alloc(400))
+    const first = reSidecarProgress(dir, 'decrypt')
+    expect(first.ratio).toBeCloseTo(0.2)
+    expect(first.log).toBe('解密 400 B/1000 B')
+    writeFileSync(join(dir, 'download_dec.mp4'), Buffer.alloc(500))
+    const rewrite = reSidecarProgress(dir, 'decrypt')
+    expect(rewrite.ratio).toBeCloseTo(0.75)
+    expect(rewrite.log).toContain('回写')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('decrypt overall never jumps backward after download or merge', () => {
+  expect(playlistOverall('download', 0.99, true)).toBeLessThan(playlistOverall('merge', 0, true))
+  expect(playlistOverall('merge', 1, true)).toBe(playlistOverall('decrypt', 0, true))
+  expect(playlistStatus('下载', 'decrypt')).toBe('解密')
+  expect(playlistStatus('音轨 中文', 'merge')).toBe('音轨 中文 · 合并')
+})
+
+test('runM3u8dl reports shaka tempfile growth while the process is still running', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gvs-re-side-'))
+  try {
+    writeFileSync(join(dir, 'download.mp4'), Buffer.alloc(800))
+    const script = `
+      const fs = require('fs');
+      const path = require('path');
+      console.log('Decrypting using SHAKA_PACKAGER...');
+      fs.writeFileSync(path.join(process.cwd(), 'packager-tempfile-1'), Buffer.alloc(400));
+      setTimeout(() => process.exit(0), 400);
+    `
+    const seen: { n: number; log?: string; phase?: string }[] = []
+    await runM3u8dl(process.execPath, ['-e', script], join(dir, 're.log'), (n, _t, info) => {
+      seen.push({ n, log: info?.log, phase: info?.phase })
+    }, undefined, dir)
+    expect(seen.some(s => s.phase === 'decrypt' && (s.log || '').includes('400 B'))).toBe(true)
+    expect(seen.some(s => s.phase === 'decrypt' && s.n > 0)).toBe(true)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+}, 5000)

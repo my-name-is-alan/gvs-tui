@@ -336,6 +336,79 @@ export function reProgress(cb?: (n: number, total: number) => void): (chunk: str
   }
 }
 
+export type PlaylistPhase = 'download' | 'merge' | 'decrypt'
+export type PlaylistProgress = { phase: PlaylistPhase; log?: string }
+export type ProgressCB = (n: number, total: number, info?: PlaylistProgress) => void
+
+function fileSize(path: string): number {
+  try {
+    const st = statSync(path)
+    return st.isFile() ? st.size : 0
+  } catch {
+    return 0
+  }
+}
+
+function dirFileSizes(dir: string, pred?: (name: string) => boolean): number {
+  let n = 0
+  try {
+    for (const name of readdirSync(dir)) {
+      if (pred && !pred(name)) continue
+      n += fileSize(join(dir, name))
+    }
+  } catch { /* missing until RE creates it */ }
+  return n
+}
+
+export function reWorkPhase(text: string): PlaylistPhase {
+  const s = text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+  if (/Decrypting using/i.test(s)) return 'decrypt'
+  if (/二进制合并|Binary merging/i.test(s)) return 'merge'
+  return 'download'
+}
+
+/** Byte progress for RE merge / Shaka decrypt. Demux has no output yet. */
+export function reSidecarProgress(dir: string, phase: 'merge' | 'decrypt'): { ratio: number; log: string } {
+  if (phase === 'merge') {
+    const total = dirFileSizes(join(dir, 'download'))
+    const done = fileSize(join(dir, 'download.mp4'))
+    if (!total) return { ratio: 0, log: '合并' }
+    return { ratio: Math.min(1, done / total), log: `合并 ${human(done)}/${human(total)}` }
+  }
+  const src = fileSize(join(dir, 'download.mp4'))
+  if (!src) return { ratio: 0, log: '解密' }
+  const tmp = dirFileSizes(dir, (name) => name.startsWith('packager-tempfile'))
+  const dec = fileSize(join(dir, 'download_dec.mp4'))
+  if (tmp <= 0 && dec <= 0) return { ratio: 0, log: `解密 读取 ${human(src)}` }
+  if (dec <= 0) {
+    const wrote = Math.min(tmp, src)
+    return { ratio: 0.5 * (wrote / src), log: `解密 ${human(wrote)}/${human(src)}` }
+  }
+  if (tmp <= 0) {
+    const wrote = Math.min(dec, src)
+    return { ratio: wrote / src, log: `解密 ${human(wrote)}/${human(src)}` }
+  }
+  const wrote = Math.min(dec, src)
+  return { ratio: 0.5 + 0.5 * (wrote / src), log: `解密 回写 ${human(wrote)}/${human(src)}` }
+}
+
+export function playlistStatus(label: string, phase: PlaylistPhase): string {
+  if (phase === 'download') return label
+  const tag = phase === 'merge' ? '合并' : '解密'
+  return label === '下载' ? tag : `${label} · ${tag}`
+}
+
+export function playlistOverall(phase: PlaylistPhase, fraction: number, decrypts: boolean): number {
+  const clamped = Math.min(1, Math.max(0, fraction))
+  const download = 0.7
+  const merge = decrypts ? 0.08 : 0.29
+  const decrypt = decrypts ? 0.21 : 0
+  if (phase === 'download') return download * clamped
+  if (phase === 'merge') return download + merge * clamped
+  return download + merge + decrypt * clamped
+}
+
+
 export function hlsKeyArgs(key?: string): string[] {
   if (!key) return []
   if (!/^(?:[a-f\d]{32}:)?[a-f\d]{32}$/i.test(key)) throw new Error('解密密钥格式无效，应为 16 字节十六进制 KEY 或 KID:KEY')
@@ -358,7 +431,7 @@ export function reHttpFailureMonitor(): { feed: (chunk: string) => number } {
   }
 }
 
-export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: (n: number, total: number) => void, fatalError?: () => Error | undefined, cwd?: string): Promise<string> {
+export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: ProgressCB, fatalError?: () => Error | undefined, cwd?: string): Promise<string> {
   const { promise, resolve, reject } = Promise.withResolvers<string>()
   const child = spawn(bin, args, {
     windowsHide: true,
@@ -373,11 +446,29 @@ export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: (n:
   let output = ''
   let deniedStatus = 0
   let exhausted = false
+  let phase: PlaylistPhase = 'download'
+  let decryptAt = 0
   const failures = reHttpFailureMonitor()
-  const progress = reProgress(cb)
+  const bumpPhase = (next: PlaylistPhase) => {
+    const order: PlaylistPhase[] = ['download', 'merge', 'decrypt']
+    if (order.indexOf(next) > order.indexOf(phase)) phase = next
+    if (phase === 'decrypt' && !decryptAt) decryptAt = Date.now()
+  }
+  const emitSidecar = () => {
+    if (!cb || !cwd || phase === 'download') return
+    const side = reSidecarProgress(cwd, phase)
+    let log = side.log
+    if (phase === 'decrypt' && side.ratio === 0 && decryptAt) {
+      log = `${side.log} · ${Math.round((Date.now() - decryptAt) / 1000)}s`
+    }
+    cb(side.ratio, 1, { phase, log })
+  }
+  const progress = reProgress((n, total) => cb?.(n, total, { phase: 'download' }))
   const collect = (chunk: string) => {
     output = (output + chunk).slice(-16384)
+    bumpPhase(reWorkPhase(chunk))
     progress(chunk)
+    emitSidecar()
     const status = failures.feed(chunk)
     if (status) deniedStatus = status
     // RE retries a failed segment itself. Interrupt only after it explicitly
@@ -391,20 +482,25 @@ export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: (n:
   child.stderr.setEncoding('utf8')
   child.stdout.on('data', collect)
   child.stderr.on('data', collect)
-  const logWatch = logFile ? setInterval(() => {
+  const logWatch = (logFile || cwd || fatalError) ? setInterval(() => {
     if (fatalError?.()) { child.kill(); return }
     if (exhausted) return
-    try {
-      const log = readFileSync(logFile, 'utf8').slice(-16384)
-      const status = reHttpFailureMonitor().feed(log + '\n')
-      if (status) deniedStatus = status
-      if (deniedStatus && /retry attempts have been exhausted/i.test(log)) {
-        exhausted = true
-        child.kill()
-      }
-    } catch { /* log is not created yet */ }
+    let log = ''
+    if (logFile) {
+      try {
+        log = readFileSync(logFile, 'utf8').slice(-16384)
+        const status = reHttpFailureMonitor().feed(log + '\n')
+        if (status) deniedStatus = status
+        if (deniedStatus && /retry attempts have been exhausted/i.test(log)) {
+          exhausted = true
+          child.kill()
+        }
+      } catch { /* log is not created yet */ }
+    }
+    bumpPhase(reWorkPhase(log + '\n' + output))
+    emitSidecar()
   }, 250) : undefined
-  const stopLogWatch = () => { if (logWatch) clearInterval(logWatch) }
+  const stopLogWatch = () => { clearInterval(logWatch) }
   child.once('error', (e) => { stopLogWatch(); reject(new Error(`无法启动 N_m3u8DL-RE: ${e.message}`)) })
   child.once('close', (code, signal) => {
     stopLogWatch()
@@ -435,7 +531,7 @@ export async function downloadPlaylist(opts: {
   /** Only set when the gateway explicitly says the selected track is clear. */
   clear?: boolean
   threads?: number
-  cb?: (n: number, total: number) => void
+  cb?: ProgressCB
   select?: 'video' | 'audio'
   /** Use the original JS CDN transport while RE handles HLS/merge/decryption. */
   transport?: 'node' | 're'
@@ -517,11 +613,18 @@ export async function downloadPlaylist(opts: {
         // standalone MP4 movies; byte-concatenating those repeats moov/edit lists.
       )
     }
-    opts.cb?.(0, 1)
+    opts.cb?.(0, 1, { phase: 'download' })
     let progress = 0
-    const report = (n: number, total: number) => {
-      progress = Math.max(progress, total > 1 ? n / total : n)
-      opts.cb?.(progress, 1)
+    let phase: PlaylistPhase = 'download'
+    const decrypts = !!opts.key
+    const report: ProgressCB = (n, total, info) => {
+      const frac = total > 1 ? n / total : n
+      if (info?.phase) {
+        const order: PlaylistPhase[] = ['download', 'merge', 'decrypt']
+        if (order.indexOf(info.phase) >= order.indexOf(phase)) phase = info.phase
+      }
+      progress = Math.max(progress, Math.min(0.99, playlistOverall(phase, frac, decrypts)))
+      opts.cb?.(progress, 1, { phase, log: info?.log })
     }
     for (let slowRestart = 0; ; slowRestart++) {
       try {
@@ -546,7 +649,7 @@ export async function downloadPlaylist(opts: {
     if (statSync(opts.dest).size === 0) throw new Error('N_m3u8DL-RE 生成的文件为空')
     if (relay) writeFileSync(`${opts.dest}.transport.json`, JSON.stringify({ transport: 'node', completed: true, threads, ...relay.stats(), requests: relayEvents }, null, 2))
     try { unlinkSync(errorLog) } catch { /* no previous failure */ }
-    opts.cb?.(1, 1)
+    opts.cb?.(1, 1, { phase: decrypts ? 'decrypt' : 'merge' })
     succeeded = true
   } catch (e) {
     try {

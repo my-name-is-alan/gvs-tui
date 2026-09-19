@@ -12,7 +12,7 @@ import { filename, folder, sourceTag } from './name.ts'
 import type { MediaKind, Naming } from './name.ts'
 import { writeEpisodeNFO, writeTvShowNFO } from './nfo.ts'
 import {
-  CdnDenied, downloadPlaylist, downloadProgress, pickDouyinURL, pickURL, referer, speedCB,
+  CdnDenied, downloadPlaylist, downloadProgress, pickDouyinURL, pickURL, playlistStatus, referer, speedCB,
   youkuAudioPlaylist, youkuVideoPlaylist,
 } from './media.ts'
 import type { RetryNote } from './media.ts'
@@ -326,9 +326,10 @@ async function dlYouku(
         return { src, key: (select === 'video' ? drm.videoEnc : drm.audioEnc) ? drm.reKey : undefined }
       },
       onRefresh: (retry, total) => retryNote(retry, total, `${label} 失败分片换新 CDN 链接，保留已下载进度`),
-      cb: (n, total) => {
+      cb: (n, total, info) => {
         const pct = total > 1 ? n / total : n
-        emit(label, base + span * pct, label)
+        const status = playlistStatus(label, info?.phase ?? 'download')
+        emit(status, base + span * pct, info?.log || status)
       },
     })
     completedTracks.add(dest)

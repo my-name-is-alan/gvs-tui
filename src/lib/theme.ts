@@ -66,15 +66,12 @@ export function valueColor(value: string): string {
 }
 
 export function jobTone(status: string): { icon: string; color: string } {
-  switch (status) {
-    case '完成': return { icon: '✔', color: c.ok }
-    case '失败': return { icon: '✖', color: c.err }
-    case '排队': return { icon: '○', color: c.faint }
-    case '下载': return { icon: '↓', color: c.accent }
-    case '解密':
-    case '封装': return { icon: '▸', color: c.accent }
-    default: return { icon: '·', color: c.warn }
-  }
+  if (status === '完成') return { icon: '✔', color: c.ok }
+  if (status === '失败') return { icon: '✖', color: c.err }
+  if (status === '排队') return { icon: '○', color: c.faint }
+  if (/解密|合并|封装|校验/.test(status)) return { icon: '▸', color: c.accent }
+  if (status === '下载' || status.startsWith('音轨')) return { icon: '↓', color: c.accent }
+  return { icon: '·', color: c.warn }
 }
 
 /** Short, human label for a gateway host: `http://127.0.0.1:8080` → `127.0.0.1:8080`. */
