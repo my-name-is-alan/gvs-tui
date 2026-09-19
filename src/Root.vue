@@ -125,11 +125,12 @@ onKeyDown((event) => {
     return
   }
 
-  const platformShortcut=(event.option||event.meta)&&['1','2','3'].includes(name)
+  // Option/Alt+1..3 only. Command (meta/super) is iTerm/VS Code/Finder ⌘1-9.
+  const platformShortcut = event.option && ['1', '2', '3'].includes(name)
   if (platformShortcut || /^f[1-4]$/.test(name)) {
     bridge.key(event.name, {
       ctrl: event.ctrl,
-      alt: event.option || event.meta,
+      alt: event.option,
       shift: event.shift,
     })
     event.preventDefault()
@@ -172,7 +173,7 @@ onKeyDown((event) => {
       : event.name
   bridge.key(forwardedName, {
     ctrl: event.ctrl,
-    alt: event.option || event.meta,
+    alt: event.option,
     shift: event.shift,
   })
 })
@@ -231,7 +232,7 @@ const HOME_DESC: Record<string, string> = {
 
 const HINTS: Record<string, Array<[string, string]>> = {
   workspace: [
-    ['alt+1/2/3', '平台'],
+    ['⌥/alt+1/2/3', '平台'],
     ['←→', '栏目切换'],
     ['tab', '焦点'],
     ['⏎', '打开'],
@@ -268,7 +269,7 @@ const HINTS: Record<string, Array<[string, string]>> = {
     ['q', '退出'],
   ],
   search: [
-    ['alt+1/2/3', '切平台'],
+    ['⌥/alt+1/2/3', '切平台'],
     ['⏎', '搜索 / 打开链接'],
     ['esc', '返回'],
   ],
@@ -674,7 +675,7 @@ function wsRow(row: Row, index: number) {
 const helpLines = [
   '平台工作台 · 键盘操作',
   '',
-  'Alt+1 优酷 / Alt+2 腾讯 / Alt+3 红果',
+  '⌥/Alt+1 优酷 / ⌥/Alt+2 腾讯 / ⌥/Alt+3 红果（Mac 不要用 ⌘1，那是系统切窗口）',
   'F2 搜索    F3 任务    F4 设置    F1 帮助',
   '',
   'Tab / Shift+Tab 在栏目与内容列表之间切换焦点',
