@@ -44,6 +44,16 @@ export type DlTask = {
 
 export type JobEvt = { id: number; status: string; pct: number; log: string; err: string; done?: boolean }
 
+type JobRunner = (
+  emit: (e: JobEvt) => void,
+  cfg: FileConfig,
+  cli: GwClient,
+  id: number,
+  t: DlTask,
+) => Promise<void>
+
+type QueuedJob = { provider: string; run: () => Promise<void> }
+
 export function youkuDRM(payload: Record<string, unknown>) {
   const drm = isObj(payload.drm) ? payload.drm : {}
   const key = asString(drm.content_key_hex).replace(/^0x/i, '').replace(/-/g, '').toLowerCase()
@@ -60,22 +70,38 @@ export function nextJobID(): number {
 }
 
 export class JobHub {
-  private readonly q: Array<() => Promise<void>> = []
+  private readonly q: QueuedJob[] = []
   private active = 0
+  private youkuActive = 0
 
-  constructor(private readonly onEvt: (e: JobEvt) => void) {}
+  constructor(
+    private readonly onEvt: (e: JobEvt) => void,
+    private readonly start: JobRunner = runTask,
+  ) {}
 
   enqueue(cfg: FileConfig, cli: GwClient, id: number, t: DlTask): void {
-    this.q.push(() => runTask(this.onEvt, cfg, cli, id, t))
+    this.q.push({
+      provider: t.provider,
+      run: () => this.start(this.onEvt, cfg, cli, id, t),
+    })
     this.pump()
   }
 
   private pump(): void {
-    while (this.active < 2 && this.q.length) {
-      const fn = this.q.shift()!
+    for (let i = 0; i < this.q.length && this.active < 2; ) {
+      const item = this.q[i]!
+      // Two Youku CENC jobs share Shaka/RE temp names and one UPS session.
+      // English+Mandarin editions in parallel decrypt with a mixed key.
+      if (item.provider === 'youku' && this.youkuActive > 0) {
+        i++
+        continue
+      }
+      this.q.splice(i, 1)
       this.active += 1
-      void fn().finally(() => {
+      if (item.provider === 'youku') this.youkuActive += 1
+      void item.run().finally(() => {
         this.active -= 1
+        if (item.provider === 'youku') this.youkuActive -= 1
         this.pump()
       })
     }

@@ -1,6 +1,8 @@
 import { expect, test } from 'bun:test'
-import { jobTitle, patchJob, youkuDRM, type DlTask } from './jobs.ts'
+import { JobHub, jobTitle, patchJob, youkuDRM, type DlTask } from './jobs.ts'
 import { youkuAudioPlaylist, youkuVideoPlaylist } from './media.ts'
+import type { FileConfig } from './config.ts'
+import type { GwClient } from './client.ts'
 
 function task(partial: Partial<DlTask>): DlTask {
   return {
@@ -56,4 +58,46 @@ test('youku playlists use stream playlist_url not CMAF segments', () => {
   expect(youkuVideoPlaylist(data, 'mp4hd3')).toBe('https://v.m3u8')
   expect(youkuAudioPlaylist(data, '')).toBe('https://a.m3u8')
   expect(youkuAudioPlaylist(data, 'atmos')).toBe('https://atmos.m3u8')
+})
+
+test('youku jobs never overlap so two editions cannot mix CENC keys', async () => {
+  const began: string[] = []
+  const started: Record<string, () => void> = {}
+  const whenStarted = (vid: string) => new Promise<void>(r => { started[vid] = r })
+  const enStarted = whenStarted('en')
+  const zhStarted = whenStarted('zh')
+  const hStarted = whenStarted('h')
+  const release: Record<string, () => void> = {}
+  let youkuLive = 0
+  let youkuPeak = 0
+  let live = 0
+  let peak = 0
+  const hub = new JobHub(() => {}, async (_e, _cfg, _cli, _id, t) => {
+    live++
+    peak = Math.max(peak, live)
+    if (t.provider === 'youku') {
+      youkuLive++
+      youkuPeak = Math.max(youkuPeak, youkuLive)
+    }
+    began.push(t.vid)
+    started[t.vid]!()
+    await new Promise<void>(r => { release[t.vid] = r })
+    live--
+    if (t.provider === 'youku') youkuLive--
+  })
+  const cfg = {} as FileConfig
+  const cli = {} as GwClient
+  hub.enqueue(cfg, cli, 1, task({ kind: 'movie', edition: '英语版', vid: 'en' }))
+  hub.enqueue(cfg, cli, 2, task({ kind: 'movie', edition: '国语版', vid: 'zh' }))
+  hub.enqueue(cfg, cli, 3, task({ provider: 'hongguo', vid: 'h' }))
+  await Promise.all([enStarted, hStarted])
+  expect(began).toEqual(['en', 'h'])
+  expect(youkuPeak).toBe(1)
+  expect(peak).toBe(2)
+  release.en!()
+  await zhStarted
+  expect(began).toEqual(['en', 'h', 'zh'])
+  expect(youkuPeak).toBe(1)
+  release.zh!()
+  release.h!()
 })

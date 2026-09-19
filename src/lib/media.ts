@@ -358,12 +358,17 @@ export function reHttpFailureMonitor(): { feed: (chunk: string) => number } {
   }
 }
 
-export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: (n: number, total: number) => void, fatalError?: () => Error | undefined): Promise<string> {
+export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: (n: number, total: number) => void, fatalError?: () => Error | undefined, cwd?: string): Promise<string> {
   const { promise, resolve, reject } = Promise.withResolvers<string>()
   const child = spawn(bin, args, {
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2SUPPORT: 'false' },
+    cwd,
+    env: {
+      ...process.env,
+      DOTNET_SYSTEM_NET_HTTP_SOCKETSHTTPHANDLER_HTTP2SUPPORT: 'false',
+      ...(cwd ? { TMP: cwd, TEMP: cwd, TMPDIR: cwd } : {}),
+    },
   })
   let output = ''
   let deniedStatus = 0
@@ -520,7 +525,7 @@ export async function downloadPlaylist(opts: {
     }
     for (let slowRestart = 0; ; slowRestart++) {
       try {
-        diagnostics = await runM3u8dl(executable, args, logFile, report, relay?.error)
+        diagnostics = await runM3u8dl(executable, args, logFile, report, relay?.error, workDir)
         break
       } catch (e) {
         // RE's hard-coded 20s zero-speed watchdog may fire while play() is
