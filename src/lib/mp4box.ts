@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { closeSync, openSync, readSync, statSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { closeSync, mkdtempSync, openSync, readSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { mkvLang, type MuxAudio } from './mkvmerge.ts'
 
 export function isDtsAudio(track: { id?: string; label?: string; codec?: string }): boolean {
@@ -165,12 +166,13 @@ export function shiftedEdits(track: Mp4Track, deltaMs: number): string {
  */
 export async function mp4boxMux(mp4box: string, video: string, audios: MuxAudio[], out: string,
   progress?: (n: number, total: number) => void): Promise<void> {
+  const tmp = mkdtempSync(join(tmpdir(), 'gvs-mp4box-'))
   const report: Record<string, unknown> = { version: 1, muxer: 'MP4Box', verified: false }
   try {
     if (audios.some(a => a.delayMs)) throw new Error('MP4Box 使用源时间轴，不接受额外音轨偏移')
     const sources = [video, ...audios.map(a => a.path)]
     const before: Mp4TrackScan[] = []
-    const args: string[] = ['-tmp', dirname(out)]
+    const args: string[] = ['-tmp', tmp]
     for (const [i, path] of sources.entries()) {
       const type = i === 0 ? 'vide' : 'soun'
       const tracks = (await inspectMp4(mp4box, path)).filter(t => t.type === type)
@@ -208,5 +210,7 @@ export async function mp4boxMux(mp4box: string, video: string, audios: MuxAudio[
     report.error = e instanceof Error ? e.message : String(e)
     try { writeFileSync(`${out}.timing.json`, JSON.stringify(report, null, 2) + '\n') } catch { /* preserve original failure */ }
     throw e
+  } finally {
+    try { rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }) } catch { /* output already written */ }
   }
 }

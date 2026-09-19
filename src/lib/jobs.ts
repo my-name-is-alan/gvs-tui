@@ -1,6 +1,6 @@
 import { tencentPlayInput } from './tencent-qr.ts'
 import { resolveHongguoDownload } from './hongguo.ts'
-import { mkdirSync, renameSync, unlinkSync } from 'node:fs'
+import { mkdirSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
@@ -337,6 +337,8 @@ async function dlYouku(
   const run = async (payload: Record<string, unknown>) => {
     muxInputs.length = 0
     temps.add(videoPath)
+    temps.add(`${videoPath}.transport.json`)
+    temps.add(`${videoPath}.download-error.log`)
     const drm = youkuDRM(payload)
     if ((drm.videoEnc || drm.audioEnc) && !drm.reKey) throw new Error('优酷加密轨道未返回密钥，请重试取流或检查登录状态')
     const playlist = youkuVideoPlaylist(payload, t.quality)
@@ -352,6 +354,8 @@ async function dlYouku(
       if (!audioPl) throw new Error(`所选音轨没有播放列表：${track.label}`)
       const audioPath = join(dir, `.${t.vid}.audio${i}.mp4`)
       temps.add(audioPath)
+      temps.add(`${audioPath}.transport.json`)
+      temps.add(`${audioPath}.download-error.log`)
       await pull(
         audioPl,
         audioPath,
@@ -407,7 +411,10 @@ async function dlYouku(
   } finally {
     // Failed muxes retain original tracks for diagnosis/retry. Developers can
     // opt into retaining successful downloads too, without editing config.
-    if (succeeded && process.env.GVS_KEEP_INTERMEDIATES !== '1') await cleanupTemporaryFiles(temps)
+    if (succeeded && process.env.GVS_KEEP_INTERMEDIATES !== '1') {
+      await cleanupTemporaryFiles(temps)
+      cleanupOutputCaches(dir)
+    }
   }
 }
 
@@ -430,6 +437,19 @@ export async function cleanupTemporaryFiles(paths: Iterable<string>): Promise<vo
     }
   }
   if (failed.length) throw new Error(`临时文件清理失败：${failed.join('、')}`)
+}
+
+/** Remove leftover RE/mux cache folders from older runs sitting next to the finished file. */
+export function cleanupOutputCaches(dir: string): void {
+  let names: string[] = []
+  try { names = readdirSync(dir) } catch { return }
+  for (const name of names) {
+    if (!name.startsWith('.re-') && !name.startsWith('.mux-timing-')) continue
+    const path = join(dir, name)
+    try {
+      if (statSync(path).isDirectory()) rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    } catch { /* finished file already in place */ }
+  }
 }
 
 async function playYouku(cli: GwClient, cfg: FileConfig, t: DlTask): Promise<Record<string, unknown>> {

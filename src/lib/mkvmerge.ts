@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { truncate } from './util.ts'
 import { ensureFFmpeg } from './tools.ts'
 import { firstPresentationMs, relativePresentationStarts } from './media-timing.ts'
@@ -106,7 +107,7 @@ export async function mkvmergeMux(
     for (const a of audios) sourceAudioMs.push(await firstPresentationMs(ffmpeg, a.path, 'a:0'))
     const expected = relativePresentationStarts(sourceVideoMs, sourceAudioMs, audios.map(a => a.delayMs ?? 0))
     Object.assign(report, { sourceVideoMs, sourceAudioMs, expectedStartsMs: expected })
-    work = mkdtempSync(join(dirname(outPath), '.mux-timing-'))
+    work = mkdtempSync(join(tmpdir(), 'gvs-mux-'))
     const initial = join(work, 'initial.mkv')
     // Do not apply negative adjustments before measuring: that could discard
     // early packets. Correction is done on a single shared Matroska timeline.

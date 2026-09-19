@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { createReadStream, createWriteStream, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve as resolvePath } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
 import type { ReadableStream as NodeWebReadableStream } from 'node:stream/web'
@@ -444,7 +444,7 @@ export async function downloadPlaylist(opts: {
 }): Promise<void> {
   const executable = await ensureM3u8dl()
   mkdirSync(dirname(opts.dest), { recursive: true })
-  const workDir = mkdtempSync(join(resolvePath(dirname(opts.dest)), '.re-'))
+  const workDir = mkdtempSync(join(tmpdir(), 'gvs-re-'))
   const logFile = join(workDir, 're.log')
   const errorLog = `${opts.dest}.download-error.log`
   let diagnostics = ''
@@ -557,9 +557,11 @@ export async function downloadPlaylist(opts: {
     throw e
   } finally {
     await relay?.close()
-    // Completed fragments stay in place throughout RE's local retries. Keep
-    // failed work for diagnosis instead of destroying the only recovery data.
-    if (succeeded || !readdirSync(workDir).length) rmSync(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    try {
+      if (succeeded || !readdirSync(workDir).length) {
+        rmSync(workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      }
+    } catch { /* dest already written; leftovers stay in tmp, not the library folder */ }
   }
 }
 

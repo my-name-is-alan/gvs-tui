@@ -1,5 +1,8 @@
 import { expect, test } from 'bun:test'
-import { JobHub, jobTitle, patchJob, youkuDRM, type DlTask } from './jobs.ts'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { JobHub, cleanupOutputCaches, jobTitle, patchJob, youkuDRM, type DlTask } from './jobs.ts'
 import { youkuAudioPlaylist, youkuVideoPlaylist } from './media.ts'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
@@ -100,4 +103,18 @@ test('youku jobs never overlap so two editions cannot mix CENC keys', async () =
   expect(youkuPeak).toBe(1)
   release.zh!()
   release.h!()
+})
+
+test('finished download removes leftover cache folders next to the file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gvs-cache-'))
+  try {
+    mkdirSync(join(dir, '.re-old'))
+    mkdirSync(join(dir, '.mux-timing-old'))
+    writeFileSync(join(dir, '.re-old', 'seg.bin'), 'x')
+    writeFileSync(join(dir, 'District.9.2009.mkv'), 'ok')
+    cleanupOutputCaches(dir)
+    expect(readdirSync(dir)).toEqual(['District.9.2009.mkv'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
