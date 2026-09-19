@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { mkvLang } from './mkvmerge.ts'
-import { m3u8dlRid, pickM3u8dlAsset, pickMkvmergeAsset, pickPackagerAsset } from './tools.ts'
+import { ffmpegMissingError, m3u8dlRid, mp4BoxMissingError, pickM3u8dlAsset, pickMkvmergeAsset, pickPackagerAsset, toolRuns, unixHostWrapper } from './tools.ts'
 
 const m3u8Names = [
   'N_m3u8DL-RE_v0.6.0-beta_android-bionic-x64_20260629.tar.gz',
@@ -52,4 +52,21 @@ test('mkvLang maps 优酷 labels to ISO 639-2', () => {
   expect(mkvLang('chi')).toBe('chi')
   expect(mkvLang('jpn')).toBe('jpn')
   expect(mkvLang('')).toBe('und')
+})
+
+test('unixHostWrapper execs the host binary without copying it', () => {
+  expect(unixHostWrapper('/opt/homebrew/bin/ffmpeg')).toBe('#!/bin/bash\nexec "/opt/homebrew/bin/ffmpeg" "$@"\n')
+  expect(unixHostWrapper('/opt/homebrew/Cellar/gpac/1.0/bin/MP4Box')).toContain('exec "/opt/homebrew/Cellar/gpac/1.0/bin/MP4Box"')
+})
+
+test('toolRuns rejects missing binaries', () => {
+  expect(toolRuns('')).toBe(false)
+  expect(toolRuns('/this/does/not/exist/ffmpeg')).toBe(false)
+})
+
+test('macOS missing-tool errors name brew packages', () => {
+  expect(ffmpegMissingError('darwin')).toContain('brew install ffmpeg')
+  expect(mp4BoxMissingError('darwin')).toContain('brew install gpac')
+  expect(mp4BoxMissingError('win32')).toContain('git restore bin/MP4Box.exe')
+  expect(ffmpegMissingError('win32')).toContain('git restore bin/ffmpeg.exe')
 })

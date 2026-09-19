@@ -1,7 +1,7 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tuiBinDir } from './tool-paths.ts'
 import { fetchToolBytes } from './tool-download.ts'
 export { tuiBinDir } from './tool-paths.ts'
@@ -10,16 +10,68 @@ const M3U8_REPO = 'nilaoda/N_m3u8DL-RE'
 const MKV_REPO = 'Jesseatgao/MKVToolNix-static-builds'
 const SHAKA_REPO = 'shaka-project/shaka-packager'
 
+export function toolRuns(bin: string, args: string[] = ['-version']): boolean {
+  if (!bin) return false
+  try {
+    return spawnSync(bin, args, {
+      encoding: 'utf8',
+      timeout: 8000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).status === 0
+  } catch {
+    return false
+  }
+}
+
+/** Homebrew binaries dylib-link Cellar; copying them into bin/ dies on upgrade. */
+export function unixHostWrapper(target: string): string {
+  return `#!/bin/bash\nexec ${JSON.stringify(target)} "$@"\n`
+}
+
+export function ffmpegMissingError(platform = process.platform): string {
+  if (platform === 'darwin') return '缺少可用的 ffmpeg，请执行 brew install ffmpeg'
+  if (platform === 'win32') return '缺少 ffmpeg，请 git restore bin/ffmpeg.exe 或运行 bun run tools:prepare'
+  return `缺少可用的 ffmpeg，请安装后放到 ${tuiBinDir()} 或加入 PATH`
+}
+
+export function mp4BoxMissingError(platform = process.platform): string {
+  if (platform === 'darwin') return '缺少 MP4Box，请执行 brew install gpac'
+  if (platform === 'win32') return '缺少 MP4Box，请 git restore bin/MP4Box.exe 恢复仓库工具'
+  return '缺少 MP4Box，请安装 GPAC 或设置 MP4BOX'
+}
+
+function workingFile(p: string): string {
+  const hit = existsFile(p)
+  return hit && toolRuns(hit) ? hit : ''
+}
+
+function pinUnixHostTool(name: string, target: string, note?: (s: string) => void): string {
+  const dest = join(tuiBinDir(), name)
+  if (target === dest) return dest
+  mkdirSync(tuiBinDir(), { recursive: true })
+  writeFileSync(dest, unixHostWrapper(target), { encoding: 'utf8', mode: 0o755 })
+  try { chmodSync(dest, 0o755) } catch { /* writeFile mode is enough on most volumes */ }
+  note?.(`${name} → ${target}`)
+  prependBin()
+  return dest
+}
+
 export function lookBundledFFmpeg(): string {
-  return existsFile(join(tuiBinDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))
+  return workingFile(join(tuiBinDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))
 }
 
 let ffmpegInflight: Promise<string> | null = null
 export function ensureFFmpeg(note?: (s: string) => void, signal?: AbortSignal): Promise<string> {
-  const hit = lookBundledFFmpeg()
-  if (hit) return Promise.resolve(hit)
+  const bundled = lookBundledFFmpeg()
+  if (bundled) return Promise.resolve(bundled)
+  const fromPath = workingFile(which('ffmpeg'))
+  if (fromPath) {
+    if (process.platform !== 'win32') return Promise.resolve(pinUnixHostTool('ffmpeg', fromPath, note))
+    return Promise.resolve(fromPath)
+  }
   if (process.platform !== 'win32' || process.arch !== 'x64') {
-    return Promise.reject(new Error(`此平台不支持自动准备 ffmpeg，请将可执行文件放到 ${tuiBinDir()}`))
+    return Promise.reject(new Error(ffmpegMissingError()))
   }
   ffmpegInflight ||= pullGithub({
     repo: 'GyanD/codexffmpeg',
@@ -90,14 +142,18 @@ export function lookMkvmerge(): string {
 }
 
 export function lookMP4Box(): string {
-  return existsFile(join(tuiBinDir(), process.platform === 'win32' ? 'MP4Box.exe' : 'MP4Box'))
-    || existsFile(process.env.MP4BOX?.trim() ?? '') || which('MP4Box')
+  return workingFile(join(tuiBinDir(), process.platform === 'win32' ? 'MP4Box.exe' : 'MP4Box'))
+    || workingFile(process.env.MP4BOX?.trim() ?? '')
+    || workingFile(which('MP4Box'))
 }
 
-export async function ensureMP4Box(): Promise<string> {
+export async function ensureMP4Box(note?: (s: string) => void): Promise<string> {
   const hit = lookMP4Box()
-  if (hit) return hit
-  throw new Error(`缺少 MP4Box，请 git restore bin/MP4Box.exe 恢复仓库工具；其它平台请安装 GPAC 或设置 MP4BOX`)
+  if (!hit) throw new Error(mp4BoxMissingError())
+  if (process.platform !== 'win32' && dirname(hit) !== tuiBinDir()) {
+    return pinUnixHostTool('MP4Box', hit, note)
+  }
+  return hit
 }
 
 export function packagerName(platform = process.platform, arch = process.arch): string {
@@ -226,7 +282,7 @@ export async function ensureTools(note?: (s: string) => void, signal?: AbortSign
   await ensureM3u8dl(note, signal)
   await ensureMkvmerge(note, signal)
   await ensurePackager(note, signal)
-  await ensureMP4Box()
+  await ensureMP4Box(note)
 }
 
 async function pullGithub(opts: {

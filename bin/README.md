@@ -1,6 +1,6 @@
 # Windows x64 媒体工具
 
-这些未修改的上游二进制文件由普通 Git 跟踪，clone/pull 后即可使用，无需 Git LFS、解压或另外下载工具。仅适用于 Windows x64。`manifest.json` 记录确切版本、文件长度及 SHA-256；`bun run tools:check` 在禁止网络的条件下验证文件和启动。
+这些未修改的上游二进制文件由普通 Git 跟踪，clone/pull 后即可使用，无需 Git LFS、解压或另外下载工具。仅适用于 Windows x64。`manifest.json` 记录确切版本、文件长度及 SHA-256；`bun run tools:check` 在禁止网络的条件下验证文件和启动。macOS 的 `bin/ffmpeg`、`bin/MP4Box` 由 `tools:prepare` 生成为指向 Homebrew 的 wrapper，不要把 Cellar 里的 Mach-O 复制进来，也不要提交这些 wrapper。
 
 - `ffmpeg.exe`：9.0.1 essentials，102,856,192 字节，低于 GitHub 单文件 100 MiB 上限。采用 essentials 而非超过上限的 full 版；项目使用的流复制、解码检查、AES 解密、H.264/HEVC/AAC 功能已验证。不包含用于本机诊断的 ffprobe/ffplay，因为运行时不调用它们。
   - [原始发行包](https://github.com/GyanD/codexffmpeg/releases/download/9.0.1/ffmpeg-9.0.1-essentials_build.zip)

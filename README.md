@@ -34,6 +34,15 @@ bun run tools:check
 
 `build` 只编译代码，不复制工具或运行库；运行时使用项目的 `node_modules/` 与 `bin/`。首次 clone 和依赖安装需要联网，但 Windows x64 正常检出后启动不会再访问第三方发行站下载工具。若工具被手动删除，可重新从 Git 恢复，或执行 `bun run tools:prepare` 使用联网兜底。其它平台需对应的工具构建。CI 校验仓库二进制哈希、禁网工具准备和独立启动，不上传 ZIP 产物。[第三方工具说明](docs/THIRD-PARTY-TOOLS.md)。
 
+macOS 不内置这些工具。Homebrew 的 ffmpeg / GPAC 动态链接 Cellar，**不要把它们复制进 `bin/`**（brew 升级后会 `dyld: Library not loaded`）。请先安装，再 prepare：
+
+```bash
+brew install ffmpeg gpac mkvtoolnix
+bun run tools:prepare
+```
+
+`tools:prepare` 会把 PATH 上可用的 `ffmpeg` / `MP4Box` 写成 `bin/` 下的 wrapper（`exec /opt/homebrew/bin/...`），启动时若 `bin/` 里的副本 `-version` 失败会改用 PATH 并重写 wrapper。DTS 音轨封装需要 MP4Box；缺了会提示 `brew install gpac`，而不是 Windows 的 `git restore`。
+
 `Ctrl+C` 退出。
 
 优酷选中 DTS / DTS:X（或默认音轨实际是 DTS）时，自动用 MP4Box 输出 `.mp4`，保留所有选中的音轨；其它音轨继续输出 MKV。DTS 路径不要求 FFmpeg 解码 DTS，而是检查 MP4 样本、音频数据 SHA-256、各轨道时间戳及相对起点。封装失败会保留源轨道与 `.timing.json`；这种检查验证封装完整性，不代表已经验证 DTS:X 解码或播放器性能。已有成品不自动修改。

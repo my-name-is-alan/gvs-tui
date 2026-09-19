@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process'
-import { existsSync, globSync, statSync, writeFileSync } from 'node:fs'
+import { globSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
 import { truncate } from './util.ts'
 import { tuiBinDir } from './tool-paths.ts'
+import { toolRuns } from './tools.ts'
 
 function existsFile(p: string): string {
   if (!p || p === 'ffmpeg' || p === 'ffmpeg.exe') return ''
@@ -26,26 +27,26 @@ function which(bin: string): string {
 }
 
 export function lookFFmpeg(bin: string): string {
-  const bundled = existsFile(join(tuiBinDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))
-  if (bundled) return bundled
-  const direct = existsFile(bin)
-  if (direct) return direct
-  const onPath = which('ffmpeg')
-  if (onPath) return onPath
+  const candidates = [
+    join(tuiBinDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
+    bin,
+    which('ffmpeg'),
+  ]
   const cfg = process.env.APPDATA || join(homedir(), '.config')
   const home = homedir()
   const local = process.env.LOCALAPPDATA ?? ''
   const pf = process.env.ProgramFiles ?? 'C:\\Program Files'
-  for (const c of [
+  candidates.push(
     join(cfg, 'gvs', 'bin', 'ffmpeg.exe'),
     join(home, 'scoop', 'shims', 'ffmpeg.exe'),
     'C:\\ffmpeg\\bin\\ffmpeg.exe',
     join(pf, 'ffmpeg', 'bin', 'ffmpeg.exe'),
     join(pf, 'Gyan', 'FFmpeg', 'ffmpeg.exe'),
     join(local, 'Microsoft', 'WinGet', 'Links', 'ffmpeg.exe'),
-  ]) {
+  )
+  for (const c of candidates) {
     const hit = existsFile(c)
-    if (hit) return hit
+    if (hit && toolRuns(hit)) return hit
   }
   if (local || pf) {
     try {
@@ -56,14 +57,14 @@ export function lookFFmpeg(bin: string): string {
       ]) {
         for (const h of globSync(g.replaceAll('\\', '/'))) {
           const hit = existsFile(h)
-          if (hit) return hit
+          if (hit && toolRuns(hit)) return hit
         }
       }
     } catch {
       // glob optional
     }
   }
-  return existsSync(bin) ? bin : ''
+  return ''
 }
 
 /** 汇总各输入文件的大小，用作「已处理字节」的分母。 */

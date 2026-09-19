@@ -6,7 +6,9 @@ Windows x64 的五个媒体工具作为普通二进制文件提交在项目根�
 - N_m3u8DL-RE: https://github.com/nilaoda/N_m3u8DL-RE ，MIT https://github.com/nilaoda/N_m3u8DL-RE/blob/main/LICENSE 。
 - mkvmerge / MKVToolNix: https://mkvtoolnix.download/ ，GPL v2；当前自动准备来源 https://github.com/Jesseatgao/MKVToolNix-static-builds 。
 - Shaka Packager 3.9.3: https://github.com/shaka-project/shaka-packager ，BSD 3-Clause 及 Chromium 许可附录，原文 https://github.com/shaka-project/shaka-packager/blob/v3.9.3/LICENSE 。
-- MP4Box / GPAC 26.03-DEV-rev317-g260872025：静态 MINI 构建，取自 StaxRip v2.52.5 原始发行包；LGPL v2.1+，许可证见 `bin/licenses/GPAC-LGPL-2.1.txt`，源码与完整来源见 `bin/README.md`。不需要另外安装 GPAC 或 DLL。
+- MP4Box / GPAC 26.03-DEV-rev317-g260872025：静态 MINI 构建，取自 StaxRip v2.52.5 原始发行包；LGPL v2.1+，许可证见 `bin/licenses/GPAC-LGPL-2.1.txt`，源码与完整来源见 `bin/README.md`。Windows x64 不需要另外安装 GPAC 或 DLL。macOS 请 `brew install gpac`，由 `tools:prepare` 写入 `bin/MP4Box` wrapper，不要复制 `libgpac.dylib`。
+
+macOS / Linux 上不要把 Homebrew 的 ffmpeg 复制进 `bin/`。`ensureFFmpeg` 会先对 `bin/ffmpeg` 跑 `-version`，失败则改用 PATH（通常是 `/opt/homebrew/bin/ffmpeg`）并写成 wrapper。请 `brew install ffmpeg`。
 
 `bun run build` 只编译源码；`bun run start` 自动编译后启动，使用项目 `node_modules/` 和 `bin/`。OpenTUI 及原生库由 `bun install --frozen-lockfile` 按锁文件安装，不需要手工复制 DLL。
 
