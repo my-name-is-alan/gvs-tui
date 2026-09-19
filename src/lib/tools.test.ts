@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import { mkvLang } from './mkvmerge.ts'
-import { ffmpegMissingError, m3u8dlRid, mp4BoxMissingError, pickM3u8dlAsset, pickMkvmergeAsset, pickPackagerAsset, toolRuns, unixHostWrapper } from './tools.ts'
+import { ffmpegMissingError, lookBundledFFmpeg, m3u8dlRid, mp4BoxMissingError, pickM3u8dlAsset, pickMkvmergeAsset, pickPackagerAsset, toolRuns, unixHostWrapper } from './tools.ts'
 
 const m3u8Names = [
   'N_m3u8DL-RE_v0.6.0-beta_android-bionic-x64_20260629.tar.gz',
@@ -69,4 +69,9 @@ test('macOS missing-tool errors name brew packages', () => {
   expect(mp4BoxMissingError('darwin')).toContain('brew install gpac')
   expect(mp4BoxMissingError('win32')).toContain('git restore bin/MP4Box.exe')
   expect(ffmpegMissingError('win32')).toContain('git restore bin/ffmpeg.exe')
+})
+
+test('windows bundled ffmpeg is the git binary, not a GitHub download', () => {
+  if (process.platform !== 'win32') return
+  expect(lookBundledFFmpeg().replaceAll('\\', '/').endsWith('/bin/ffmpeg.exe')).toBe(true)
 })

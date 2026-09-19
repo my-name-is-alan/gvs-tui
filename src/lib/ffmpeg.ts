@@ -27,8 +27,13 @@ function which(bin: string): string {
 }
 
 export function lookFFmpeg(bin: string): string {
+  const bundled = existsFile(join(tuiBinDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))
+  if (process.platform === 'win32') {
+    if (bundled) return bundled
+  } else if (bundled && toolRuns(bundled)) {
+    return bundled
+  }
   const candidates = [
-    join(tuiBinDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
     bin,
     which('ffmpeg'),
   ]
@@ -46,7 +51,7 @@ export function lookFFmpeg(bin: string): string {
   )
   for (const c of candidates) {
     const hit = existsFile(c)
-    if (hit && toolRuns(hit)) return hit
+    if (hit && (process.platform === 'win32' || toolRuns(hit))) return hit
   }
   if (local || pf) {
     try {

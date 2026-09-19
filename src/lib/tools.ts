@@ -58,7 +58,10 @@ function pinUnixHostTool(name: string, target: string, note?: (s: string) => voi
 }
 
 export function lookBundledFFmpeg(): string {
-  return workingFile(join(tuiBinDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'))
+  const bundled = join(tuiBinDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+  // Windows ships ffmpeg.exe in git. Mac bin/ copies are Homebrew wrappers and
+  // must pass -version; a dead Cellar path would otherwise shadow PATH.
+  return process.platform === 'win32' ? existsFile(bundled) : workingFile(bundled)
 }
 
 let ffmpegInflight: Promise<string> | null = null
@@ -142,9 +145,11 @@ export function lookMkvmerge(): string {
 }
 
 export function lookMP4Box(): string {
-  return workingFile(join(tuiBinDir(), process.platform === 'win32' ? 'MP4Box.exe' : 'MP4Box'))
-    || workingFile(process.env.MP4BOX?.trim() ?? '')
-    || workingFile(which('MP4Box'))
+  const bundled = join(tuiBinDir(), process.platform === 'win32' ? 'MP4Box.exe' : 'MP4Box')
+  if (process.platform === 'win32') {
+    return existsFile(bundled) || existsFile(process.env.MP4BOX?.trim() ?? '') || which('MP4Box')
+  }
+  return workingFile(bundled) || workingFile(process.env.MP4BOX?.trim() ?? '') || workingFile(which('MP4Box'))
 }
 
 export async function ensureMP4Box(note?: (s: string) => void): Promise<string> {
