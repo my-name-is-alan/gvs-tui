@@ -994,7 +994,7 @@ export class Runtime {
       audio:
         this.audios
           .filter((a) => a.selected)
-          .map((a) => a.label)
+          .map((a) => [a.lang !== '—' ? a.lang : '', a.label].filter(Boolean).join(' '))
           .join(' / ') || '平台默认',
       directory: this.cfg.outDir,
       name: first
@@ -1336,6 +1336,7 @@ export class Runtime {
       id: a.id,
       label: a.label,
       lang: a.lang,
+      vid: a.vid,
     }))
     const a = this.audios[this.audioIdx]
     for (const t of this.pending) {
@@ -1687,7 +1688,7 @@ export class Runtime {
       year: this.detailInfo?.year ?? 0,
       plot: '',
       kind: movie ? 'movie' : 'show',
-      edition: movie ? ep.title || '' : '',
+      edition: movie && ep.title && ep.title !== '正片' ? ep.title : '',
     }
   }
 

@@ -23,7 +23,7 @@ export type Episode = {
 export type TMDBHit = { id: number; name: string; title: string; year: number; overview?: string }
 export type Quality = { id: string; label: string; title: string; size: number; width: number; height: number; codec: string; drm: string; tier?: number; audios?: Audio[] }
 /** Selectable audio track (only some platforms expose more than one). */
-export type Audio = { id: string; label: string; lang: string; codec: string; isDefault: boolean; selected: boolean; embedded?: boolean }
+export type Audio = { id: string; label: string; lang: string; codec: string; isDefault: boolean; selected: boolean; embedded?: boolean; vid?: string }
 export type Detail = {
   title: string
   desc: string

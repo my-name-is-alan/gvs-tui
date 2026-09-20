@@ -31,7 +31,7 @@ export type DlTask = {
   height: number
   quality: string
   /** Audio tracks to mux in (空格勾选的那些）；空 = 只封平台默认音轨。 */
-  audioTracks?: Array<{ id: string; label: string; lang: string }>
+  audioTracks?: Array<{ id: string; label: string; lang: string; vid?: string }>
   group: string
   codec: string
   tmdbId: number
@@ -319,7 +319,7 @@ async function dlYouku(
       select,
       transport: 'node',
       refreshSource: async () => {
-        const payload = await playYouku(cli, cfg, t)
+        const payload = await playYouku(cli, cfg, t, select === 'audio' ? trackVid(t, trackId) : t.vid)
         const drm = youkuDRM(payload)
         const src = select === 'video' ? youkuVideoPlaylist(payload, t.quality) : youkuAudioPlaylist(payload, trackId)
         if (!src) throw new Error('重新取链后缺少所选轨道')
@@ -348,7 +348,8 @@ async function dlYouku(
     await pull(playlist, videoPath, drm.videoEnc ? drm.reKey : undefined, '下载', 0.05, 0.62, 'video')
     for (const [i, track] of tracks.entries()) {
       // Video download/decryption can outlive the original audio URL lease.
-      const audioPayload = await playYouku(cli, cfg, t)
+      const audioVid = trackVid(t, track.id, track.vid)
+      const audioPayload = await playYouku(cli, cfg, t, audioVid)
       const audioDrm = youkuDRM(audioPayload)
       if (audioDrm.audioEnc && !audioDrm.reKey) throw new Error('重新取得的音轨缺少解密密钥')
       const audioPl = youkuAudioPlaylist(audioPayload, track.id)
@@ -361,7 +362,7 @@ async function dlYouku(
         audioPl,
         audioPath,
         audioDrm.audioEnc ? audioDrm.reKey : undefined,
-        `音轨 ${track.label}`,
+        `音轨 ${[track.lang, track.label].filter(Boolean).join(' ')}`,
         0.67 + 0.18 * i / tracks.length,
         0.18 / Math.max(1, tracks.length),
         'audio',
@@ -386,7 +387,8 @@ async function dlYouku(
     emit('校验', 0.85, dts ? '检查 MP4 轨道和时间戳（DTS 使用 MP4Box）' : '检查音轨完整解码')
     const ffmpeg = await ensureFFmpeg()
     for (const [i, input] of muxInputs.entries()) {
-      input.title = await audioTrackLabel(ffmpeg, input.path)
+      const probed = await audioTrackLabel(ffmpeg, input.path)
+      input.title = input.lang && input.lang !== '—' ? `${input.lang} ${probed}` : probed
       if (!isDtsAudio(tracks[i]!) && !audioInfo[i]!.some(t => /^dts[cehlxy]$/.test(t.codec))) await validateAudio(ffmpeg, input.path)
     }
     emit('封装', 0.86, muxInputs.length > 1 ? `封装 ${muxInputs.length} 条音轨` : out)
@@ -453,11 +455,17 @@ export function cleanupOutputCaches(dir: string): void {
   }
 }
 
-async function playYouku(cli: GwClient, cfg: FileConfig, t: DlTask): Promise<Record<string, unknown>> {
+async function playYouku(cli: GwClient, cfg: FileConfig, t: DlTask, vid = t.vid): Promise<Record<string, unknown>> {
   // RE/relay reads the selected playlist; expanding every track here fetches
   // unused playlists and adds latency to every signed-URL refresh.
-  const input: Record<string, unknown> = { vid: t.vid, expand: '0', tier: t.quality ? 'multi' : 'single', nocache: '1' }
+  const input: Record<string, unknown> = { vid, expand: '0', tier: t.quality ? 'multi' : 'single', nocache: '1' }
   return cli.invoke('youku', 'play', input, cli.extra(cfg, 'youku'))
+}
+
+function trackVid(t: DlTask, trackId: string, explicit?: string): string {
+  if (explicit) return explicit
+  const sep = trackId.indexOf('|')
+  return sep >= 0 ? trackId.slice(0, sep) : t.vid
 }
 
 

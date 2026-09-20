@@ -60,6 +60,8 @@ test('youku playlists use stream playlist_url not CMAF segments', () => {
   }
   expect(youkuVideoPlaylist(data, 'mp4hd3')).toBe('https://v.m3u8')
   expect(youkuAudioPlaylist(data, '')).toBe('https://a.m3u8')
+  expect(youkuAudioPlaylist(data, 'aac')).toBe('https://a.m3u8')
+  expect(youkuAudioPlaylist(data, 'XEN|atmos')).toBe('https://atmos.m3u8')
   expect(youkuAudioPlaylist(data, 'atmos')).toBe('https://atmos.m3u8')
 })
 

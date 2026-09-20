@@ -969,10 +969,11 @@ export function youkuVideoPlaylist(data: Record<string, unknown>, want: string):
 
 export function youkuAudioPlaylist(data: Record<string, unknown>, want: string): string {
   const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
+  const streamType = want.includes('|') ? want.slice(want.indexOf('|') + 1) : want
   let chosen: Record<string, unknown> | null = null
   for (const tr of tracks) {
     if (!isObj(tr)) continue
-    if (want && asString(tr.stream_type) !== want) continue
+    if (streamType && asString(tr.stream_type) !== streamType) continue
     if (!chosen || tr.default === true) chosen = tr
   }
   return chosen ? asString(chosen.playlist_url) : ''

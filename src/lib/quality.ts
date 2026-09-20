@@ -8,11 +8,13 @@ import { hongguoResolveInput } from './hongguo.ts'
 export type StreamOptions = { qualities: Quality[]; audios: Audio[]; vip?: VipProbe }
 
 /** Map Youku play payload → TUI audio rows. Gateway catalog is `audios[]`. */
-export function youkuAudiosFromPlay(data: Record<string, unknown>): Audio[] {
+export function youkuAudiosFromPlay(data: Record<string, unknown>, sourceVid = ''): Audio[] {
   const audios: Audio[] = []
   const addAudio = (id: string, label: string, lang: string, codec: string, isDefault: boolean) => {
     if (!id || audios.some((a) => a.id === id)) return
-    audios.push({ id, label, lang, codec, isDefault, selected: true })
+    const keyed = sourceVid ? `${sourceVid}|${id}` : id
+    if (audios.some((a) => a.id === keyed)) return
+    audios.push({ id: keyed, label, lang, codec, isDefault, selected: true, vid: sourceVid || undefined })
   }
 
   const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
@@ -59,16 +61,43 @@ export function youkuAudiosFromPlay(data: Record<string, unknown>): Audio[] {
     }
   }
 
-  if (!audios.some((a) => a.isDefault) && audios.length) audios[0].isDefault = true
-  // Platform format preference, not a measurement of the downloaded audio.
-  const rank = (a: Audio): number => {
+  if (!audios.some((a) => a.isDefault) && audios.length) audios[0]!.isDefault = true
+  sortYoukuAudios(audios)
+  return audios
+}
+
+function sortYoukuAudios(audios: Audio[]): void {
+  const codecRank = (a: Audio): number => {
     const s = a.id.toLowerCase()
     if (/atmos|cmfa4|dolby/.test(s)) return 0
     if (/dts|cmfa3/.test(s)) return 1
     if (/aac|cmfa1/.test(s)) return 2
     return 3
   }
-  audios.sort((a, b) => rank(a) - rank(b) || Number(b.isDefault) - Number(a.isDefault))
+  const langRank = (lang: string): number => {
+    if (lang === '英语') return 0
+    if (lang === '普通话') return 1
+    if (lang.includes('粤')) return 2
+    return 3
+  }
+  audios.sort((a, b) => langRank(a.lang) - langRank(b.lang) || codecRank(a) - codecRank(b) || Number(b.isDefault) - Number(a.isDefault))
+}
+
+/** Primary play plus sibling dvd.audiolang editions, ids namespaced by vid. */
+export function youkuMergeEditionAudios(
+  primaryVid: string,
+  primary: Record<string, unknown>,
+  extras: Array<{ vid: string; data: Record<string, unknown> }>,
+): Audio[] {
+  const audios = youkuAudiosFromPlay(primary, primaryVid)
+  for (const extra of extras) {
+    if (!extra.vid || extra.vid === primaryVid) continue
+    for (const a of youkuAudiosFromPlay(extra.data, extra.vid)) {
+      a.isDefault = false
+      if (!audios.some((x) => x.id === a.id)) audios.push(a)
+    }
+  }
+  sortYoukuAudios(audios)
   return audios
 }
 
@@ -120,13 +149,33 @@ export function youkuEditionsFromDetail(data: Record<string, unknown>): Episode[
   return out
 }
 
-/** Movies are not episode lists. Title `vid` is the 正片 when languages are absent. */
+/** Movies are not episode lists. Dual-language dvds collapse to one 正片. */
 export function moviePlayables(
   data: Record<string, unknown>,
   play?: Record<string, unknown>,
 ): Episode[] {
-  const editions = youkuEditionsFromDetail(play ?? data)
-  if (editions.length) return editions
+  const src = play ?? data
+  const editions = youkuEditionsFromDetail(src)
+  if (editions.length > 1) {
+    const arr = Array.isArray(src.languages) ? src.languages : []
+    let mainVid = editions[0]!.vid
+    for (const it of arr) {
+      if (isObj(it) && asBool(it.main) && asString(it.vid)) {
+        mainVid = asString(it.vid)
+        break
+      }
+    }
+    const duration = anyInt(data.duration)
+    return [{
+      title: '正片',
+      vid: mainVid,
+      number: 1,
+      selected: false,
+      duration: duration > 0 ? duration : undefined,
+      group: 'edition',
+    }]
+  }
+  if (editions.length === 1) return editions
   const vid = asString(data.vid)
   if (!vid) return []
   const duration = anyInt(data.duration)
@@ -347,7 +396,20 @@ async function probeYouku(
   // 高分辨率在前；同分辨率保持接口给的顺序（4K 杜比/HDR 在前，普通码在后）。
   qualities.sort((a, b) => b.width * b.height - a.width * a.height || b.size - a.size)
 
-  const audios = youkuAudiosFromPlay(data)
+  const extras: Array<{ vid: string; data: Record<string, unknown> }> = []
+  const langs = Array.isArray(data.languages) ? data.languages : []
+  for (const it of langs) {
+    if (!isObj(it)) continue
+    const extraVid = asString(it.vid)
+    if (!extraVid || extraVid === vid || extras.some((e) => e.vid === extraVid)) continue
+    try {
+      extras.push({
+        vid: extraVid,
+        data: await cli.invoke('youku', 'play', { vid: extraVid, tier: 'multi', expand: '0' }, cli.extra(cfg, 'youku', opts.skipSign)),
+      })
+    } catch { /* keep the primary edition if a sibling language is unavailable */ }
+  }
+  const audios = extras.length ? youkuMergeEditionAudios(vid, data, extras) : youkuAudiosFromPlay(data, vid)
 
   return { qualities, audios, vip: youkuVipProbe(data) }
 }
