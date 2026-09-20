@@ -104,8 +104,13 @@ export function youkuMergeEditionAudios(
 
 function youkuAudioCodecLabel(st: string, fallback: string): string {
   const t = st.toLowerCase()
-  if (t.includes('atmos') || t.includes('cmfa4') || t.includes('dolby')) return '杜比全景声'
-  if (t.includes('dts')) return 'DTS:X'
+  // `cmfa4` identifies the Dolby/CMFA family, but does not by itself mean
+  // Atmos.  Youku uses an explicit `atmos` marker for Atmos variants such as
+  // `cmfa4hd5_atmos51`; plain `cmfa4hd4_51` is only Dolby 5.1.
+  if (t.includes('dtsx') || t.includes('dts-x') || t.includes('dts_x')) return 'DTS:X'
+  if (t.includes('atmos')) return '杜比全景声'
+  if (t.includes('cmfa4') || t.includes('dolby')) return /(?:^|[_-])51(?:$|[_-])/.test(t) ? '杜比 5.1' : '杜比'
+  if (t.includes('dts') || t.includes('cmfa3')) return 'DTS'
   if (t.includes('cmfa1') || t.includes('aac')) return 'AAC'
   const fb = fallback.trim()
   if (fb && !/^(en|eng|default|guoyu)$/i.test(fb)) return fb

@@ -39,6 +39,21 @@ describe('youkuAudiosFromPlay', () => {
     expect(rows.every((a) => a.id)).toBe(true)
   })
 
+  test('does not promote plain Dolby 5.1 to Atmos', () => {
+    const rows = youkuAudiosFromPlay({ audio_tracks: [
+      { stream_type: 'cmfa4hd4_51' },
+      { stream_type: 'cmfa4hd5_atmos51' },
+      { stream_type: 'cmfa3hd5' },
+      { stream_type: 'cmfa3hd5_dtsx51' },
+    ] })
+    expect(Object.fromEntries(rows.map((a) => [a.id, a.label]))).toEqual({
+      cmfa4hd5_atmos51: '杜比全景声',
+      cmfa4hd4_51: '杜比 5.1',
+      cmfa3hd5_dtsx51: 'DTS:X',
+      cmfa3hd5: 'DTS',
+    })
+  })
+
   test('audios[] only still lists codec tracks', () => {
     const rows = youkuAudiosFromPlay({
       audios: [{ stream_type: 'cmfa3hd4_dtsx', name: 'DOLBY', lang: 'en' }],
