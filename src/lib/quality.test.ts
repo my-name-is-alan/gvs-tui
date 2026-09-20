@@ -48,6 +48,27 @@ describe('youkuAudiosFromPlay', () => {
     expect(rows[0].lang).toBe('英语')
     expect(rows[0].isDefault).toBe(true)
   })
+
+  test('codec names are 原声, not a language', () => {
+    const rows = youkuAudiosFromPlay({
+      audio_tracks: [{ stream_type: 'cmfa1hd3', lang: 'AAC', langcode: 'aac', default: true }],
+    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.label).toBe('AAC')
+    expect(rows[0]!.lang).toBe('原声')
+  })
+
+  test('nameless default dvd.audiolang still labels 普通话', () => {
+    const rows = youkuAudiosFromPlay(
+      {
+        languages: [{ lang: '普通话', langcode: 'guoyu', main: true }],
+        audio_tracks: [{ stream_type: 'cmfa1hd3', lang: 'default', default: true }],
+      },
+      'XEP1',
+    )
+    expect(rows[0]!.lang).toBe('普通话')
+  })
+
 })
 
 describe('youkuEditionsFromDetail', () => {

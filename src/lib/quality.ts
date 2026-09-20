@@ -113,11 +113,17 @@ function youkuAudioCodecLabel(st: string, fallback: string): string {
 }
 
 function youkuAudioLangLabel(lang: string, langcode: string): string {
+  if (isCodecLangToken(lang)) lang = ''
+  if (isCodecLangToken(langcode)) langcode = ''
   const s = `${langcode} ${lang}`.toLowerCase()
   if (/(英语|english|\ben\b|\beng\b)/.test(s) || langcode.toLowerCase() === 'en') return '英语'
   if (/(普通|国语|guoyu|\bchi\b|\bzh\b)/.test(s)) return '普通话'
   if (lang && !/^(en|eng|default)$/i.test(lang)) return lang
-  return langcode || lang || '—'
+  return langcode || lang || '原声'
+}
+
+function isCodecLangToken(s: string): boolean {
+  return /^(aac|dolby|dts|atmos|eac3|ac3|ec3|e-ac3|default)$/i.test(s.trim())
 }
 
 export function youkuEditionLabel(lang: string, langcode: string): string {
@@ -202,11 +208,14 @@ export function youkuLanguageRefs(data: Record<string, unknown>): Array<{ vid: s
   for (const it of arr) {
     if (!isObj(it)) continue
     const vid = asString(it.vid)
-    if (!vid || seen[vid]) continue
-    seen[vid] = true
+    const lang = youkuAudioLangLabel(asString(it.lang), asString(it.langcode))
+    if (!lang) continue
+    const key = vid || '*'
+    if (seen[key]) continue
+    seen[key] = true
     out.push({
       vid,
-      lang: youkuAudioLangLabel(asString(it.lang), asString(it.langcode)),
+      lang,
       langcode: asString(it.langcode) || undefined,
     })
   }
@@ -214,10 +223,13 @@ export function youkuLanguageRefs(data: Record<string, unknown>): Array<{ vid: s
 }
 
 export function youkuLangForVid(data: Record<string, unknown>, vid: string): string {
-  if (!vid) return ''
-  for (const it of youkuLanguageRefs(data)) {
-    if (it.vid === vid) return it.lang
+  const refs = youkuLanguageRefs(data)
+  if (vid) {
+    for (const it of refs) {
+      if (it.vid === vid) return it.lang
+    }
   }
+  if (refs.length === 1) return refs[0]!.lang
   return ''
 }
 

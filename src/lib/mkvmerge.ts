@@ -50,6 +50,7 @@ function run(bin: string, args: string[], phase?: Phase): Promise<void> {
 export function mkvLang(lang: string): string {
   const s = lang.trim().toLowerCase()
   if (!s || s === '—' || s === '-') return 'und'
+  if (/^(aac|dolby|dts|atmos|eac3|ac3|ec3)$/.test(s)) return 'und'
   if (/^(eng?|英语|english)$/.test(s)) return 'eng'
   if (/^(chi|zho|zh|cmn|普通话|国语|中文)$/.test(s)) return 'chi'
   if (/^(jpn|ja|日语|日本)$/.test(s)) return 'jpn'

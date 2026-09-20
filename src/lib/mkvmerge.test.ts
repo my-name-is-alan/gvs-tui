@@ -2,7 +2,7 @@ import { afterAll, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkvmergeMuxArgs } from './mkvmerge.ts'
+import { mkvLang, mkvmergeMuxArgs } from './mkvmerge.ts'
 
 const dir = mkdtempSync(join(tmpdir(), 'gvs-sync-test-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
@@ -60,3 +60,11 @@ test('invalid explicit delays fail before spawning the muxer', () => {
     expect(() => mkvmergeMuxArgs('out.mkv', 'v.mp4', [{ path: 'a.mp4', delayMs }])).toThrow('有限毫秒数')
   }
 })
+
+test('codec names are not ISO languages', () => {
+  expect(mkvLang('AAC')).toBe('und')
+  expect(mkvLang('aac')).toBe('und')
+  expect(mkvLang('原声')).toBe('und')
+  expect(mkvLang('普通话')).toBe('chi')
+})
+
