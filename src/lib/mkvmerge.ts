@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process'
-import { mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { truncate } from './util.ts'
 import { ensureFFmpeg } from './tools.ts'
 import { firstPresentationMs, relativePresentationStarts } from './media-timing.ts'
+import { moveFileSync } from './file-move.ts'
 
 type Phase = { out: string; inputs?: string[]; cb?: (n: number, total: number) => void }
 
@@ -144,7 +145,7 @@ export async function mkvmergeMux(
     if (finalStarts.some((v, i) => Math.abs(v - expected[i]!) > 2)) throw new Error('封装后相对起点验证失败，已保留中间文件')
     report.verified = true
     writeFileSync(`${outPath}.timing.json`, JSON.stringify(report, null, 2) + '\n')
-    renameSync(result, outPath)
+    moveFileSync(result, outPath)
     rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   } catch (e) {
     Object.assign(report, { verified: false, intermediateDirectory: work, error: e instanceof Error ? e.message : String(e) })

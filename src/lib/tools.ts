@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { tuiBinDir } from './tool-paths.ts'
 import { fetchToolBytes } from './tool-download.ts'
+import { moveFileSync } from './file-move.ts'
 export { tuiBinDir } from './tool-paths.ts'
 
 const M3U8_REPO = 'nilaoda/N_m3u8DL-RE'
@@ -313,7 +314,7 @@ async function pullGithub(opts: {
   if (!/\.(zip|tar\.gz|tgz|tar\.xz)$/i.test(name)) {
     writeFileSync(staging, buf)
     try { unlinkSync(dest) } catch { /* first install */ }
-    renameSync(staging, dest)
+    moveFileSync(staging, dest)
     if (process.platform !== 'win32') chmodSync(dest, 0o755)
     prependBin()
     opts.note?.(`已放到 ${dest}`)
@@ -331,7 +332,7 @@ async function pullGithub(opts: {
     if (!found) throw new Error(`解压后没有找到 ${opts.label}`)
     copyFileSync(found, staging)
     try { unlinkSync(dest) } catch { /* first install */ }
-    renameSync(staging, dest)
+    moveFileSync(staging, dest)
     if (process.platform !== 'win32') chmodSync(dest, 0o755)
     prependBin()
     opts.note?.(`已放到 ${dest}`)

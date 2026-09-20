@@ -1,6 +1,6 @@
 import { tencentPlayInput } from './tencent-qr.ts'
 import { resolveHongguoDownload } from './hongguo.ts'
-import { mkdirSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from 'node:fs'
+import { mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
@@ -19,6 +19,7 @@ import type { RetryNote } from './media.ts'
 import { retryCdnRefresh } from './cdn-retry.ts'
 import { asString, human, isObj } from './util.ts'
 import type { Job } from '../types.ts'
+import { moveFileSync } from './file-move.ts'
 
 export type DlTask = {
   provider: string
@@ -219,7 +220,7 @@ async function dlHongguo(
     await ffmpegDecryptCopy(ffmpeg, picked.key, enc, tmp, (n, total) => emit('解密', 0.78 + 0.07 * Math.min(1, n / total), `解密 ${human(n)}/${human(total)}`))
     try { unlinkSync(enc) } catch { /* keep */ }
   } else {
-    renameSync(enc, tmp)
+    moveFileSync(enc, tmp)
   }
   emit('封装', 0.86, out)
   try {
@@ -229,7 +230,7 @@ async function dlHongguo(
       await ffmpegRemux(ffmpeg, tmp, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
     }
   } catch {
-    renameSync(tmp, out.slice(0, out.length - extname(out).length) + '.mp4')
+    moveFileSync(tmp, out.slice(0, out.length - extname(out).length) + '.mp4')
     throw new Error('封装失败')
   }
   try { unlinkSync(tmp) } catch { /* keep */ }
@@ -402,7 +403,7 @@ async function dlYouku(
       else if (muxInputs.length) await mkvmergeMux(mkvmerge, videoPath, muxInputs, partial, muxProgress)
       else await mkvmergeRemux(mkvmerge, videoPath, partial, muxProgress)
       if (!dts) await validateAudio(ffmpeg, partial)
-      renameSync(partial, out)
+      moveFileSync(partial, out)
       succeeded = true
       return out
     } catch (e) {

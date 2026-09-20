@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { createReadStream, createWriteStream, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createReadStream, createWriteStream, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { once } from 'node:events'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -10,6 +10,7 @@ import { asString, human, isObj, sleep } from './util.ts'
 import { mkvmergeRemux } from './mkvmerge.ts'
 import { ensureFFmpeg, ensureM3u8dl, ensureMkvmerge, ensurePackager } from './tools.ts'
 import { createHlsRelay, type RelayEvent } from './hls-relay.ts'
+import { moveFileSync } from './file-move.ts'
 
 /** A CDN refused us (403/410 …) — usually the signed URL expired mid-flight. */
 export class CdnDenied extends Error {
@@ -645,7 +646,7 @@ export async function downloadPlaylist(opts: {
       throw new Error(`N_m3u8DL-RE 未生成文件：${diagnostics.slice(-3000) || '下载器未返回诊断信息'}`)
     }
     try { unlinkSync(opts.dest) } catch { /* first write */ }
-    renameSync(found, opts.dest)
+    moveFileSync(found, opts.dest)
     if (statSync(opts.dest).size === 0) throw new Error('N_m3u8DL-RE 生成的文件为空')
     if (relay) writeFileSync(`${opts.dest}.transport.json`, JSON.stringify({ transport: 'node', completed: true, threads, ...relay.stats(), requests: relayEvents }, null, 2))
     try { unlinkSync(errorLog) } catch { /* no previous failure */ }
