@@ -1,6 +1,6 @@
 import type { Audio, Episode, Quality, VipProbe } from '../types.ts'
 import type { FileConfig } from './config.ts'
-import type { GwClient } from './client.ts'
+import { ReloginRequired, type GwClient } from './client.ts'
 import { anyInt, asBool, asString, isObj } from './util.ts'
 import { hongguoItem, pickHongguo } from './media.ts'
 import { hongguoResolveInput } from './hongguo.ts'
@@ -156,6 +156,7 @@ export function moviePlayables(
 ): Episode[] {
   const src = play ?? data
   const editions = youkuEditionsFromDetail(src)
+  const languages = youkuLanguageRefs(src)
   if (editions.length > 1) {
     const arr = Array.isArray(src.languages) ? src.languages : []
     let mainVid = editions[0]!.vid
@@ -173,9 +174,10 @@ export function moviePlayables(
       selected: false,
       duration: duration > 0 ? duration : undefined,
       group: 'edition',
+      languages,
     }]
   }
-  if (editions.length === 1) return editions
+  if (editions.length === 1) return editions.map((e) => ({ ...e, languages }))
   const vid = asString(data.vid)
   if (!vid) return []
   const duration = anyInt(data.duration)
@@ -187,9 +189,29 @@ export function moviePlayables(
       selected: false,
       duration: duration > 0 ? duration : undefined,
       group: 'edition',
+      languages: languages.length ? languages : undefined,
     },
   ]
 }
+
+export function youkuLanguageRefs(data: Record<string, unknown>): Array<{ vid: string; lang: string; langcode?: string }> {
+  const arr = Array.isArray(data.languages) ? data.languages : []
+  const seen: Record<string, true> = {}
+  const out: Array<{ vid: string; lang: string; langcode?: string }> = []
+  for (const it of arr) {
+    if (!isObj(it)) continue
+    const vid = asString(it.vid)
+    if (!vid || seen[vid]) continue
+    seen[vid] = true
+    out.push({
+      vid,
+      lang: youkuAudioLangLabel(asString(it.lang), asString(it.langcode)),
+      langcode: asString(it.langcode) || undefined,
+    })
+  }
+  return out
+}
+
 
 
 /** Everything the picker needs: one entry per quality, one per audio track. */
@@ -198,7 +220,7 @@ export async function probeOptions(
   cfg: FileConfig,
   provider: string,
   vid: string,
-  opts: { skipSign?: boolean } = {},
+  opts: { skipSign?: boolean; languageVids?: string[] } = {},
 ): Promise<StreamOptions> {
   switch (provider) {
     case 'hongguo': return probeHongguo(cli, vid)
@@ -288,7 +310,7 @@ async function probeYouku(
   cli: GwClient,
   cfg: FileConfig,
   vid: string,
-  opts: { skipSign?: boolean } = {},
+  opts: { skipSign?: boolean; languageVids?: string[] } = {},
 ): Promise<StreamOptions> {
   const data = await cli.invoke('youku', 'play', { vid, tier: 'multi', expand: '0' }, cli.extra(cfg, 'youku', opts.skipSign))
 
@@ -396,18 +418,25 @@ async function probeYouku(
   // 高分辨率在前；同分辨率保持接口给的顺序（4K 杜比/HDR 在前，普通码在后）。
   qualities.sort((a, b) => b.width * b.height - a.width * a.height || b.size - a.size)
 
+  const extraVids: string[] = []
+  const addVid = (extraVid: string) => {
+    if (!extraVid || extraVid === vid || extraVids.includes(extraVid)) return
+    extraVids.push(extraVid)
+  }
+  for (const it of Array.isArray(data.languages) ? data.languages : []) {
+    if (isObj(it)) addVid(asString(it.vid))
+  }
+  for (const extraVid of opts.languageVids ?? []) addVid(extraVid)
   const extras: Array<{ vid: string; data: Record<string, unknown> }> = []
-  const langs = Array.isArray(data.languages) ? data.languages : []
-  for (const it of langs) {
-    if (!isObj(it)) continue
-    const extraVid = asString(it.vid)
-    if (!extraVid || extraVid === vid || extras.some((e) => e.vid === extraVid)) continue
+  for (const extraVid of extraVids) {
     try {
       extras.push({
         vid: extraVid,
         data: await cli.invoke('youku', 'play', { vid: extraVid, tier: 'multi', expand: '0' }, cli.extra(cfg, 'youku', opts.skipSign)),
       })
-    } catch { /* keep the primary edition if a sibling language is unavailable */ }
+    } catch (e) {
+      if (e instanceof ReloginRequired) throw e
+    }
   }
   const audios = extras.length ? youkuMergeEditionAudios(vid, data, extras) : youkuAudiosFromPlay(data, vid)
 

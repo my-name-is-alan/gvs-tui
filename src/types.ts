@@ -19,6 +19,8 @@ export type Episode = {
   duration?: number
   /** Platform grouping, e.g. 正片 / 预告. */
   group?: string
+  /** Other dvd.audiolang vids (国语/英语) to probe with this title. */
+  languages?: Array<{ vid: string; lang: string; langcode?: string }>
 }
 export type TMDBHit = { id: number; name: string; title: string; year: number; overview?: string }
 export type Quality = { id: string; label: string; title: string; size: number; width: number; height: number; codec: string; drm: string; tier?: number; audios?: Audio[] }

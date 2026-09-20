@@ -1689,6 +1689,7 @@ export class Runtime {
       plot: '',
       kind: movie ? 'movie' : 'show',
       edition: movie && ep.title && ep.title !== '正片' ? ep.title : '',
+      languageVids: ep.languages?.map((l) => l.vid).filter(Boolean),
     }
   }
 
@@ -1697,6 +1698,12 @@ export class Runtime {
       ep.selected ? [this.taskFromEp(i)] : [],
     )
   }
+
+  private probeLangOpts(skipSign = false): { skipSign?: boolean; languageVids?: string[] } {
+    const languageVids = [...new Set(this.pending.flatMap((t) => t.languageVids ?? []))]
+    return { skipSign: skipSign || undefined, languageVids: languageVids.length ? languageVids : undefined }
+  }
+
 
   private async queueEpisodes(tasks: DlTask[]): Promise<void> {
     if (!tasks.length || !this.cli) return
@@ -1723,7 +1730,7 @@ export class Runtime {
     this.emit()
     try {
       const opts = await this.work(() =>
-        probeOptions(this.cli!, this.cfg, this.detailProv, tasks[0].vid),
+        probeOptions(this.cli!, this.cfg, this.detailProv, tasks[0].vid, this.probeLangOpts()),
       )
       if (generation !== this.requestGeneration) return
       this.adoptOptions(opts, tasks.length)
@@ -1737,7 +1744,7 @@ export class Runtime {
         if (await this.renewYoukuLogin()) {
           try {
             const opts = await this.work(() =>
-              probeOptions(this.cli!, this.cfg, this.detailProv, tasks[0].vid),
+              probeOptions(this.cli!, this.cfg, this.detailProv, tasks[0].vid, this.probeLangOpts()),
             )
             if (generation !== this.requestGeneration) return
             this.adoptOptions(opts, tasks.length)
@@ -1763,9 +1770,7 @@ export class Runtime {
         this.emit()
         try {
           const opts = await this.work(() =>
-            probeOptions(this.cli!, this.cfg, this.detailProv, tasks[0].vid, {
-              skipSign: true,
-            }),
+            probeOptions(this.cli!, this.cfg, this.detailProv, tasks[0].vid, this.probeLangOpts(true)),
           )
           if (generation !== this.requestGeneration) return
           this.adoptOptions(opts, tasks.length)

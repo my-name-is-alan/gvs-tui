@@ -119,6 +119,30 @@ test('probeYouku also plays the sibling language vid for audio', async () => {
   expect(opts.audios.map((a) => a.id)).toEqual(['XEN|cmfa1hd3', 'XCN|cmfa1hd3'])
 })
 
+test('probeYouku uses episode languageVids when play omits languages', async () => {
+  const vids: string[] = []
+  const cli = {
+    extra: () => ({}),
+    invoke: async (_p: string, _a: string, input: { vid: string }) => {
+      vids.push(input.vid)
+      if (input.vid === 'XEN') {
+        return {
+          streams: [{ stream_type: 'hd4', media_type: 'video', playlist_url: 'https://v', width: 3840, height: 1608 }],
+          audio_tracks: [
+            { stream_type: 'cmfa4hd5_atmos51', lang: 'en', langcode: 'en' },
+            { stream_type: 'cmfa3hd4_dtsx', lang: 'en', langcode: 'en' },
+            { stream_type: 'cmfa1hd3', lang: 'en', langcode: 'en', default: true },
+          ],
+        }
+      }
+      return { audio_tracks: [{ stream_type: 'cmfa1hd3', lang: '普通话', langcode: 'guoyu' }] }
+    },
+  } as unknown as GwClient
+  const opts = await probeOptions(cli, {} as FileConfig, 'youku', 'XEN', { languageVids: ['XCN'] })
+  expect(vids).toEqual(['XEN', 'XCN'])
+  expect(opts.audios.map((a) => a.lang)).toEqual(['英语', '英语', '英语', '普通话'])
+})
+
 describe('moviePlayables', () => {
   test('第九区 detail has no episodes: title vid is 正片', () => {
     const rows = moviePlayables({
@@ -151,7 +175,15 @@ describe('moviePlayables', () => {
       },
     )
     expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ title: '正片', vid: 'XEN', group: 'edition' })
+    expect(rows[0]).toMatchObject({
+      title: '正片',
+      vid: 'XEN',
+      group: 'edition',
+      languages: [
+        { vid: 'XEN', lang: '英语', langcode: 'en' },
+        { vid: 'XCN', lang: '普通话', langcode: 'guoyu' },
+      ],
+    })
   })
 
   test('failed play still keeps title vid', () => {
