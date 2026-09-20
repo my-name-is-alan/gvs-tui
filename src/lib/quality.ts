@@ -8,13 +8,14 @@ import { hongguoResolveInput } from './hongguo.ts'
 export type StreamOptions = { qualities: Quality[]; audios: Audio[]; vip?: VipProbe }
 
 /** Map Youku play payload → TUI audio rows. Gateway catalog is `audios[]`. */
-export function youkuAudiosFromPlay(data: Record<string, unknown>, sourceVid = ''): Audio[] {
+export function youkuAudiosFromPlay(data: Record<string, unknown>, sourceVid = '', editionLang = ''): Audio[] {
   const audios: Audio[] = []
-  const addAudio = (id: string, label: string, lang: string, codec: string, isDefault: boolean) => {
+  const lang = editionLang || youkuLangForVid(data, sourceVid)
+  const addAudio = (id: string, label: string, streamLang: string, codec: string, isDefault: boolean) => {
     if (!id || audios.some((a) => a.id === id)) return
     const keyed = sourceVid ? `${sourceVid}|${id}` : id
     if (audios.some((a) => a.id === keyed)) return
-    audios.push({ id: keyed, label, lang, codec, isDefault, selected: true, vid: sourceVid || undefined })
+    audios.push({ id: keyed, label, lang: lang || streamLang, codec, isDefault, selected: true, vid: sourceVid || undefined })
   }
 
   const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
@@ -83,16 +84,16 @@ function sortYoukuAudios(audios: Audio[]): void {
   audios.sort((a, b) => langRank(a.lang) - langRank(b.lang) || codecRank(a) - codecRank(b) || Number(b.isDefault) - Number(a.isDefault))
 }
 
-/** Primary play plus sibling dvd.audiolang editions, ids namespaced by vid. */
 export function youkuMergeEditionAudios(
   primaryVid: string,
   primary: Record<string, unknown>,
-  extras: Array<{ vid: string; data: Record<string, unknown> }>,
+  extras: Array<{ vid: string; data: Record<string, unknown>; lang?: string }>,
 ): Audio[] {
-  const audios = youkuAudiosFromPlay(primary, primaryVid)
+  const audios = youkuAudiosFromPlay(primary, primaryVid, youkuLangForVid(primary, primaryVid))
   for (const extra of extras) {
     if (!extra.vid || extra.vid === primaryVid) continue
-    for (const a of youkuAudiosFromPlay(extra.data, extra.vid)) {
+    const lang = extra.lang || youkuLangForVid(primary, extra.vid) || youkuLangForVid(extra.data, extra.vid)
+    for (const a of youkuAudiosFromPlay(extra.data, extra.vid, lang)) {
       a.isDefault = false
       if (!audios.some((x) => x.id === a.id)) audios.push(a)
     }
@@ -212,6 +213,15 @@ export function youkuLanguageRefs(data: Record<string, unknown>): Array<{ vid: s
   return out
 }
 
+export function youkuLangForVid(data: Record<string, unknown>, vid: string): string {
+  if (!vid) return ''
+  for (const it of youkuLanguageRefs(data)) {
+    if (it.vid === vid) return it.lang
+  }
+  return ''
+}
+
+
 
 
 /** Everything the picker needs: one entry per quality, one per audio track. */
@@ -220,7 +230,7 @@ export async function probeOptions(
   cfg: FileConfig,
   provider: string,
   vid: string,
-  opts: { skipSign?: boolean; languageVids?: string[] } = {},
+  opts: { skipSign?: boolean; languages?: Array<{ vid: string; lang: string }> } = {},
 ): Promise<StreamOptions> {
   switch (provider) {
     case 'hongguo': return probeHongguo(cli, vid)
@@ -310,7 +320,7 @@ async function probeYouku(
   cli: GwClient,
   cfg: FileConfig,
   vid: string,
-  opts: { skipSign?: boolean; languageVids?: string[] } = {},
+  opts: { skipSign?: boolean; languages?: Array<{ vid: string; lang: string }> } = {},
 ): Promise<StreamOptions> {
   const data = await cli.invoke('youku', 'play', { vid, tier: 'multi', expand: '0' }, cli.extra(cfg, 'youku', opts.skipSign))
 
@@ -419,26 +429,30 @@ async function probeYouku(
   qualities.sort((a, b) => b.width * b.height - a.width * a.height || b.size - a.size)
 
   const extraVids: string[] = []
-  const addVid = (extraVid: string) => {
-    if (!extraVid || extraVid === vid || extraVids.includes(extraVid)) return
+  const langByVid: Record<string, string> = {}
+  const addVid = (extraVid: string, lang = '') => {
+    if (!extraVid) return
+    if (lang && !langByVid[extraVid]) langByVid[extraVid] = lang
+    if (extraVid === vid || extraVids.includes(extraVid)) return
     extraVids.push(extraVid)
   }
-  for (const it of Array.isArray(data.languages) ? data.languages : []) {
-    if (isObj(it)) addVid(asString(it.vid))
-  }
-  for (const extraVid of opts.languageVids ?? []) addVid(extraVid)
-  const extras: Array<{ vid: string; data: Record<string, unknown> }> = []
+  for (const it of youkuLanguageRefs(data)) addVid(it.vid, it.lang)
+  for (const it of opts.languages ?? []) addVid(it.vid, it.lang)
+  const extras: Array<{ vid: string; data: Record<string, unknown>; lang?: string }> = []
   for (const extraVid of extraVids) {
     try {
       extras.push({
         vid: extraVid,
         data: await cli.invoke('youku', 'play', { vid: extraVid, tier: 'multi', expand: '0' }, cli.extra(cfg, 'youku', opts.skipSign)),
+        lang: langByVid[extraVid],
       })
     } catch (e) {
       if (e instanceof ReloginRequired) throw e
     }
   }
-  const audios = extras.length ? youkuMergeEditionAudios(vid, data, extras) : youkuAudiosFromPlay(data, vid)
+  const audios = extras.length
+    ? youkuMergeEditionAudios(vid, data, extras)
+    : youkuAudiosFromPlay(data, vid, langByVid[vid] || youkuLangForVid(data, vid))
 
   return { qualities, audios, vip: youkuVipProbe(data) }
 }

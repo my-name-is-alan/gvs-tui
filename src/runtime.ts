@@ -1689,7 +1689,9 @@ export class Runtime {
       plot: '',
       kind: movie ? 'movie' : 'show',
       edition: movie && ep.title && ep.title !== '正片' ? ep.title : '',
-      languageVids: ep.languages?.map((l) => l.vid).filter(Boolean),
+      languages: ep.languages
+        ?.filter((l) => l.vid)
+        .map((l) => ({ vid: l.vid, lang: l.lang })),
     }
   }
 
@@ -1699,9 +1701,17 @@ export class Runtime {
     )
   }
 
-  private probeLangOpts(skipSign = false): { skipSign?: boolean; languageVids?: string[] } {
-    const languageVids = [...new Set(this.pending.flatMap((t) => t.languageVids ?? []))]
-    return { skipSign: skipSign || undefined, languageVids: languageVids.length ? languageVids : undefined }
+  private probeLangOpts(skipSign = false): { skipSign?: boolean; languages?: Array<{ vid: string; lang: string }> } {
+    const seen: Record<string, true> = {}
+    const languages: Array<{ vid: string; lang: string }> = []
+    for (const t of this.pending) {
+      for (const l of t.languages ?? []) {
+        if (!l.vid || seen[l.vid]) continue
+        seen[l.vid] = true
+        languages.push({ vid: l.vid, lang: l.lang })
+      }
+    }
+    return { skipSign: skipSign || undefined, languages: languages.length ? languages : undefined }
   }
 
 

@@ -40,7 +40,7 @@ export type DlTask = {
   plot: string
   kind?: MediaKind
   edition?: string
-  languageVids?: string[]
+  languages?: Array<{ vid: string; lang: string }>
 }
 
 export type JobEvt = { id: number; status: string; pct: number; log: string; err: string; done?: boolean }
