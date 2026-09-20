@@ -16,6 +16,35 @@ jobs:
           bun-version: "1.3.14"
       - run: bun install --frozen-lockfile
       - run: bun run build
+      - name: Guard process.env not inlined as {}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          function walk(d, out = []) {
+            for (const n of fs.readdirSync(d)) {
+              const p = path.join(d, n);
+              if (fs.statSync(p).isDirectory()) walk(p, out);
+              else if (p.endsWith('.js')) out.push(p);
+            }
+            return out;
+          }
+          const files = walk('dist');
+          let sawGlobal = false;
+          for (const f of files) {
+            const s = fs.readFileSync(f, 'utf8');
+            if (/\bprocess\.env\s*=\s*\{\s*\}/.test(s) || s.includes('process.env={}')) {
+              console.error('FAIL:', f, 'has process.env inlined as {}');
+              process.exit(1);
+            }
+            if (s.includes('globalThis.process.env')) sawGlobal = true;
+          }
+          if (!sawGlobal) {
+            console.error('FAIL: no dist/*.js contains globalThis.process.env');
+            process.exit(1);
+          }
+          console.log('ok: process.env -> globalThis.process.env across', files.length, 'js files');
+          NODE
       - run: bun test src/lib
       - run: bun run preview
 
@@ -46,4 +75,7 @@ jobs:
       - run: bun test src/lib
       - run: bun run tools:check
       - run: bun run build
+      - name: Guard process.env not inlined as {}
+        run: |
+          node -e "const fs=require('fs');const path=require('path');function walk(d,o=[]){for(const n of fs.readdirSync(d)){const p=path.join(d,n);if(fs.statSync(p).isDirectory())walk(p,o);else if(p.endsWith('.js'))o.push(p);}return o;}const files=walk('dist');let saw=false;for(const f of files){const s=fs.readFileSync(f,'utf8');if(/\bprocess\.env\s*=\s*\{\s*\}/.test(s)||s.includes('process.env={}')){console.error('FAIL',f);process.exit(1);}if(s.includes('globalThis.process.env'))saw=true;}if(!saw){console.error('FAIL missing globalThis.process.env');process.exit(1);}console.log('ok',files.length);"
       - run: bun run preview
