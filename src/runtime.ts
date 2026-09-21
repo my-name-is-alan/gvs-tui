@@ -8,7 +8,8 @@ import { isDtsAudio } from './lib/mp4box'
 import { wrapLines } from './lib/text'
 import { demoSnapshot } from './lib/demo'
 import { demoInvoke } from './lib/discovery-demo'
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, readFileSync } from 'node:fs'
+import { join as pathJoin } from 'node:path'
 import {
   clampThreads,
   loadConfig,
@@ -44,7 +45,15 @@ import {
 } from './lib/youku-session.ts'
 import { tmdbSearch } from './lib/tmdb.ts'
 import { clipTitle, extractDouyinURL, extractTencentLinks, extractYoukuVideoId } from './lib/link.ts'
-import { pickDouyinURL, pickURL } from './lib/media.ts'
+import { pickDouyinURL, pickURL, tencentPlayProbeOk } from './lib/media.ts'
+import {
+  installRunLogProcessHooks,
+  runLog,
+  runLogPath,
+  runLogScene,
+  runLogStartup,
+  setRunLogDisabled,
+} from './lib/runlog.ts'
 import { filename, sourceTag, dots, tierHeight } from './lib/name.ts'
 import { anyInt, asBool, asString, firstStr, isObj } from './lib/util.ts'
 import { ensureTools } from './lib/tools.ts'
@@ -236,8 +245,44 @@ export class Runtime {
       this.scene = 'workspace'
     }
     this.snapshot = this.build()
-    if (this.simulated) void this.discovery.open('youku')
-    else void this.boot()
+    if (this.simulated) {
+      setRunLogDisabled(true)
+      void this.discovery.open('youku')
+    } else {
+      this.bootRunLog()
+      void this.boot()
+    }
+  }
+
+  private bootRunLog(): void {
+    setRunLogDisabled(false)
+    installRunLogProcessHooks()
+    let git = ''
+    try {
+      const r = Bun.spawnSync(['git', 'rev-parse', '--short', 'HEAD'], {
+        cwd: import.meta.dir,
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      if (r.exitCode === 0) git = r.stdout.toString().trim()
+    } catch {
+      /* packaged builds have no .git */
+    }
+    let version = ''
+    try {
+      const pkg = JSON.parse(readFileSync(pathJoin(import.meta.dir, '..', 'package.json'), 'utf8')) as {
+        version?: string
+      }
+      version = pkg.version || ''
+    } catch {
+      /* ignore */
+    }
+    runLogStartup({
+      host: this.cfg.host,
+      version: version || undefined,
+      git: git || undefined,
+      scene: this.scene,
+    })
   }
 
   onSnapshot(fn: Listener): () => void {
@@ -409,7 +454,12 @@ export class Runtime {
     this.abort.abort()
   }
 
+  private lastLoggedScene: Scene | '' = ''
   private emit(): void {
+    if (this.lastLoggedScene && this.lastLoggedScene !== this.scene) {
+      runLogScene(this.lastLoggedScene, this.scene)
+    }
+    this.lastLoggedScene = this.scene
     this.snapshot = this.build()
     for (const fn of this.listeners) fn(this.snapshot)
     trace(
@@ -472,6 +522,7 @@ export class Runtime {
     if (this.has('tencent')) f.push('腾讯双扫码', '腾讯 Cookie', '腾讯登录')
     if (this.has('tencent')) f.push('腾讯 encode=all')
     if (this.has('hongguo')) f.push('红果合并', '红果 NFO', '红果封装')
+    f.push('运行日志')
     return f
   }
 
@@ -529,6 +580,8 @@ export class Runtime {
         return this.cfg.hongguoNfo ? '开' : '关'
       case '红果封装':
         return this.cfg.hongguoFmt
+      case '运行日志':
+        return runLogPath()
       default:
         return ''
     }
@@ -1463,6 +1516,11 @@ export class Runtime {
       this.emit()
       return
     }
+    if (f === '运行日志') {
+      this.say(`运行日志：${runLogPath()}（GVS_TUI_LOG=0 可关闭）`, 'info')
+      this.emit()
+      return
+    }
     if (f === '隧道') {
       this.say(
         this.tunnelOk ? '隧道已连接' : this.tunnelErr || '未连接',
@@ -1875,13 +1933,24 @@ export class Runtime {
             ),
           )
           if (generation !== this.requestGeneration) return
-          const ok =
-            pickURL(result) ||
-            (Array.isArray(result.videos) &&
-              result.videos.some(
-                (v) => v && typeof v === 'object' && pickURL(v as Record<string, unknown>),
-              ))
-          if (!ok) throw new Error('双流探测：选定画质没有返回可用视频地址')
+          const probe = tencentPlayProbeOk(result)
+          if (!probe.ok) {
+            // Dual: also accept if either videos[] row probes ok.
+            const rows = Array.isArray(result.videos) ? result.videos : []
+            const anyRow = rows.some(
+              (v) =>
+                v &&
+                typeof v === 'object' &&
+                tencentPlayProbeOk(v as Record<string, unknown>).ok,
+            )
+            if (!anyRow) {
+              runLog(`afterQuality dual fail ${probe.reason || 'no-url'}`)
+              throw new Error(probe.reason || '双流探测：选定画质没有返回可用视频地址')
+            }
+            runLog('afterQuality dual ok via=videos')
+          } else {
+            runLog(`afterQuality dual ok via=${probe.via || 'ok'}`)
+          }
         } else {
           const first = targets[0]!
           const result = await this.work(() =>
@@ -1893,13 +1962,20 @@ export class Runtime {
             ),
           )
           if (generation !== this.requestGeneration) return
-          if (!pickURL(result)) throw new Error('选定画质没有返回可用视频地址')
+          const probe = tencentPlayProbeOk(result)
+          if (!probe.ok) {
+            runLog(`afterQuality fail ${probe.reason || 'no-url'}`)
+            throw new Error(probe.reason || '选定画质没有返回可用视频地址')
+          }
+          runLog(`afterQuality ok via=${probe.via || 'ok'}`)
         }
       } catch (e) {
         if (generation !== this.requestGeneration) return
         this.searching = false
+        const msg = e instanceof Error ? e.message : String(e)
+        runLog(`afterQuality err ${msg}`)
         this.say(
-          `选定画质探测失败：${e instanceof Error ? e.message : e} · Enter 重试 / Esc 返回`,
+          `选定画质探测失败：${msg} · Enter 重试 / Esc 返回`,
           'err',
         )
         this.emit()

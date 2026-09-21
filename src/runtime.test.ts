@@ -145,6 +145,46 @@ test('selected Tencent quality must resolve before confirmation; failure can ret
   expect(r.snapshot.jobs).toHaveLength(0)
   internal.simulated = true
 })
+test('Tencent afterQuality accepts formats-only catalog (no top-level video.url)', async () => {
+  const r = await start()
+  r.handleKey('enter')
+  await Bun.sleep(70)
+  r.handleKey('enter')
+  const internal = r as any
+  internal.detailProv = 'tencent'
+  internal.simulated = false
+  internal.cli.invoke = async () => ({
+    formats: [
+      { id: 16, name: 'fhd', cname: '蓝光', caption: 'soft', width: 1920, height: 1080 },
+    ],
+    has_url: false,
+  })
+  r.handleKey('enter')
+  await Bun.sleep(5)
+  expect(r.snapshot.scene).toBe('confirm')
+  expect(r.snapshot.status).not.toContain('探测失败')
+  internal.simulated = true
+})
+test('Tencent afterQuality surfaces network_error instead of missing-url mask', async () => {
+  const r = await start()
+  r.handleKey('enter')
+  await Bun.sleep(70)
+  r.handleKey('enter')
+  const internal = r as any
+  internal.detailProv = 'tencent'
+  internal.simulated = false
+  internal.cli.invoke = async () => ({
+    network_error: true,
+    error: 'TV play request failed',
+    formats: [{ name: 'fhd' }],
+  })
+  r.handleKey('enter')
+  await Bun.sleep(5)
+  expect(r.snapshot.scene).toBe('quality')
+  expect(r.snapshot.status).toContain('探测失败')
+  expect(r.snapshot.status).toMatch(/TV|网络|取流/)
+  internal.simulated = true
+})
 test('platform switched from search loads its own workspace, never shows prior platform rows', async () => {
   const r = await start()
   r.handleKey('f2')

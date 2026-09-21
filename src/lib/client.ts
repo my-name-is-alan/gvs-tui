@@ -1,6 +1,7 @@
 import { truncate } from './util.ts'
 import type { FileConfig } from './config.ts'
 import { fetchRemote } from './proxy.ts'
+import { runLog, summarizeInput, summarizeResult } from './runlog.ts'
 export type KeyInfo = {
   id: string
   name: string
@@ -26,6 +27,10 @@ export class ReloginRequired extends Error {
 }
 
 const RELOGIN_RE = /requires re-login|needs_relogin|invalid Yk-Sign/i
+
+/** Default invoke abort; Tencent catalog play (source+caption) often exceeds 45s. */
+const DEFAULT_TIMEOUT_MS = 45_000
+const TENCENT_PLAY_TIMEOUT_MS = 120_000
 
 export class GwClient {
   host: string
@@ -55,9 +60,37 @@ export class GwClient {
     action: string,
     input: Record<string, unknown>,
     extra?: Record<string, string>,
+    opts?: { timeoutMs?: number },
   ): Promise<Record<string, unknown>> {
-    const env = await this.request('POST', '/v1/invoke', { provider, action, input }, extra)
-    return (env.data ?? {}) as Record<string, unknown>
+    const timeoutMs =
+      opts?.timeoutMs ??
+      (provider === 'tencent' && action === 'play' ? TENCENT_PLAY_TIMEOUT_MS : DEFAULT_TIMEOUT_MS)
+    const t0 = Date.now()
+    const headerNote = extra
+      ? Object.keys(extra)
+          .map((k) => (/yk-sign|tx-cookie|cookie|authorization|token/i.test(k) ? `${k}=***` : k))
+          .join(',')
+      : ''
+    try {
+      const env = await this.request(
+        'POST',
+        '/v1/invoke',
+        { provider, action, input },
+        extra,
+        timeoutMs,
+      )
+      const data = (env.data ?? {}) as Record<string, unknown>
+      runLog(
+        `invoke ${provider}/${action} ${summarizeInput(input)}${headerNote ? ` hdr=${headerNote}` : ''} ${Date.now() - t0}ms ok ${summarizeResult({ ...data, code: env.code, msg: env.msg })}`,
+      )
+      return data
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      runLog(
+        `invoke ${provider}/${action} ${summarizeInput(input)}${headerNote ? ` hdr=${headerNote}` : ''} ${Date.now() - t0}ms fail ${truncate(msg, 160)}`,
+      )
+      throw e
+    }
   }
 
   async keyInfo(): Promise<KeyInfo> {
@@ -70,6 +103,7 @@ export class GwClient {
     path: string,
     body?: unknown,
     extra?: Record<string, string>,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
   ): Promise<Envelope> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.key}` }
     let payload: string | undefined
@@ -79,7 +113,7 @@ export class GwClient {
     }
     if (extra) Object.assign(headers, extra)
     const ac = new AbortController()
-    const timer = setTimeout(() => ac.abort(), 45_000)
+    const timer = setTimeout(() => ac.abort(), timeoutMs)
     let res: Response
     try {
       res = await fetchRemote(`${this.host}${path}`, { method, headers, body: payload, signal: ac.signal })
