@@ -13,7 +13,7 @@ import { filename, folder, sourceTag } from './name.ts'
 import type { MediaKind, Naming } from './name.ts'
 import { writeEpisodeNFO, writeTvShowNFO } from './nfo.ts'
 import {
-  CdnDenied, downloadPlaylist, downloadProgress, pickDouyinURL, pickURL, playlistStatus, referer, speedCB,
+  CdnDenied, downloadPlaylist, downloadProgress, pickDouyinURL, pickTencentDownloadURL, playlistStatus, referer, speedCB,
   youkuAudioPlaylist, youkuUsesSeparateAudio, youkuVideoPlaylist,
 } from './media.ts'
 import type { RetryNote } from './media.ts'
@@ -21,6 +21,7 @@ import { retryCdnRefresh } from './cdn-retry.ts'
 import { asString, human, isObj } from './util.ts'
 import type { Job } from '../types.ts'
 import { moveFileSync } from './file-move.ts'
+import { runLog } from './runlog.ts'
 
 export type DlTask = {
   provider: string
@@ -241,6 +242,25 @@ async function dlHongguo(
   try { unlinkSync(tmp) } catch { /* keep */ }
 }
 
+function tencentDlPickOpts(t: DlTask) {
+  return {
+    stream: t.quality,
+    caption: t.caption,
+    needSource: t.needSource,
+  }
+}
+
+function logTencentDownloadHost(cdn: string, t: DlTask): void {
+  try {
+    const host = new URL(cdn).host
+    runLog(
+      `tencent download host=${host} source=${t.needSource ? 1 : 0} stream=${(t.quality || '').slice(0, 24)}`,
+    )
+  } catch {
+    /* ignore bad URL */
+  }
+}
+
 async function dlTencent(
   cli: GwClient, cfg: FileConfig, t: DlTask, dir: string, out: string, mkvmerge: string,
   emit: (s: string, p: number, l: string) => void,
@@ -248,8 +268,10 @@ async function dlTencent(
 ): Promise<void> {
   emit('取链', 0.05, t.vid)
   const play = () => cli.invoke('tencent', 'play', { vid: t.vid, ...tencentPlayQualityInput(t), ...tencentPlayInput(cfg) }, cli.extra(cfg, 'tencent'))
-  let cdn = pickURL(await play())
-  if (!cdn) throw new Error('腾讯没有 video.url')
+  const pick = (data: Record<string, unknown>) => pickTencentDownloadURL(data, tencentDlPickOpts(t))
+  let cdn = pick(await play())
+  if (!cdn) throw new Error(t.needSource ? '原画缺少 vkey/fname' : '腾讯没有 video.url')
+  logTencentDownloadHost(cdn, t)
   const raw = join(dir, `.${t.vid}.bin`)
   emit('下载', 0.1, '')
   try {
@@ -257,8 +279,9 @@ async function dlTencent(
   } catch (e) {
     if (!(e instanceof CdnDenied)) throw e
     emit('重取', 0.1, `CDN ${e.status}，重新取链后下载`)
-    cdn = pickURL(await play())
-    if (!cdn) throw new Error('腾讯重新取链失败')
+    cdn = pick(await play())
+    if (!cdn) throw new Error(t.needSource ? '原画重新取链缺少 vkey/fname' : '腾讯重新取链失败')
+    logTencentDownloadHost(cdn, t)
     await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote, cfg.threads)
   }
   emit('封装', 0.86, out)
