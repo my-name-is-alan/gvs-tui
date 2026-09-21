@@ -43,6 +43,10 @@ export type Quality = {
   formatId?: string
   fname?: string
   group?: 'main' | 'encode' | 'source'
+  /** Raw gateway persona (e.g. default_软 / h264_软 / 2741527771455_硬). */
+  persona?: string
+  /** Short encode label derived from persona (默认 / H264 / HEVC·A …). */
+  encodeTag?: string
 }
 /** Selectable audio track (only some platforms expose more than one). */
 export type Audio = { id: string; label: string; lang: string; codec: string; isDefault: boolean; selected: boolean; embedded?: boolean; vid?: string }

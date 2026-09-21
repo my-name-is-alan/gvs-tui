@@ -864,7 +864,7 @@ function qualityHeader(): StyledText {
       { text: 'fps', cells: QUAL_COLS.fps, align: 'right', color: c.line },
       { text: '体积', cells: QUAL_COLS.size, align: 'right', color: c.line },
       { text: 'id', cells: QUAL_COLS.id, color: c.line },
-      { text: 'DRM', cells: QUAL_COLS.drm, align: 'right', color: c.line },
+      { text: '编码', cells: QUAL_COLS.encode, color: c.line },
     ],
     bodyW.value,
   )
@@ -921,10 +921,9 @@ function qualityLine(row: Quality, selected: boolean): StyledText {
       },
       { text: fid, cells: QUAL_COLS.id, color: c.faint },
       {
-        text: row.drm ? 'DRM' : '无',
-        cells: QUAL_COLS.drm,
-        align: 'right',
-        color: row.drm ? c.violet : c.faint,
+        text: row.encodeTag || '—',
+        cells: QUAL_COLS.encode,
+        color: row.encodeTag ? c.violet : c.faint,
       },
     ],
     bodyW.value,

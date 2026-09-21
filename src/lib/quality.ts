@@ -326,6 +326,75 @@ function tencentCaptionLabel(raw: string): string {
   return raw
 }
 
+/**
+ * Stable short tags for gateway `tvHevcFpsEncodes` numeric sphevcfps ids
+ * (order matches play_tv_persona.go — exclude default/h264).
+ */
+export const TENCENT_HEVC_FPS_ENCODE_TAGS: Readonly<Record<string, string>> = {
+  '2741517771455': 'HEVC·A',
+  '2741527771455': 'HEVC·B',
+  '9741517771455': 'HEVC·C',
+  '5741917771647': 'HEVC·D',
+  '61111111016223': 'HEVC·E',
+  '2741527771647': 'HEVC·F',
+}
+
+/** Strip soft/hard / 软/硬 suffix → persona encode key. */
+export function tencentPersonaKey(persona: string): string {
+  return persona.trim().replace(/_(?:软|硬|soft|hard)$/i, '')
+}
+
+/** Map persona → short Chinese/ASCII encode tag (empty for main-ladder personas). */
+export function tencentEncodeTag(persona: string): string {
+  const key = tencentPersonaKey(persona)
+  if (!key) return ''
+  const lower = key.toLowerCase()
+  // Main-ladder / non-encode personas: no tag column noise.
+  if (
+    lower === 'l3' ||
+    lower === 'source' ||
+    lower === 'samsung_dolby' ||
+    lower === 'phone_normal'
+  ) {
+    return ''
+  }
+  if (lower === 'default') return '默认'
+  if (lower === 'h264') return 'H264'
+  if (TENCENT_HEVC_FPS_ENCODE_TAGS[key]) return TENCENT_HEVC_FPS_ENCODE_TAGS[key]!
+  if (/^\d+$/.test(key)) return `编码·${key.slice(-4)}`
+  // Unknown non-numeric prefix — last 4 of whatever we have.
+  const tail = key.replace(/\D/g, '').slice(-4) || key.slice(-4)
+  return tail ? `编码·${tail}` : ''
+}
+
+/** Prefer clean sname; strip ugly `;(4K)` clutter from cname when needed. */
+export function tencentQualityBaseName(raw: Record<string, unknown>, name: string): string {
+  const sname = asString(raw.sname).trim()
+  if (sname) return sname
+  const cname = asString(raw.cname).trim()
+  if (cname) {
+    // cname often looks like `臻彩MAX+;(4K)` — drop the resolution suffix.
+    const cleaned = cname.replace(/;\s*\([^)]*\)\s*$/u, '').trim()
+    return cleaned || cname
+  }
+  if (name === 'source' || name === 'original') return '原画'
+  return name.toUpperCase()
+}
+
+/** Display label: clean for main/default; `name · tag` for encode variants. */
+export function tencentQualityDisplayLabel(
+  base: string,
+  group: Quality['group'],
+  encodeTag: string,
+  persona = '',
+): string {
+  const key = tencentPersonaKey(persona).toLowerCase()
+  const isDefault = key === 'default' || encodeTag === '默认'
+  if (group === 'main' || isDefault || !encodeTag) return base
+  if (group === 'encode' || encodeTag) return `${base} · ${encodeTag}`
+  return base
+}
+
 /** Audio-only formats belong on the 音轨 tab, not the quality ladder. */
 export function isTencentAudioFormat(raw: Record<string, unknown>): boolean {
   const name = (asString(raw.name) || asString(raw.defn)).toLowerCase()
@@ -344,8 +413,8 @@ export const QUALITY_COLS = {
   res: 10,
   fps: 5,
   size: 9,
-  id: 8,
-  drm: 4,
+  id: 6,
+  encode: 6,
 } as const
 
 /** Prefer ASCII `x` so Windows Terminal width matches displayWidth (× is often 2 cells). */
@@ -382,10 +451,9 @@ export function qualitiesFromTencentFormats(formats: unknown): Quality[] {
     const id = [name, caption || '-', fid || '0', persona || group].join('|')
     if (seen.has(id)) continue
     seen.add(id)
-    const label =
-      asString(raw.cname) ||
-      asString(raw.sname) ||
-      (name === 'source' ? '原画' : name.toUpperCase())
+    const encodeTag = tencentEncodeTag(persona)
+    const base = tencentQualityBaseName(raw, name)
+    const label = tencentQualityDisplayLabel(base, group, encodeTag, persona)
     const width = anyInt(raw.width)
     const height = anyInt(raw.height)
     const fps = anyInt(raw.vfps) || anyInt(raw.fps)
@@ -411,6 +479,8 @@ export function qualitiesFromTencentFormats(formats: unknown): Quality[] {
       formatId: fid || undefined,
       fname: asString(raw.fname) || asString(raw.sname) || undefined,
       group,
+      persona: persona || undefined,
+      encodeTag: encodeTag || undefined,
     })
   }
   return sortTencentQualities(out)
