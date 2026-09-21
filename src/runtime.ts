@@ -630,6 +630,7 @@ export class Runtime {
       })),
       detail: this.detailInfo ?? undefined,
       detailTitle: this.detailTitle,
+      detailProvider: this.detailProv || undefined,
       pendingCount: this.pending.length,
       probeFailed: this.probeFailed,
       query: this.query,
