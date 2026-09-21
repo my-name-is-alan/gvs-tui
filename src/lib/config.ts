@@ -15,6 +15,8 @@ export type FileConfig = {
   tencentTVQUA?: string
   tencentTVVersion?: string
   tencentCookie: string
+  /** Opt-in: probe play with encode=all (风控敏感，默认关) */
+  tencentEncodeAll?: boolean
   hongguoMerge: boolean
   hongguoNfo: boolean
   hongguoFmt: string

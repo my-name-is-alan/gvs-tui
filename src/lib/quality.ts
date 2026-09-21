@@ -4,6 +4,7 @@ import { ReloginRequired, type GwClient } from './client.ts'
 import { anyInt, asBool, asString, isObj } from './util.ts'
 import { hongguoItem, pickHongguo } from './media.ts'
 import { hongguoResolveInput } from './hongguo.ts'
+import { tencentPlayInput } from './tencent-qr.ts'
 
 export type StreamOptions = { qualities: Quality[]; audios: Audio[]; vip?: VipProbe }
 
@@ -252,20 +253,185 @@ export async function probeOptions(
   switch (provider) {
     case 'hongguo': return probeHongguo(cli, vid)
     case 'youku': return probeYouku(cli, cfg, vid, opts)
-    case 'tencent': return { qualities: tencentQualityList(), audios: [] }
+    case 'tencent': return probeTencent(cli, cfg, vid)
     case 'douyin': return { qualities: await probeDouyin(cli, vid), audios: [] }
     default: throw new Error('这个平台还没接画质列表')
   }
 }
 
+/** Fallback when play returns no formats[] (old gateway / cookie path). */
 function tencentQualityList(): Quality[] {
-  // 腾讯的 play 只回单条直链，档位靠 defn 参数选，所以这里是静态清单。
   return [
-    { id: 'fhd', label: '蓝光', title: '蓝光', size: 0, width: 1920, height: 1080, codec: 'H265', drm: '' },
-    { id: 'shd', label: '超清', title: '超清', size: 0, width: 1280, height: 720, codec: 'H265', drm: '' },
-    { id: 'hd', label: '高清', title: '高清', size: 0, width: 848, height: 480, codec: 'H264', drm: '' },
-    { id: 'sd', label: '标清', title: '标清', size: 0, width: 640, height: 360, codec: 'H264', drm: '' },
+    { id: 'fhd', label: '蓝光', title: '蓝光', size: 0, width: 1920, height: 1080, codec: 'H265', drm: '', stream: 'fhd', group: 'main' },
+    { id: 'shd', label: '超清', title: '超清', size: 0, width: 1280, height: 720, codec: 'H265', drm: '', stream: 'shd', group: 'main' },
+    { id: 'hd', label: '高清', title: '高清', size: 0, width: 848, height: 480, codec: 'H264', drm: '', stream: 'hd', group: 'main' },
+    { id: 'sd', label: '标清', title: '标清', size: 0, width: 640, height: 360, codec: 'H264', drm: '', stream: 'sd', group: 'main' },
   ]
+}
+
+const TENCENT_DEFN_RANK: Record<string, number> = {
+  source: 1000,
+  original: 1000,
+  '8k': 900,
+  suhd: 850,
+  maxplus: 800,
+  max: 780,
+  uhd: 760,
+  hdr10: 740,
+  dolby: 730,
+  fhd: 700,
+  shd: 600,
+  hd: 500,
+  sd: 400,
+  audio: 100,
+}
+
+function tencentDefnRank(name: string): number {
+  const n = name.toLowerCase()
+  if (TENCENT_DEFN_RANK[n] != null) return TENCENT_DEFN_RANK[n]!
+  if (n.includes('maxplus')) return 800
+  if (n.includes('max')) return 780
+  if (n.includes('uhd') || n.includes('4k')) return 760
+  if (n.includes('fhd') || n.includes('1080')) return 700
+  if (n.includes('shd') || n.includes('720')) return 600
+  if (n.includes('hd') || n.includes('480')) return 500
+  if (n === 'source' || n.includes('原画')) return 1000
+  return 200
+}
+
+function tencentFormatGroup(f: Record<string, unknown>): 'main' | 'encode' | 'source' {
+  const name = asString(f.name).toLowerCase()
+  const persona = asString(f.persona).toLowerCase()
+  if (name === 'source' || name === 'original' || persona === 'source') return 'source'
+  // encode=all personas: default_soft, 2741517771455_hard, h264_soft…
+  if (
+    persona &&
+    !persona.startsWith('l3_') &&
+    persona !== 'samsung_dolby' &&
+    persona !== 'phone_normal' &&
+    (persona.startsWith('default_') ||
+      persona.startsWith('h264_') ||
+      /^\d+_/.test(persona) ||
+      persona.includes('encode'))
+  ) {
+    return 'encode'
+  }
+  return 'main'
+}
+
+function tencentCaptionLabel(raw: string): string {
+  const c = raw.toLowerCase()
+  if (c === 'soft' || c === '软' || c === '软字幕' || c === 'srt') return 'soft'
+  if (c === 'hard' || c === '硬' || c === '硬字幕' || c === 'burn') return 'hard'
+  return raw
+}
+
+/** Map gateway play `formats[]` → Quality rows (exported for tests). */
+export function qualitiesFromTencentFormats(formats: unknown): Quality[] {
+  if (!Array.isArray(formats)) return []
+  const out: Quality[] = []
+  const seen = new Set<string>()
+  for (const raw of formats) {
+    if (!isObj(raw)) continue
+    const name = asString(raw.name) || asString(raw.defn)
+    if (!name) continue
+    const caption = tencentCaptionLabel(asString(raw.caption))
+    const fid = asString(raw.id)
+    const persona = asString(raw.persona)
+    const group = tencentFormatGroup(raw)
+    const id = [name, caption || '-', fid || '0', persona || group].join('|')
+    if (seen.has(id)) continue
+    seen.add(id)
+    const label =
+      asString(raw.cname) ||
+      asString(raw.sname) ||
+      (name === 'source' ? '原画' : name.toUpperCase())
+    const width = anyInt(raw.width)
+    const height = anyInt(raw.height)
+    const fps = anyInt(raw.vfps) || anyInt(raw.fps)
+    const size = anyInt(raw.fs) || anyInt(raw.size)
+    const hdr = asString(raw.hdr)
+    const profile = asString(raw.profile)
+    let codec = profile.toUpperCase()
+    if (!codec && hdr) codec = hdr.toUpperCase()
+    if (!codec && /hevc|h265|hvc/i.test(asString(raw.vencoding) + asString(raw.codec))) codec = 'H265'
+    out.push({
+      id,
+      label,
+      title: name,
+      size,
+      width,
+      height,
+      codec: codec || '—',
+      drm: asString(raw.drm) || (anyInt(raw.lmt) > 0 ? 'DRM' : ''),
+      tier: height || tencentDefnRank(name),
+      caption: caption || undefined,
+      fps: fps > 0 ? fps : undefined,
+      stream: name,
+      fname: asString(raw.fname) || asString(raw.sname) || undefined,
+      group,
+    })
+  }
+  return sortTencentQualities(out)
+}
+
+/** main soft/hard ladder (hi→lo) → encode extras → source last; pair soft/hard by name. */
+export function sortTencentQualities(rows: Quality[]): Quality[] {
+  const groupRank = (g: Quality['group']) => (g === 'main' ? 0 : g === 'encode' ? 1 : 2)
+  const capRank = (c?: string) => (c === 'soft' ? 0 : c === 'hard' ? 1 : 2)
+  return [...rows].sort((a, b) => {
+    const ga = groupRank(a.group)
+    const gb = groupRank(b.group)
+    if (ga !== gb) return ga - gb
+    const ra = tencentDefnRank(a.stream || a.title || a.id)
+    const rb = tencentDefnRank(b.stream || b.title || b.id)
+    if (ra !== rb) return rb - ra
+    const na = (a.stream || a.title).toLowerCase()
+    const nb = (b.stream || b.title).toLowerCase()
+    if (na !== nb) return na < nb ? -1 : 1
+    const ca = capRank(a.caption)
+    const cb = capRank(b.caption)
+    if (ca !== cb) return ca - cb
+    return (b.fps || 0) - (a.fps || 0) || (b.size || 0) - (a.size || 0)
+  })
+}
+
+async function probeTencent(cli: GwClient, cfg: FileConfig, vid: string): Promise<StreamOptions> {
+  const input: Record<string, string> = {
+    vid,
+    // Catalog: always ask soft+hard and include 原画 when the account can unlock it.
+    caption: 'all',
+    source: '1',
+    ...tencentPlayInput(cfg),
+  }
+  // encode=all is STRICTLY opt-in (风控); never default on.
+  if (cfg.tencentEncodeAll) input.encode = 'all'
+  const data = await cli.invoke('tencent', 'play', input, cli.extra(cfg, 'tencent'))
+  const qualities = qualitiesFromTencentFormats(data.formats)
+  if (!qualities.length) return { qualities: tencentQualityList(), audios: [] }
+  return { qualities, audios: [] }
+}
+
+/** Build play params for a selected Tencent quality / pending task. */
+export function tencentPlayQualityInput(q: {
+  quality?: string
+  stream?: string
+  caption?: string
+  group?: string
+  needSource?: boolean
+}): Record<string, string> {
+  const stream = (q.stream || q.quality || 'fhd').trim()
+  const out: Record<string, string> = {}
+  if (stream === 'source' || q.group === 'source' || q.needSource) {
+    out.source = '1'
+    // Primary ladder still needs a defn; uhd is the friend/source companion ladder.
+    out.defn = 'uhd'
+  } else {
+    out.defn = stream.includes('|') ? stream.split('|')[0]! : stream
+  }
+  const cap = (q.caption || '').toLowerCase()
+  if (cap === 'soft' || cap === 'hard') out.caption = cap
+  return out
 }
 
 function hongguoCodec(value: unknown): string {

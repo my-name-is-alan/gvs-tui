@@ -24,7 +24,7 @@ import {
   patchJob,
   type DlTask,
 } from './lib/jobs.ts'
-import { moviePlayables, probeOptions, youkuEditionsFromDetail } from './lib/quality.ts'
+import { moviePlayables, probeOptions, youkuEditionsFromDetail, tencentPlayQualityInput} from './lib/quality.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import {
   hostIsLocal,
@@ -470,6 +470,7 @@ export class Runtime {
     if (this.has('youku') || this.has('tencent')) f.push('TMDB Key')
     if (this.has('youku')) f.push('优酷扫码', '优酷登录')
     if (this.has('tencent')) f.push('腾讯双扫码', '腾讯 Cookie', '腾讯登录')
+    if (this.has('tencent')) f.push('腾讯 encode=all')
     if (this.has('hongguo')) f.push('红果合并', '红果 NFO', '红果封装')
     return f
   }
@@ -520,6 +521,8 @@ export class Runtime {
             : '检查中…（回车刷新）'
       case '腾讯 Cookie':
         return this.cfg.tencentCookie ? '已保存' : '空 · 回车粘贴'
+      case '腾讯 encode=all':
+        return this.cfg.tencentEncodeAll ? '开（风控敏感）' : '关（默认）'
       case '红果合并':
         return this.cfg.hongguoMerge ? '开' : '关'
       case '红果 NFO':
@@ -1352,7 +1355,9 @@ export class Runtime {
     const a = this.audios[this.audioIdx]
     for (const t of this.pending) {
       if (q) {
-        t.quality = q.id
+        t.quality = q.stream || q.id
+        t.caption = q.caption
+        t.needSource = q.group === 'source' || q.stream === 'source'
         t.group = this.cfg.releaseGroup
         if (q.height > 0) t.height = q.tier || (t.provider === 'hongguo' && q.width > 0 && q.height > q.width
           ? tierHeight(q.height, q.width) : tierHeight(q.width, q.height))
@@ -1552,6 +1557,18 @@ export class Runtime {
     }
     if (f === 'Yk-Sign') {
       this.say('登录态由扫码写入，不能手改。', 'warn')
+      this.emit()
+      return
+    }
+    if (f === '腾讯 encode=all') {
+      this.cfg.tencentEncodeAll = !this.cfg.tencentEncodeAll
+      this.persistConfig()
+      this.say(
+        this.cfg.tencentEncodeAll
+          ? '已开启 encode=all 探测（风控敏感，仅画质列表）'
+          : '已关闭 encode=all（默认）',
+        'ok',
+      )
       this.emit()
       return
     }
@@ -1839,7 +1856,7 @@ export class Runtime {
               {
                 vid: targets[0]!.vid,
                 vid2: targets[1]!.vid,
-                defn: targets[0]!.quality,
+                ...tencentPlayQualityInput(targets[0]!),
                 ...tencentPlayInput(this.cfg),
               },
               this.cli!.extra(this.cfg, 'tencent'),
@@ -1859,7 +1876,7 @@ export class Runtime {
             this.cli!.invoke(
               'tencent',
               'play',
-              { vid: first.vid, defn: first.quality, ...tencentPlayInput(this.cfg) },
+              { vid: first.vid, ...tencentPlayQualityInput(first), ...tencentPlayInput(this.cfg) },
               this.cli!.extra(this.cfg, 'tencent'),
             ),
           )

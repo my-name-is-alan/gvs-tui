@@ -820,18 +820,19 @@ const labelCells = computed(() =>
 )
 
 // 画质/音轨的列宽，表头和数据共用，保证对齐。
-const QUAL_COLS = { label: 14, res: 11, codec: 6, size: 9, drm: 6 }
+const QUAL_COLS = { label: 12, caption: 4, res: 10, fps: 5, size: 9, id: 8, drm: 4 }
 const AUDIO_COLS = { label: 18, lang: 10, codec: 12 }
 
 function qualityHeader(): StyledText {
   return colsLine(
     [
       { text: '  ', cells: 2 },
-      { text: '档位', cells: QUAL_COLS.label, color: c.line },
+      { text: '档位/名称', cells: QUAL_COLS.label, color: c.line },
+      { text: '字幕', cells: QUAL_COLS.caption, color: c.line },
       { text: '分辨率', cells: QUAL_COLS.res, color: c.line },
-      { text: '编码', cells: QUAL_COLS.codec, color: c.line },
+      { text: 'fps', cells: QUAL_COLS.fps, align: 'right', color: c.line },
       { text: '体积', cells: QUAL_COLS.size, align: 'right', color: c.line },
-      { text: '  ', cells: 2 },
+      { text: 'id', cells: QUAL_COLS.id, color: c.line },
       { text: 'DRM', cells: QUAL_COLS.drm, align: 'right', color: c.line },
     ],
     bodyW.value,
@@ -858,24 +859,40 @@ function qualityLine(row: Quality, selected: boolean): StyledText {
         ? `${row.height}p`
         : '—'
   const size = row.size > 0 ? human(row.size) : '—'
+  const caption =
+    row.caption === 'soft' ? '软' : row.caption === 'hard' ? '硬' : row.caption || '—'
+  const fps = row.fps && row.fps > 0 ? String(row.fps) : '—'
+  const id = (row.stream || row.title || row.id).split('|')[0] || '—'
+  const name =
+    row.group === 'source'
+      ? row.label || '原画'
+      : row.group === 'encode'
+        ? `⚡${row.label || id}`
+        : row.label || row.title || '视频流'
   return colsLine(
     [
       markCol(selected),
       {
-        text: row.label || row.title || '视频流',
+        text: name,
         cells: QUAL_COLS.label,
         color: selected ? c.text : c.dim,
         bold: selected,
       },
+      { text: caption, cells: QUAL_COLS.caption, color: c.faint },
       { text: res, cells: QUAL_COLS.res, color: c.faint },
-      { text: row.codec || '—', cells: QUAL_COLS.codec, color: c.faint },
+      {
+        text: fps,
+        cells: QUAL_COLS.fps,
+        align: 'right',
+        color: c.faint,
+      },
       {
         text: size,
         cells: QUAL_COLS.size,
         align: 'right',
         color: selected ? c.text : c.faint,
       },
-      { text: '  ', cells: 2 },
+      { text: id, cells: QUAL_COLS.id, color: c.faint },
       {
         text: row.drm ? 'DRM' : '无',
         cells: QUAL_COLS.drm,

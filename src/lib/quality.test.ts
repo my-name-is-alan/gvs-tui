@@ -243,3 +243,66 @@ describe('moviePlayables', () => {
     expect(moviePlayables({ title: '第九区', episodes: [] })).toEqual([])
   })
 })
+
+import {
+  qualitiesFromTencentFormats,
+  sortTencentQualities,
+  tencentPlayQualityInput,
+} from './quality.ts'
+
+describe('qualitiesFromTencentFormats', () => {
+  test('maps soft/hard ladder with real sizes and pairs by name', () => {
+    const rows = qualitiesFromTencentFormats([
+      { id: 3, name: 'fhd', cname: '蓝光', caption: 'hard', width: 1920, height: 1080, vfps: 25, fs: 1_200_000_000, persona: 'l3_hard' },
+      { id: 3, name: 'fhd', cname: '蓝光', caption: 'soft', width: 1920, height: 1080, vfps: 25, fs: 1_100_000_000, persona: 'l3_soft' },
+      { id: 322095, name: 'maxplus', cname: '臻彩MAX+', caption: 'soft', width: 3840, height: 2160, vfps: 60, fs: 5_200_000_000, persona: 'l3_soft' },
+      { id: 322095, name: 'maxplus', cname: '臻彩MAX+', caption: 'hard', width: 3840, height: 2160, vfps: 60, fs: 5_400_000_000, persona: 'l3_hard' },
+      { id: 10017, name: 'source', cname: '原画/source', fs: 25_440_000_000, persona: 'source' },
+      { id: 9, name: 'hd', cname: '高清', caption: 'soft', width: 848, height: 480, fs: 400_000_000, persona: '2741517771455_soft' },
+    ])
+    expect(rows.map((r) => r.stream)).toEqual([
+      'maxplus',
+      'maxplus',
+      'fhd',
+      'fhd',
+      'hd',
+      'source',
+    ])
+    expect(rows.map((r) => r.caption)).toEqual(['soft', 'hard', 'soft', 'hard', 'soft', undefined])
+    expect(rows.map((r) => r.group)).toEqual(['main', 'main', 'main', 'main', 'encode', 'source'])
+    expect(rows[0]!.size).toBe(5_200_000_000)
+    expect(rows[0]!.fps).toBe(60)
+    expect(rows.at(-1)!.size).toBe(25_440_000_000)
+    expect(rows.at(-1)!.group).toBe('source')
+  })
+
+  test('encode personas sort after main ladder', () => {
+    const rows = sortTencentQualities(
+      qualitiesFromTencentFormats([
+        { id: 1, name: 'uhd', caption: 'soft', persona: 'default_soft', fs: 9 },
+        { id: 2, name: 'uhd', caption: 'soft', persona: 'l3_soft', fs: 8 },
+        { id: 3, name: 'source', persona: 'source', fs: 99 },
+      ]),
+    )
+    expect(rows.map((r) => r.group)).toEqual(['main', 'encode', 'source'])
+  })
+})
+
+describe('tencentPlayQualityInput', () => {
+  test('passes defn + caption for ladder rows', () => {
+    expect(
+      tencentPlayQualityInput({ quality: 'maxplus', stream: 'maxplus', caption: 'soft' }),
+    ).toEqual({ defn: 'maxplus', caption: 'soft' })
+  })
+
+  test('source rows force source=1 and companion defn', () => {
+    expect(tencentPlayQualityInput({ stream: 'source', group: 'source' })).toEqual({
+      source: '1',
+      defn: 'uhd',
+    })
+  })
+
+  test('strips composite id to defn name', () => {
+    expect(tencentPlayQualityInput({ quality: 'fhd|soft|3|l3_soft' })).toEqual({ defn: 'fhd' })
+  })
+})
