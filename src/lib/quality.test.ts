@@ -245,10 +245,16 @@ describe('moviePlayables', () => {
 })
 
 import {
+  audiosFromTencent,
   qualitiesFromTencentFormats,
+  qualityFormatId,
+  qualityResolution,
+  QUALITY_COLS,
   sortTencentQualities,
   tencentPlayQualityInput,
 } from './quality.ts'
+import { displayWidth } from './text.ts'
+import { column } from './text.ts'
 
 describe('qualitiesFromTencentFormats', () => {
   test('maps soft/hard ladder with real sizes and pairs by name', () => {
@@ -259,6 +265,8 @@ describe('qualitiesFromTencentFormats', () => {
       { id: 322095, name: 'maxplus', cname: '臻彩MAX+', caption: 'hard', width: 3840, height: 2160, vfps: 60, fs: 5_400_000_000, persona: 'l3_hard' },
       { id: 10017, name: 'source', cname: '原画/source', fs: 25_440_000_000, persona: 'source' },
       { id: 9, name: 'hd', cname: '高清', caption: 'soft', width: 848, height: 480, fs: 400_000_000, persona: '2741517771455_soft' },
+      { id: 320001, name: 'audio', cname: '音轨', caption: 'soft', persona: 'l3_soft', fs: 12_000_000 },
+      { id: 320001, name: 'audio', cname: '音轨', caption: 'hard', persona: 'l3_hard', fs: 12_000_000 },
     ])
     expect(rows.map((r) => r.stream)).toEqual([
       'maxplus',
@@ -268,10 +276,13 @@ describe('qualitiesFromTencentFormats', () => {
       'hd',
       'source',
     ])
+    expect(rows.every((r) => r.stream !== 'audio')).toBe(true)
     expect(rows.map((r) => r.caption)).toEqual(['soft', 'hard', 'soft', 'hard', 'soft', undefined])
     expect(rows.map((r) => r.group)).toEqual(['main', 'main', 'main', 'main', 'encode', 'source'])
     expect(rows[0]!.size).toBe(5_200_000_000)
     expect(rows[0]!.fps).toBe(60)
+    expect(rows[0]!.formatId).toBe('322095')
+    expect(qualityFormatId(rows[0]!)).toBe('322095')
     expect(rows.at(-1)!.size).toBe(25_440_000_000)
     expect(rows.at(-1)!.group).toBe('source')
   })
@@ -305,4 +316,116 @@ describe('tencentPlayQualityInput', () => {
   test('strips composite id to defn name', () => {
     expect(tencentPlayQualityInput({ quality: 'fhd|soft|3|l3_soft' })).toEqual({ defn: 'fhd' })
   })
+})
+
+describe('audiosFromTencent', () => {
+  test('prefers audio_tracks from gateway al.ai', () => {
+    const rows = audiosFromTencent({
+      audio_tracks: [
+        { id: '7', name: 'db', cname: '杜比音效' },
+        { id: '1', name: 'aac', cname: '标准音轨' },
+      ],
+      formats: [
+        { id: 320001, name: 'audio', cname: '音轨', caption: 'soft' },
+      ],
+    })
+    expect(rows.map((a) => a.label)).toEqual(['杜比音效', '标准音轨'])
+    expect(rows.map((a) => a.id)).toEqual(['7', '1'])
+    expect(rows[0]!.isDefault).toBe(true)
+    expect(rows.every((a) => a.selected)).toBe(true)
+  })
+
+  test('promotes name=audio formats when audio_tracks missing', () => {
+    const rows = audiosFromTencent({
+      formats: [
+        { id: 320001, name: 'audio', cname: '音轨', caption: 'soft', persona: 'l3_soft' },
+        { id: 320001, name: 'audio', cname: '音轨', caption: 'hard', persona: 'l3_hard' },
+        { id: 3, name: 'fhd', cname: '蓝光', caption: 'soft' },
+      ],
+    })
+    expect(rows).toHaveLength(2)
+    expect(rows.map((a) => a.label)).toEqual(['音轨（软）', '音轨（硬）'])
+    expect(rows.map((a) => a.lang)).toEqual(['软', '硬'])
+  })
+
+  test('leaves audios empty when only muxed video qualities exist', () => {
+    expect(
+      audiosFromTencent({
+        formats: [{ id: 3, name: 'fhd', cname: '蓝光', caption: 'soft', width: 1920, height: 1080 }],
+      }),
+    ).toEqual([])
+  })
+})
+
+describe('quality table alignment helpers', () => {
+  test('ASCII resolution width matches terminal cells for 4K', () => {
+    // 3840 + x + 2160 = 9 cells; column is 10 so one pad remains.
+    expect(qualityResolution(3840, 2160)).toBe('3840x2160')
+    expect(displayWidth(qualityResolution(3840, 2160))).toBe(9)
+    expect(displayWidth('3840x2160')).toBe(9)
+    expect(QUALITY_COLS.res).toBe(10)
+    // displayWidth counts × as 1, but Windows Terminal often paints it 2-wide —
+    // that is the misalignment we avoid by using ASCII x.
+    expect(displayWidth('3840×2160')).toBe(9)
+  })
+
+  test('header and row cell widths match QUALITY_COLS cell-for-cell', () => {
+    const headers = ['档位/名称', '字幕', '分辨率', 'fps', '体积', 'id', 'DRM']
+    const keys = ['label', 'caption', 'res', 'fps', 'size', 'id', 'drm'] as const
+    const sample = {
+      id: 'maxplus|soft|322095|l3_soft',
+      formatId: '322095',
+      label: '臻彩MAX+',
+      title: 'maxplus',
+      size: 5_200_000_000,
+      width: 3840,
+      height: 2160,
+      codec: 'H265',
+      drm: '',
+      caption: 'soft',
+      fps: 60,
+      stream: 'maxplus',
+      group: 'main' as const,
+    }
+    const cells = [
+      sample.label,
+      '软',
+      qualityResolution(sample.width, sample.height),
+      String(sample.fps),
+      '4.8 GB',
+      qualityFormatId(sample),
+      '无',
+    ]
+    for (let i = 0; i < keys.length; i++) {
+      const w = QUALITY_COLS[keys[i]!]
+      expect(displayWidth(column(headers[i]!, w))).toBe(w)
+      expect(displayWidth(column(cells[i]!, w))).toBe(w)
+    }
+    const fixed =
+      QUALITY_COLS.mark +
+      QUALITY_COLS.label +
+      QUALITY_COLS.caption +
+      QUALITY_COLS.res +
+      QUALITY_COLS.fps +
+      QUALITY_COLS.size +
+      QUALITY_COLS.id +
+      QUALITY_COLS.drm
+    expect(fixed).toBeLessThanOrEqual(60)
+  })
+})
+
+test('probeTencent returns audios from audio_tracks', async () => {
+  const cli = {
+    extra: () => ({}),
+    invoke: async () => ({
+      formats: [
+        { id: 322095, name: 'maxplus', cname: '臻彩MAX+', caption: 'soft', width: 3840, height: 2160, persona: 'l3_soft' },
+        { id: 320001, name: 'audio', cname: '音轨', caption: 'soft', persona: 'l3_soft' },
+      ],
+      audio_tracks: [{ id: '7', name: 'db', cname: '杜比音效' }],
+    }),
+  } as unknown as GwClient
+  const opts = await probeOptions(cli, {} as FileConfig, 'tencent', 'vid1')
+  expect(opts.qualities.map((q) => q.stream)).toEqual(['maxplus'])
+  expect(opts.audios.map((a) => a.label)).toEqual(['杜比音效'])
 })

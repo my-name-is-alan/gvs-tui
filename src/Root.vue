@@ -37,6 +37,11 @@ import {
 } from './lib/rows'
 import type { Col } from './lib/rows'
 import { clip, column, displayWidth, padStart } from './lib/text'
+import {
+  QUALITY_COLS,
+  qualityFormatId,
+  qualityResolution,
+} from './lib/quality'
 import { human } from './lib/util'
 import {
   c,
@@ -468,13 +473,35 @@ const jobStats = computed(() => {
 })
 
 // --- chrome ---------------------------------------------------------------
+const headerProvider = computed(() => {
+  const scene = state.value.scene
+  const detailP = state.value.detailProvider || ''
+  if (
+    detailP &&
+    (scene === 'detail' ||
+      scene === 'quality' ||
+      scene === 'confirm' ||
+      scene === 'tmdb')
+  ) {
+    return detailP
+  }
+  if (scene === 'search' || scene === 'results') {
+    return providers.value[state.value.providerIndex] || ''
+  }
+  return (
+    state.value.workspace?.provider ||
+    providers.value[state.value.providerIndex] ||
+    ''
+  )
+})
+
 const headerLine = computed(() => {
   const right = `${hostLabel(state.value.host)}  ${state.value.tunnelOk ? '● 隧道' : '○ 隧道'}`
   const cols: Col[] = [
     { text: '▌ ', cells: 2, color: c.accent, bold: true },
     { text: 'GVS', cells: 4, color: c.accent, bold: true },
     {
-      text: `› ${providerName(state.value.workspace?.provider || providers.value[state.value.providerIndex] || '')} / ${SCENE_TITLES[state.value.scene] ?? 'GVS'}`,
+      text: `› ${providerName(headerProvider.value)} / ${SCENE_TITLES[state.value.scene] ?? 'GVS'}`,
       grow: true,
       color: c.dim,
     },
@@ -822,7 +849,7 @@ const labelCells = computed(() =>
 )
 
 // 画质/音轨的列宽，表头和数据共用，保证对齐。
-const QUAL_COLS = { label: 12, caption: 4, res: 10, fps: 5, size: 9, id: 8, drm: 4 }
+const QUAL_COLS = QUALITY_COLS
 const AUDIO_COLS = { label: 18, lang: 10, codec: 12 }
 
 function qualityHeader(): StyledText {
@@ -854,22 +881,18 @@ function audioHeader(): StyledText {
 }
 
 function qualityLine(row: Quality, selected: boolean): StyledText {
-  const res =
-    row.width > 0 && row.height > 0
-      ? `${row.width}×${row.height}`
-      : row.height > 0
-        ? `${row.height}p`
-        : '—'
+  const res = qualityResolution(row.width, row.height)
   const size = row.size > 0 ? human(row.size) : '—'
   const caption =
     row.caption === 'soft' ? '软' : row.caption === 'hard' ? '硬' : row.caption || '—'
   const fps = row.fps && row.fps > 0 ? String(row.fps) : '—'
-  const id = (row.stream || row.title || row.id).split('|')[0] || '—'
+  const fid = qualityFormatId(row)
+  const streamHint = (row.stream || row.title || '').split('|')[0] || ''
   const name =
     row.group === 'source'
       ? row.label || '原画'
       : row.group === 'encode'
-        ? `⚡${row.label || id}`
+        ? `⚡${row.label || streamHint || fid}`
         : row.label || row.title || '视频流'
   return colsLine(
     [
@@ -894,7 +917,7 @@ function qualityLine(row: Quality, selected: boolean): StyledText {
         align: 'right',
         color: selected ? c.text : c.faint,
       },
-      { text: id, cells: QUAL_COLS.id, color: c.faint },
+      { text: fid, cells: QUAL_COLS.id, color: c.faint },
       {
         text: row.drm ? 'DRM' : '无',
         cells: QUAL_COLS.drm,

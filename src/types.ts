@@ -39,6 +39,8 @@ export type Quality = {
   fps?: number
   /** play defn / format name (maxplus, fhd, source…) */
   stream?: string
+  /** Numeric platform format id (e.g. 322095), when known. */
+  formatId?: string
   fname?: string
   group?: 'main' | 'encode' | 'source'
 }
@@ -134,6 +136,8 @@ export type Snapshot = {
   detail?: Detail
   /** Scene heading for the browser: the title of whatever is open. */
   detailTitle?: string
+  /** Provider of the open title (detail/quality), not discovery workspace. */
+  detailProvider?: string
   pendingCount?: number
   /** Probing the stream list failed and the next Enter downloads with defaults. */
   probeFailed: boolean

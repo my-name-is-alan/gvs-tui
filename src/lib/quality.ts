@@ -326,13 +326,53 @@ function tencentCaptionLabel(raw: string): string {
   return raw
 }
 
-/** Map gateway play `formats[]` → Quality rows (exported for tests). */
+/** Audio-only formats belong on the 音轨 tab, not the quality ladder. */
+export function isTencentAudioFormat(raw: Record<string, unknown>): boolean {
+  const name = (asString(raw.name) || asString(raw.defn)).toLowerCase()
+  if (!name) return false
+  if (name === 'audio' || name === 'audioonly' || name === 'audio_only') return true
+  if (name.startsWith('audio')) return true
+  const media = asString(raw.media_type || raw.type).toLowerCase()
+  return media === 'audio'
+}
+
+/** Fixed column widths for the quality table (header + rows share these). */
+export const QUALITY_COLS = {
+  mark: 2,
+  label: 18,
+  caption: 4,
+  res: 10,
+  fps: 5,
+  size: 9,
+  id: 8,
+  drm: 4,
+} as const
+
+/** Prefer ASCII `x` so Windows Terminal width matches displayWidth (× is often 2 cells). */
+export function qualityResolution(width: number, height: number): string {
+  if (width > 0 && height > 0) return `${width}x${height}`
+  if (height > 0) return `${height}p`
+  return '—'
+}
+
+export function qualityFormatId(q: Pick<Quality, 'id' | 'formatId'>): string {
+  if (q.formatId) return q.formatId
+  const parts = q.id.split('|')
+  if (parts.length >= 3) {
+    const fid = parts[2]!
+    if (fid && fid !== '0' && fid !== '-') return fid
+  }
+  return '—'
+}
+
+/** Map gateway play `formats[]` → Quality rows (exported for tests). Skips audio-only. */
 export function qualitiesFromTencentFormats(formats: unknown): Quality[] {
   if (!Array.isArray(formats)) return []
   const out: Quality[] = []
   const seen = new Set<string>()
   for (const raw of formats) {
     if (!isObj(raw)) continue
+    if (isTencentAudioFormat(raw)) continue
     const name = asString(raw.name) || asString(raw.defn)
     if (!name) continue
     const caption = tencentCaptionLabel(asString(raw.caption))
@@ -368,11 +408,60 @@ export function qualitiesFromTencentFormats(formats: unknown): Quality[] {
       caption: caption || undefined,
       fps: fps > 0 ? fps : undefined,
       stream: name,
+      formatId: fid || undefined,
       fname: asString(raw.fname) || asString(raw.sname) || undefined,
       group,
     })
   }
   return sortTencentQualities(out)
+}
+
+/** Build 音轨 rows from gateway `audio_tracks` or audio-only `formats[]`. */
+export function audiosFromTencent(data: Record<string, unknown>): Audio[] {
+  const out: Audio[] = []
+  const seen = new Set<string>()
+  const add = (id: string, label: string, lang: string, codec: string, isDefault: boolean) => {
+    const key = id || label
+    if (!key || seen.has(key)) return
+    seen.add(key)
+    out.push({
+      id: key,
+      label: label || key,
+      lang: lang || '原声',
+      codec: codec || '',
+      isDefault,
+      selected: true,
+    })
+  }
+
+  const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
+  for (const tr of tracks) {
+    if (!isObj(tr)) continue
+    const id = asString(tr.id) || asString(tr.name)
+    const label = asString(tr.cname) || asString(tr.sname) || asString(tr.name) || id
+    if (!id && !label) continue
+    add(id || label, label, asString(tr.lang) || asString(tr.name), asString(tr.name), out.length === 0)
+  }
+  if (out.length) {
+    if (!out.some((a) => a.isDefault)) out[0]!.isDefault = true
+    return out
+  }
+
+  const formats = Array.isArray(data.formats) ? data.formats : []
+  for (const raw of formats) {
+    if (!isObj(raw) || !isTencentAudioFormat(raw)) continue
+    const fid = asString(raw.id) || 'audio'
+    const caption = tencentCaptionLabel(asString(raw.caption))
+    const cname = asString(raw.cname) || asString(raw.sname) || '音轨'
+    const softHard = caption === 'soft' ? '软' : caption === 'hard' ? '硬' : ''
+    const label = softHard ? `${cname}（${softHard}）` : cname
+    const lang = softHard || asString(raw.lang) || '原声'
+    const codec = asString(raw.profile) || asString(raw.codec) || asString(raw.name) || 'audio'
+    const id = [fid, caption || '-', asString(raw.persona) || 'audio'].join('|')
+    add(id, label, lang, codec, out.length === 0)
+  }
+  if (out.length && !out.some((a) => a.isDefault)) out[0]!.isDefault = true
+  return out
 }
 
 /** main soft/hard ladder (hi→lo) → encode extras → source last; pair soft/hard by name. */
@@ -408,8 +497,9 @@ async function probeTencent(cli: GwClient, cfg: FileConfig, vid: string): Promis
   if (cfg.tencentEncodeAll) input.encode = 'all'
   const data = await cli.invoke('tencent', 'play', input, cli.extra(cfg, 'tencent'))
   const qualities = qualitiesFromTencentFormats(data.formats)
-  if (!qualities.length) return { qualities: tencentQualityList(), audios: [] }
-  return { qualities, audios: [] }
+  const audios = audiosFromTencent(data)
+  if (!qualities.length) return { qualities: tencentQualityList(), audios }
+  return { qualities, audios }
 }
 
 /** Build play params for a selected Tencent quality / pending task. */
