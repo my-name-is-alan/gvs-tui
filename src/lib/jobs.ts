@@ -291,7 +291,10 @@ async function dlYouku(
   emit: (s: string, p: number, l: string) => void,
   retryNote: RetryNote,
 ): Promise<string> {
-  const tracks = t.audioTracks?.length ? t.audioTracks : [{ id: '', label: '默认音轨', lang: '' }]
+  // Rebind at download time too: drafts / older queues may still carry ep1 probe vids.
+  const tracks = t.audioTracks?.length
+    ? bindYoukuAudioTracksToTask(t.audioTracks, t)
+    : [{ id: '', label: '默认音轨', lang: '' }]
   const videoPath = join(dir, `.${t.vid}.video.mp4`)
   const muxInputs: MuxAudio[] = []
   const temps = new Set<string>()
@@ -483,13 +486,6 @@ async function playYouku(cli: GwClient, cfg: FileConfig, t: DlTask, vid = t.vid)
   return cli.invoke('youku', 'play', input, cli.extra(cfg, 'youku'))
 }
 
-function trackVid(t: DlTask, trackId: string, explicit?: string): string {
-  if (explicit) return explicit
-  const sep = trackId.indexOf('|')
-  return sep >= 0 ? trackId.slice(0, sep) : t.vid
-}
-
-
 
 export function patchJob(jobs: Job[], e: JobEvt): void {
   const row = jobs.find((j) => j.id === e.id)
@@ -498,4 +494,72 @@ export function patchJob(jobs: Job[], e: JobEvt): void {
   row.pct = e.pct
   row.log = e.log
   row.err = e.err
+}
+
+/** Stream type token after optional `vid|` prefix from quality probe rows. */
+export function youkuAudioStreamType(trackId: string): string {
+  const sep = trackId.indexOf('|')
+  return sep >= 0 ? trackId.slice(sep + 1) : trackId
+}
+
+/**
+ * Quality probe runs once on the first selected episode. Audio rows therefore
+ * carry that episode's `vid` / `vid|streamType` id. Batch downloads must rebind
+ * each track onto the *current* episode (or its language sibling) so later
+ * episodes do not mux episode-1 audio over episode-N video.
+ */
+export function bindYoukuAudioTracksToTask(
+  tracks: Array<{ id: string; label: string; lang: string; vid?: string }>,
+  task: Pick<DlTask, 'vid' | 'languages'>,
+): Array<{ id: string; label: string; lang: string; vid?: string }> {
+  return tracks.map((track) => {
+    const streamType = youkuAudioStreamType(track.id)
+    const byLang = (task.languages ?? []).find((l) => {
+      if (!l.vid || !l.lang || !track.lang) return false
+      return l.lang === track.lang || l.lang.includes(track.lang) || track.lang.includes(l.lang)
+    })
+    const targetVid = byLang?.vid || task.vid
+    return {
+      id: streamType ? `${targetVid}|${streamType}` : targetVid,
+      label: track.label,
+      lang: track.lang,
+      vid: targetVid,
+    }
+  })
+}
+
+/** Vids that belong to this download task (primary + language editions). */
+export function youkuTaskAudioVids(t: Pick<DlTask, 'vid' | 'languages'>): Set<string> {
+  const out = new Set<string>()
+  if (t.vid) out.add(t.vid)
+  for (const l of t.languages ?? []) if (l.vid) out.add(l.vid)
+  return out
+}
+
+/**
+ * Resolve which Youku vid to play for an audio track. Never returns another
+ * episode's probe vid: only this task's primary vid or its language siblings.
+ */
+export function trackVid(t: DlTask, trackId: string, explicit?: string): string {
+  const allowed = youkuTaskAudioVids(t)
+  if (explicit && allowed.has(explicit)) return explicit
+  const sep = trackId.indexOf('|')
+  const fromId = sep >= 0 ? trackId.slice(0, sep) : ''
+  if (fromId && allowed.has(fromId)) return fromId
+  return t.vid
+}
+
+/** Per-episode audio fetch plan used by dlYouku (and multi-ep isolation tests). */
+export function youkuAudioFetchPlan(
+  t: DlTask,
+  tracks: Array<{ id: string; label: string; lang: string; vid?: string }>,
+): Array<{ label: string; lang: string; streamType: string; audioVid: string; trackId: string }> {
+  const bound = bindYoukuAudioTracksToTask(tracks, t)
+  return bound.map((track) => ({
+    label: track.label,
+    lang: track.lang,
+    streamType: youkuAudioStreamType(track.id),
+    audioVid: trackVid(t, track.id, track.vid),
+    trackId: track.id,
+  }))
 }

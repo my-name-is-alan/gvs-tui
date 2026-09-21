@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { JobHub, cleanupOutputCaches, jobTitle, patchJob, youkuDRM, type DlTask } from './jobs.ts'
+import { JobHub, bindYoukuAudioTracksToTask, cleanupOutputCaches, jobTitle, patchJob, trackVid, youkuAudioFetchPlan, youkuDRM, type DlTask } from './jobs.ts'
 import { youkuAudioPlaylist, youkuUsesSeparateAudio, youkuVideoPlaylist } from './media.ts'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
@@ -148,4 +148,68 @@ test('youku separate audio only for 帧享 HQ cmfv with playlist', () => {
     audio_tracks: [{ stream_type: 'cmfa1hd3' }],
   }
   expect(youkuUsesSeparateAudio(invOnly, 'cmfv5hd4_sdr_hfr_hbr_bit10_hq')).toBe(false)
+})
+
+test('multi-ep batch does not cross-wire first episode audio onto later episodes', () => {
+  // Quality probe ran on EP1 only — audio rows still carry EP1 vids.
+  const probedFromEp1 = [
+    { id: 'EP1|cmfa4hd5_atmos51', label: '杜比全景声', lang: '普通话', vid: 'EP1' },
+    { id: 'EP1EN|cmfa1hd3', label: 'AAC', lang: '英语', vid: 'EP1EN' },
+  ]
+  const ep1 = task({
+    vid: 'EP1',
+    episode: 1,
+    languages: [
+      { vid: 'EP1', lang: '普通话' },
+      { vid: 'EP1EN', lang: '英语' },
+    ],
+  })
+  const ep2 = task({
+    vid: 'EP2',
+    episode: 2,
+    languages: [
+      { vid: 'EP2', lang: '普通话' },
+      { vid: 'EP2EN', lang: '英语' },
+    ],
+  })
+  const ep3 = task({ vid: 'EP3', episode: 3 })
+
+  const plan1 = youkuAudioFetchPlan(ep1, probedFromEp1)
+  const plan2 = youkuAudioFetchPlan(ep2, probedFromEp1)
+  const plan3 = youkuAudioFetchPlan(ep3, probedFromEp1)
+
+  expect(plan1.map((p) => p.audioVid)).toEqual(['EP1', 'EP1EN'])
+  expect(plan2.map((p) => p.audioVid)).toEqual(['EP2', 'EP2EN'])
+  // No language siblings on ep3 → both tracks bind to ep3's own vid (never EP1).
+  expect(plan3.map((p) => p.audioVid)).toEqual(['EP3', 'EP3'])
+  expect(plan2.every((p) => !p.audioVid.startsWith('EP1'))).toBe(true)
+  expect(plan3.every((p) => p.audioVid === 'EP3')).toBe(true)
+
+  // Shared probe array must be cloned/remapped per task — mutating one plan's
+  // source must not leak into another episode's bound tracks.
+  const bound2 = bindYoukuAudioTracksToTask(probedFromEp1, ep2)
+  const bound3 = bindYoukuAudioTracksToTask(probedFromEp1, ep3)
+  bound2[0]!.vid = 'MUTATED'
+  expect(bound3[0]!.vid).toBe('EP3')
+  expect(probedFromEp1[0]!.vid).toBe('EP1')
+})
+
+test('trackVid rejects foreign episode probe vids', () => {
+  const ep2 = task({ vid: 'EP2', episode: 2, languages: [{ vid: 'EP2EN', lang: '英语' }] })
+  expect(trackVid(ep2, 'EP1|cmfa1hd3', 'EP1')).toBe('EP2')
+  expect(trackVid(ep2, 'EP2EN|cmfa1hd3', 'EP2EN')).toBe('EP2EN')
+  expect(trackVid(ep2, 'EP2|atmos')).toBe('EP2')
+})
+
+test('bindYoukuAudioTracksToTask keeps codec and remaps id', () => {
+  const bound = bindYoukuAudioTracksToTask(
+    [{ id: 'EP1|cmfa4hd5_atmos51', label: '杜比全景声', lang: '普通话', vid: 'EP1' }],
+    { vid: 'EP9', languages: [{ vid: 'EP9', lang: '普通话' }] },
+  )
+  expect(bound).toEqual([{
+    id: 'EP9|cmfa4hd5_atmos51',
+    label: '杜比全景声',
+    lang: '普通话',
+    vid: 'EP9',
+  }])
 })

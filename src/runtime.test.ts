@@ -203,6 +203,26 @@ test('embedded audio follows quality and cannot become a separate mux track', as
  expect(internal.pending[0].audioTracks).toEqual([])
 })
 
+test('youku multi-ep applyOptions rebinds probe audio vids onto each episode', async () => {
+  const r = await start(); const internal = r as any
+  internal.detailProv = 'youku'
+  internal.adoptOptions({
+    qualities: [{ id: 'cmfv5hd4_dolbyvision_hfr_hbr_hq', label: '帧享', title: 'hq', width: 3840, height: 2160, size: 1, codec: 'H265', drm: 'CENC' }],
+    audios: [
+      { id: 'EP1|cmfa4hd5_atmos51', label: '杜比全景声', lang: '普通话', codec: 'cmfa4', isDefault: true, selected: true, vid: 'EP1' },
+      { id: 'EP1EN|cmfa1hd3', label: 'AAC', lang: '英语', codec: 'cmfa1', isDefault: false, selected: true, vid: 'EP1EN' },
+    ],
+  }, 2)
+  internal.pending = [
+    { provider: 'youku', vid: 'EP1', episode: 1, languages: [{ vid: 'EP1', lang: '普通话' }, { vid: 'EP1EN', lang: '英语' }] },
+    { provider: 'youku', vid: 'EP2', episode: 2, languages: [{ vid: 'EP2', lang: '普通话' }, { vid: 'EP2EN', lang: '英语' }] },
+  ]
+  internal.applyOptions()
+  expect(internal.pending[0].audioTracks.map((a: { vid: string }) => a.vid)).toEqual(['EP1', 'EP1EN'])
+  expect(internal.pending[1].audioTracks.map((a: { vid: string }) => a.vid)).toEqual(['EP2', 'EP2EN'])
+  expect(internal.pending[0].audioTracks).not.toBe(internal.pending[1].audioTracks)
+})
+
 test('Tencent settings hide device internals and expose App website authorization',async()=>{
  const r=await start();const x=r as any
  x.keyInfo={all:true,scope:[]};x.emit()
