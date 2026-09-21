@@ -224,6 +224,22 @@ test('youku multi-ep applyOptions rebinds probe audio vids onto each episode', a
 })
 
 
+test('Tab cycles platforms on search scene (youku→tencent→hongguo)', async () => {
+  const r = await start()
+  r.handleKey('f2')
+  expect(r.snapshot.scene).toBe('search')
+  expect(r.snapshot.providers?.[r.snapshot.providerIndex]).toBe('youku')
+  r.handleKey('tab')
+  expect(r.snapshot.scene).toBe('search')
+  expect(r.snapshot.providers?.[r.snapshot.providerIndex]).toBe('tencent')
+  r.handleKey('tab')
+  expect(r.snapshot.scene).toBe('search')
+  expect(r.snapshot.providers?.[r.snapshot.providerIndex]).toBe('hongguo')
+  r.handleKey('tab', { shift: true })
+  expect(r.snapshot.scene).toBe('search')
+  expect(r.snapshot.providers?.[r.snapshot.providerIndex]).toBe('tencent')
+})
+
 test('Ctrl+1/2/3 switches platform like Alt (Windows Terminal friendly)', async () => {
   const r = await start()
   r.handleKey('2', { ctrl: true })

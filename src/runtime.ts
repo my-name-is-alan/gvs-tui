@@ -357,7 +357,7 @@ export class Runtime {
           )
         break
       case 'search':
-        this.updateSearch(k)
+        this.updateSearch(k, mods.shift)
         break
       case 'results':
         this.updateResults(k)
@@ -1172,9 +1172,20 @@ export class Runtime {
       this.navigation.pop()
   }
 
-  private updateSearch(k: string): void {
+  private updateSearch(k: string, shift?: boolean): void {
     if (k === 'esc') {
       this.back()
+      return
+    }
+    if (k === 'tab') {
+      const list = this.providers()
+      if (!list.length) return
+      const n = list.length
+      this.provIdx = shift
+        ? (this.provIdx - 1 + n) % n
+        : (this.provIdx + 1) % n
+      this.requestGeneration++
+      this.searching = false
       return
     }
     if (k !== 'enter' || this.searching) return
