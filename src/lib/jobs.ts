@@ -13,7 +13,7 @@ import type { MediaKind, Naming } from './name.ts'
 import { writeEpisodeNFO, writeTvShowNFO } from './nfo.ts'
 import {
   CdnDenied, downloadPlaylist, downloadProgress, pickDouyinURL, pickURL, playlistStatus, referer, speedCB,
-  youkuAudioPlaylist, youkuVideoPlaylist,
+  youkuAudioPlaylist, youkuUsesSeparateAudio, youkuVideoPlaylist,
 } from './media.ts'
 import type { RetryNote } from './media.ts'
 import { retryCdnRefresh } from './cdn-retry.ts'
@@ -305,7 +305,7 @@ async function dlYouku(
     label: string,
     base: number,
     span: number,
-    select: 'video' | 'audio',
+    select: 'video' | 'audio' | 'muxed',
     trackId = '',
   ) => {
     // A later audio failure must not download an already completed video again.
@@ -323,9 +323,10 @@ async function dlYouku(
       refreshSource: async () => {
         const payload = await playYouku(cli, cfg, t, select === 'audio' ? trackVid(t, trackId) : t.vid)
         const drm = youkuDRM(payload)
-        const src = select === 'video' ? youkuVideoPlaylist(payload, t.quality) : youkuAudioPlaylist(payload, trackId)
+        const src = select === 'audio' ? youkuAudioPlaylist(payload, trackId) : youkuVideoPlaylist(payload, t.quality)
         if (!src) throw new Error('重新取链后缺少所选轨道')
-        return { src, key: (select === 'video' ? drm.videoEnc : drm.audioEnc) ? drm.reKey : undefined }
+        const needKey = select === 'audio' ? drm.audioEnc : drm.videoEnc
+        return { src, key: needKey ? drm.reKey : undefined }
       },
       onRefresh: (retry, total) => retryNote(retry, total, `${label} 失败分片换新 CDN 链接，保留已下载进度`),
       cb: (n, total, info) => {
@@ -346,8 +347,22 @@ async function dlYouku(
     if ((drm.videoEnc || drm.audioEnc) && !drm.reKey) throw new Error('优酷加密轨道未返回密钥，请重试取流或检查登录状态')
     const playlist = youkuVideoPlaylist(payload, t.quality)
     if (!playlist) throw new Error('优酷 play 没有 playlist_url')
+    const separateAudio = youkuUsesSeparateAudio(payload, t.quality)
     emit('下载', 0.05, playlist.split(/[?#]/)[0]?.split('/').pop() ?? '')
-    await pull(playlist, videoPath, drm.videoEnc ? drm.reKey : undefined, '下载', 0.05, 0.62, 'video')
+    // 帧享 HQ：视频分轨下载并 drop 内嵌音；非 HQ（酷喵 TV/App）：保留视频 m3u8 自带音轨。
+    await pull(
+      playlist,
+      videoPath,
+      drm.videoEnc ? drm.reKey : undefined,
+      '下载',
+      0.05,
+      separateAudio ? 0.62 : 0.8,
+      separateAudio ? 'video' : 'muxed',
+    )
+    if (!separateAudio) {
+      // soft-skip：不强制独立音轨，避免缺 URL 失败或误复用 HQ 音轨。
+      return
+    }
     for (const [i, track] of tracks.entries()) {
       // Video download/decryption can outlive the original audio URL lease.
       const audioVid = trackVid(t, track.id, track.vid)
@@ -355,7 +370,11 @@ async function dlYouku(
       const audioDrm = youkuDRM(audioPayload)
       if (audioDrm.audioEnc && !audioDrm.reKey) throw new Error('重新取得的音轨缺少解密密钥')
       const audioPl = youkuAudioPlaylist(audioPayload, track.id)
-      if (!audioPl) throw new Error(`所选音轨没有播放列表：${track.label}`)
+      if (!audioPl) {
+        // HQ 约定有独立音轨；缺 URL 时 soft-skip 该条，保留已下视频。
+        emit('音轨', 0.67 + 0.18 * i / tracks.length, `跳过无播放列表音轨：${track.label}`)
+        continue
+      }
       const audioPath = join(dir, `.${t.vid}.audio${i}.mp4`)
       temps.add(audioPath)
       temps.add(`${audioPath}.transport.json`)

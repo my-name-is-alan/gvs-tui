@@ -533,7 +533,7 @@ export async function downloadPlaylist(opts: {
   clear?: boolean
   threads?: number
   cb?: ProgressCB
-  select?: 'video' | 'audio'
+  select?: 'video' | 'audio' | 'muxed'
   /** Use the original JS CDN transport while RE handles HLS/merge/decryption. */
   transport?: 'node' | 're'
   refreshSource?: () => Promise<{ src: string; key?: string }>
@@ -586,11 +586,13 @@ export async function downloadPlaylist(opts: {
       '--save-dir', workDir,
       '--tmp-dir', workDir,
       '--save-name', 'download',
-      // A standalone audio media playlist is initially classified as Vid by RE.
-      // The caller already chose that exact audio playlist; do not drop it by type.
+      // video: drop embedded audio (帧享 HQ separate-audio path).
+      // muxed: keep A/V from one playlist (酷喵 TV / App).
+      // audio: auto-select; RE may label standalone audio as Vid.
       opts.select === 'video' ? '--select-video' : '--auto-select',
       ...(opts.select === 'video' ? ['best'] : []),
       ...(opts.select === 'video' ? ['--drop-audio', 'all', '--drop-subtitle', 'all'] : []),
+      ...(opts.select === 'muxed' ? ['--drop-subtitle', 'all'] : []),
       '--binary-merge',
       '--del-after-done', 'true',
       '--no-ansi-color',
@@ -966,6 +968,22 @@ export function youkuVideoPlaylist(data: Record<string, unknown>, want: string):
   }
   if (isObj(data.video)) return asString(data.video.playlist_url) || asString(data.video.url)
   return ''
+}
+
+
+/**
+ * 帧享 HQ（cmfv + 独立 audio playlist）才分轨下载。
+ * 酷喵 TV / App 等 HLS：视频 m3u8 自带音轨，不要强拉独立音轨或 --drop-audio。
+ */
+export function youkuUsesSeparateAudio(data: Record<string, unknown>, quality = ''): boolean {
+  const delivery = asString(data.audio_delivery).toLowerCase()
+  const st = (quality || (isObj(data.video) ? asString(data.video.stream_type) : '')).toLowerCase()
+  const hq = st.startsWith('cmfv')
+  if (delivery === 'muxed' && !hq) return false
+  if (!hq) return false
+  if (delivery === 'separate') return true
+  const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
+  return tracks.some((tr) => isObj(tr) && !!asString(tr.playlist_url))
 }
 
 export function youkuAudioPlaylist(data: Record<string, unknown>, want: string): string {
