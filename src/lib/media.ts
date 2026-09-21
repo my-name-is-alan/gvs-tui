@@ -137,6 +137,97 @@ export function pickURL(data: Record<string, unknown>): string {
   return ''
 }
 
+
+/** Friend-tool 原画 CDN (gateway play_tv_source.go). */
+export const TENCENT_SOURCE_CDN_HOST = 'https://videohywb.tc.qq.com'
+
+export type TencentDownloadPickOpts = {
+  stream?: string
+  caption?: string
+  needSource?: boolean
+  formatId?: string
+}
+
+function tencentSourceRow(raw: Record<string, unknown>): boolean {
+  const name = asString(raw.name).toLowerCase()
+  const stream = asString(raw.stream).toLowerCase()
+  return name === 'source' || name === 'original' || stream === 'original' || stream === 'source'
+}
+
+function tencentBuildSourceURL(fname: string, vkey: string): string {
+  const f = fname.trim()
+  const k = vkey.trim()
+  if (!f || !k) return ''
+  return `${TENCENT_SOURCE_CDN_HOST}/${f}?vkey=${encodeURIComponent(k)}`
+}
+
+/**
+ * Pick a downloadable Tencent URL from play().
+ * - Source/原画: prefer formats[] name=source with url, else build videohywb from fname+vkey.
+ * - Otherwise: pickURL (video.url / top-level / any format url), then match defn/caption/id.
+ */
+export function pickTencentDownloadURL(
+  data: Record<string, unknown>,
+  opts: TencentDownloadPickOpts = {},
+): string {
+  const stream = (opts.stream || '').trim().toLowerCase()
+  const wantSource =
+    !!opts.needSource || stream === 'source' || stream === 'original'
+
+  if (wantSource) {
+    const formats = Array.isArray(data.formats) ? data.formats : []
+    let sawSource = false
+    for (const raw of formats) {
+      if (!isObj(raw) || !tencentSourceRow(raw)) continue
+      sawSource = true
+      const existing = asString(raw.url) || asString(raw.playlist_url)
+      if (existing) return existing
+      const built = tencentBuildSourceURL(asString(raw.fname), asString(raw.vkey))
+      if (built) return built
+    }
+    if (sawSource) throw new Error('原画缺少 vkey/fname')
+    throw new Error('原画缺少 vkey/fname')
+  }
+
+  // Prefer explicit play URLs (gateway TV attachPlayURLs) before formats[].
+  if (isObj(data.video)) {
+    const u = asString(data.video.url) || asString(data.video.playlist_url)
+    if (u) return u
+  }
+  const top = asString(data.url) || asString(data.playlist_url)
+  if (top) return top
+
+  const wantCap = (opts.caption || '').trim().toLowerCase()
+  const wantId = (opts.formatId || '').trim()
+  const formats = Array.isArray(data.formats) ? data.formats : []
+  const hasHint = !!(stream || wantCap || wantId)
+  if (hasHint) {
+    let best = ''
+    let bestScore = -1
+    for (const raw of formats) {
+      if (!isObj(raw)) continue
+      const u = asString(raw.url) || asString(raw.playlist_url)
+      if (!u) continue
+      let score = 0
+      const name = asString(raw.name).toLowerCase()
+      const defn = asString(raw.defn).toLowerCase()
+      const cap = asString(raw.caption).toLowerCase()
+      const id = asString(raw.id)
+      if (wantId && id && id === wantId) score += 10
+      if (stream && (name === stream || defn === stream)) score += 5
+      if (wantCap && cap === wantCap) score += 3
+      if (score > bestScore) {
+        bestScore = score
+        best = u
+      }
+    }
+    if (best && bestScore > 0) return best
+  }
+
+  // Last resort: pickURL (video already checked; may hit first formats[] url).
+  return pickURL(data)
+}
+
 /**
  * afterQuality verify for Tencent: play often returns formats[] / has_url without
  * a top-level video.url. Treat that as success unless network_error / hard error.
