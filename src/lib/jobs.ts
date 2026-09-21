@@ -1,4 +1,5 @@
 import { tencentPlayInput } from './tencent-qr.ts'
+import { tencentPlayQualityInput } from './quality.ts'
 import { resolveHongguoDownload } from './hongguo.ts'
 import { mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { extname, join } from 'node:path'
@@ -31,6 +32,10 @@ export type DlTask = {
   episode: number
   height: number
   quality: string
+  /** Tencent TV caption soft|hard */
+  caption?: string
+  /** Tencent: request source=1 (原画) */
+  needSource?: boolean
   /** Audio tracks to mux in (空格勾选的那些）；空 = 只封平台默认音轨。 */
   audioTracks?: Array<{ id: string; label: string; lang: string; vid?: string }>
   group: string
@@ -242,7 +247,7 @@ async function dlTencent(
   retryNote: RetryNote,
 ): Promise<void> {
   emit('取链', 0.05, t.vid)
-  const play = () => cli.invoke('tencent', 'play', { vid: t.vid, defn: t.quality || 'fhd', ...tencentPlayInput(cfg) }, cli.extra(cfg, 'tencent'))
+  const play = () => cli.invoke('tencent', 'play', { vid: t.vid, ...tencentPlayQualityInput(t), ...tencentPlayInput(cfg) }, cli.extra(cfg, 'tencent'))
   let cdn = pickURL(await play())
   if (!cdn) throw new Error('腾讯没有 video.url')
   const raw = join(dir, `.${t.vid}.bin`)

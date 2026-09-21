@@ -23,7 +23,25 @@ export type Episode = {
   languages?: Array<{ vid: string; lang: string; langcode?: string }>
 }
 export type TMDBHit = { id: number; name: string; title: string; year: number; overview?: string }
-export type Quality = { id: string; label: string; title: string; size: number; width: number; height: number; codec: string; drm: string; tier?: number; audios?: Audio[] }
+export type Quality = {
+  id: string
+  label: string
+  title: string
+  size: number
+  width: number
+  height: number
+  codec: string
+  drm: string
+  tier?: number
+  audios?: Audio[]
+  /** soft | hard — 腾讯 TV caption */
+  caption?: string
+  fps?: number
+  /** play defn / format name (maxplus, fhd, source…) */
+  stream?: string
+  fname?: string
+  group?: 'main' | 'encode' | 'source'
+}
 /** Selectable audio track (only some platforms expose more than one). */
 export type Audio = { id: string; label: string; lang: string; codec: string; isDefault: boolean; selected: boolean; embedded?: boolean; vid?: string }
 export type Detail = {
