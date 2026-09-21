@@ -251,7 +251,12 @@ import {
   qualityResolution,
   QUALITY_COLS,
   sortTencentQualities,
+  tencentEncodeTag,
+  tencentPersonaKey,
   tencentPlayQualityInput,
+  tencentQualityBaseName,
+  tencentQualityDisplayLabel,
+  TENCENT_HEVC_FPS_ENCODE_TAGS,
 } from './quality.ts'
 import { displayWidth } from './text.ts'
 import { column } from './text.ts'
@@ -370,8 +375,8 @@ describe('quality table alignment helpers', () => {
   })
 
   test('header and row cell widths match QUALITY_COLS cell-for-cell', () => {
-    const headers = ['档位/名称', '字幕', '分辨率', 'fps', '体积', 'id', 'DRM']
-    const keys = ['label', 'caption', 'res', 'fps', 'size', 'id', 'drm'] as const
+    const headers = ['档位/名称', '字幕', '分辨率', 'fps', '体积', 'id', '编码']
+    const keys = ['label', 'caption', 'res', 'fps', 'size', 'id', 'encode'] as const
     const sample = {
       id: 'maxplus|soft|322095|l3_soft',
       formatId: '322095',
@@ -386,6 +391,7 @@ describe('quality table alignment helpers', () => {
       fps: 60,
       stream: 'maxplus',
       group: 'main' as const,
+      encodeTag: undefined as string | undefined,
     }
     const cells = [
       sample.label,
@@ -394,7 +400,7 @@ describe('quality table alignment helpers', () => {
       String(sample.fps),
       '4.8 GB',
       qualityFormatId(sample),
-      '无',
+      '—',
     ]
     for (let i = 0; i < keys.length; i++) {
       const w = QUALITY_COLS[keys[i]!]
@@ -409,8 +415,128 @@ describe('quality table alignment helpers', () => {
       QUALITY_COLS.fps +
       QUALITY_COLS.size +
       QUALITY_COLS.id +
-      QUALITY_COLS.drm
+      QUALITY_COLS.encode
     expect(fixed).toBeLessThanOrEqual(60)
+  })
+})
+
+describe('tencentEncodeTag mapping', () => {
+  test('strips soft/hard and 软/硬 suffixes', () => {
+    expect(tencentPersonaKey('default_软')).toBe('default')
+    expect(tencentPersonaKey('h264_硬')).toBe('h264')
+    expect(tencentPersonaKey('2741527771455_soft')).toBe('2741527771455')
+    expect(tencentPersonaKey('61111111016223_hard')).toBe('61111111016223')
+  })
+
+  test('maps default / h264 / known HEVC ids / unknown', () => {
+    expect(tencentEncodeTag('default_软')).toBe('默认')
+    expect(tencentEncodeTag('h264_软')).toBe('H264')
+    expect(tencentEncodeTag('l3_soft')).toBe('')
+    expect(tencentEncodeTag('source')).toBe('')
+    const expected = ['HEVC·A', 'HEVC·B', 'HEVC·C', 'HEVC·D', 'HEVC·E', 'HEVC·F']
+    const ids = Object.keys(TENCENT_HEVC_FPS_ENCODE_TAGS)
+    expect(ids).toEqual([
+      '2741517771455',
+      '2741527771455',
+      '9741517771455',
+      '5741917771647',
+      '61111111016223',
+      '2741527771647',
+    ])
+    expect(ids.map((id) => tencentEncodeTag(`${id}_硬`))).toEqual(expected)
+    expect(tencentEncodeTag('9999999991234_软')).toBe('编码·1234')
+  })
+})
+
+describe('tencent quality label disambiguation', () => {
+  test('prefers sname and strips ;(4K) from cname', () => {
+    expect(tencentQualityBaseName({ sname: '臻彩MAX+', cname: '臻彩MAX+;(4K)' }, 'maxplus')).toBe('臻彩MAX+')
+    expect(tencentQualityBaseName({ cname: '臻彩MAX+;(4K)' }, 'maxplus')).toBe('臻彩MAX+')
+  })
+
+  test('main/default stay clean; encode variants get · tag', () => {
+    expect(tencentQualityDisplayLabel('臻彩MAX+', 'main', '', 'l3_soft')).toBe('臻彩MAX+')
+    expect(tencentQualityDisplayLabel('臻彩MAX+', 'encode', '默认', 'default_软')).toBe('臻彩MAX+')
+    expect(tencentQualityDisplayLabel('臻彩MAX+', 'encode', 'H264', 'h264_软')).toBe('臻彩MAX+ · H264')
+    expect(tencentQualityDisplayLabel('臻彩MAX+', 'encode', 'HEVC·B', '2741527771455_硬')).toBe(
+      '臻彩MAX+ · HEVC·B',
+    )
+  })
+
+  test('encode=all catalog distinguishes same cname rows', () => {
+    const rows = qualitiesFromTencentFormats([
+      {
+        id: 322095,
+        name: 'maxplus',
+        cname: '臻彩MAX+;(4K)',
+        sname: '臻彩MAX+',
+        caption: 'soft',
+        width: 3840,
+        height: 2160,
+        persona: 'l3_soft',
+        fs: 5_000_000_000,
+      },
+      {
+        id: 322095,
+        name: 'maxplus',
+        cname: '臻彩MAX+;(4K)',
+        sname: '臻彩MAX+',
+        caption: 'soft',
+        width: 3840,
+        height: 2160,
+        persona: 'default_软',
+        fs: 5_100_000_000,
+      },
+      {
+        id: 322001,
+        name: 'maxplus',
+        cname: '臻彩MAX+;(4K)',
+        sname: '臻彩MAX+',
+        caption: 'soft',
+        width: 3840,
+        height: 2160,
+        persona: 'h264_软',
+        fs: 6_000_000_000,
+      },
+      {
+        id: 322002,
+        name: 'maxplus',
+        cname: '臻彩MAX+;(4K)',
+        sname: '臻彩MAX+',
+        caption: 'hard',
+        width: 3840,
+        height: 2160,
+        persona: '2741527771455_硬',
+        fs: 5_200_000_000,
+      },
+      {
+        id: 322003,
+        name: 'maxplus',
+        cname: '臻彩MAX+;(4K)',
+        sname: '臻彩MAX+',
+        caption: 'soft',
+        width: 3840,
+        height: 2160,
+        persona: '2741527771455_软',
+        fs: 5_150_000_000,
+      },
+    ])
+    const byPersona = Object.fromEntries(rows.map((r) => [r.persona!, r]))
+    expect(byPersona['l3_soft']!.label).toBe('臻彩MAX+')
+    expect(byPersona['l3_soft']!.group).toBe('main')
+    expect(byPersona['l3_soft']!.encodeTag).toBeUndefined()
+    expect(byPersona['default_软']!.label).toBe('臻彩MAX+')
+    expect(byPersona['default_软']!.encodeTag).toBe('默认')
+    expect(byPersona['default_软']!.group).toBe('encode')
+    expect(byPersona['h264_软']!.label).toBe('臻彩MAX+ · H264')
+    expect(byPersona['h264_软']!.encodeTag).toBe('H264')
+    expect(byPersona['2741527771455_软']!.label).toBe('臻彩MAX+ · HEVC·B')
+    expect(byPersona['2741527771455_硬']!.label).toBe('臻彩MAX+ · HEVC·B')
+    expect(byPersona['2741527771455_软']!.caption).toBe('soft')
+    expect(byPersona['2741527771455_硬']!.caption).toBe('hard')
+    // main first, then encode block
+    expect(rows[0]!.group).toBe('main')
+    expect(rows.slice(1).every((r) => r.group === 'encode')).toBe(true)
   })
 })
 
