@@ -1,4 +1,4 @@
-import { startTencentQR, pollTencentQR, tencentLabels, tencentPlayInput, type TencentMode } from './lib/tencent-qr.ts'
+import { startTencentQR, startTencentDualQR, pollTencentQR, pollTencentDualQR, tencentLabels, tencentPlayInput, type TencentMode } from './lib/tencent-qr.ts'
 import { Discovery, discoveryRows } from './lib/discovery'
 import { Navigation, moveCursor } from './lib/navigation'
 import { DownloadDraft } from './lib/download-draft'
@@ -43,7 +43,7 @@ import {
   type YkLogin,
 } from './lib/youku-session.ts'
 import { tmdbSearch } from './lib/tmdb.ts'
-import { clipTitle, extractDouyinURL, extractYoukuVideoId } from './lib/link.ts'
+import { clipTitle, extractDouyinURL, extractTencentLinks, extractYoukuVideoId } from './lib/link.ts'
 import { pickDouyinURL, pickURL } from './lib/media.ts'
 import { filename, sourceTag, dots, tierHeight } from './lib/name.ts'
 import { anyInt, asBool, asString, firstStr, isObj } from './lib/util.ts'
@@ -157,6 +157,9 @@ export class Runtime {
   private qrAscii = ''
   private qrPngPaths: string[] = []
   private qrTencent: TencentMode | null = null
+  /** When true, qr scene polls App+TV in parallel. */
+  private qrTencentDual = false
+  private qrDualDone = { app: false, tv: false }
   private qrHint = '用优酷 App 扫码登录'
   private qrTicket = ''
   private qrLoginToken = ''
@@ -383,7 +386,7 @@ export class Runtime {
         break
       case 'qr':
         if (k === 'esc') {
-          this.stopQR()
+          this.cancelQRScene()
           this.scene = 'settings'
         } else if (k === 'enter' || k === ' ') {
           void this.pollQR()
@@ -450,7 +453,7 @@ export class Runtime {
 
   private homeItems(): string[] {
     const items: string[] = []
-    if (this.has('douyin') || this.has('youku')) items.push('粘贴链接')
+    if (this.has('douyin') || this.has('youku') || this.has('tencent')) items.push('粘贴链接')
     items.push('搜索')
     if (this.has('hongguo') || this.has('youku') || this.has('tencent'))
       items.push('榜单')
@@ -464,15 +467,16 @@ export class Runtime {
       f.push('发布组')
     if (this.has('youku') || this.has('tencent')) f.push('TMDB Key')
     if (this.has('youku')) f.push('优酷扫码', '优酷 Cookie', '优酷登录')
-    if (this.has('tencent')) f.push('腾讯登录方式', '腾讯扫码', '腾讯 Cookie')
+    if (this.has('tencent')) f.push('腾讯登录方式', '腾讯扫码', '腾讯双扫码', '腾讯 Cookie')
     if (this.has('hongguo')) f.push('红果合并', '红果 NFO', '红果封装')
     return f
   }
 
   private settingValue(f: string): string {
-    if (Object.values(tencentLabels).includes(f)) return '独立扫码 · 不覆盖其他 Cookie'
+    if ((Object.values(tencentLabels) as string[]).includes(f)) return '独立扫码 · 不覆盖其他 Cookie'
     if (f === '腾讯登录方式') return ({cookie:'手动 Cookie',web:'网页 QQ',app:'腾讯 App（网页授权）',tv:'极光 TV'} as const)[this.cfg.tencentMode || 'cookie']
     if (f === '腾讯扫码') return this.cfg.tencentMode === 'cookie' || !this.cfg.tencentMode ? '先选择扫码登录方式' : '回车出码 · 会话独立保存'
+    if (f === '腾讯双扫码') return 'App + 极光 TV 同时出码并轮询'
     if (f === '腾讯 TV 设备 ID') return this.cfg.tencentTVDevice ? '已配置' : '未配置'
     if (f === '腾讯 TV QUA') return this.cfg.tencentTVQUA ? '已配置' : '未配置'
     if (f === '腾讯 TV 版本') return this.cfg.tencentTVVersion || '未配置'
@@ -1177,13 +1181,18 @@ export class Runtime {
       return
     }
     const yk = extractYoukuVideoId(query),
-      dy = extractDouyinURL(query)
+      dy = extractDouyinURL(query),
+      txLinks = extractTencentLinks(query)
     if (yk) {
       void this.downloadYoukuLink(yk)
       return
     }
     if (dy) {
       void this.downloadDouyin('', '', dy)
+      return
+    }
+    if (txLinks.length && this.has('tencent')) {
+      void this.openTencentLinks(txLinks)
       return
     }
     void this.search(p, query)
@@ -1430,7 +1439,7 @@ export class Runtime {
         '优酷登录',
         '优酷扫码',
         '优酷 Cookie',
-        '腾讯 Cookie', '腾讯扫码',
+        '腾讯 Cookie', '腾讯扫码', '腾讯双扫码',
       ].includes(f)
     ) {
       this.say('离线演示不连接账号服务；可测试目录、命名和封装设置')
@@ -1486,10 +1495,31 @@ export class Runtime {
       this.cfg.tencentMode = modes[(modes.indexOf(this.cfg.tencentMode || 'cookie')+1)%modes.length]
       this.persistConfig(); this.emit(); return
     }
-    if (f === '腾讯扫码' && (!this.cfg.tencentMode || this.cfg.tencentMode === 'cookie')) { this.say('先在腾讯登录方式选择网页 QQ 或极光 TV', 'info'); this.emit(); return }
+    if (f === '腾讯双扫码' && this.cli) {
+      this.stopQR()
+      this.qrTencent = null
+      this.qrTencentDual = true
+      this.qrDualDone = { app: false, tv: false }
+      this.qrHint = '同时扫两张码：腾讯视频 App（左/先打开）+ 云视听极光 TV；会话各自独立保存'
+      try {
+        const paths = await this.work(() => startTencentDualQR(this.cli!, this.cfg))
+        this.qrPngPaths = [paths.appPath, paths.tvPath]
+        this.qrAscii = ''
+        this.scene = 'qr'
+        this.say('App 与 TV 二维码已保存本机并尝试打开；先扫任意一张均可', 'info')
+        this.startQRPoll()
+      } catch (e) {
+        this.qrTencentDual = false
+        this.say(e instanceof Error ? e.message : String(e), 'err')
+      }
+      this.emit()
+      return
+    }
+    if (f === '腾讯扫码' && (!this.cfg.tencentMode || this.cfg.tencentMode === 'cookie')) { this.say('先在腾讯登录方式选择网页 QQ / App / 极光 TV，或用「腾讯双扫码」', 'info'); this.emit(); return }
     const txMode = f === '腾讯扫码' ? this.cfg.tencentMode as TencentMode : undefined
     if (txMode && this.cli) {
       this.stopQR()
+      this.qrTencentDual = false
       this.qrTencent = txMode
       this.qrHint = txMode === 'web' ? '手机 QQ 扫码（网页方式历史上有风控）；独立保存网页会话' : txMode === 'tv' ? '云视听极光扫码；独立保存 TV 会话' : '腾讯视频 App 扫码；保存网页授权，手机播放尚未适配'
       try {
@@ -1502,6 +1532,7 @@ export class Runtime {
     }
     if (f === '优酷扫码') {
       this.qrTencent = null
+      this.qrTencentDual = false
       this.qrHint = '用优酷 App 扫码登录，登录态会写进本机'
 
       if (!this.cli) return
@@ -1860,17 +1891,42 @@ export class Runtime {
     const generation = this.requestGeneration
     if (!this.simulated && this.detailProv === 'tencent') {
       try {
-        const first = this.pending[0]
-        const result = await this.work(() =>
-          this.cli!.invoke(
-            'tencent',
-            'play',
-            { vid: first.vid, defn: first.quality, ...tencentPlayInput(this.cfg) },
-            this.cli!.extra(this.cfg, 'tencent'),
-          ),
-        )
-        if (generation !== this.requestGeneration) return
-        if (!pickURL(result)) throw new Error('选定画质没有返回可用视频地址')
+        const targets = this.pending.slice(0, 2)
+        if (targets.length >= 2) {
+          const result = await this.work(() =>
+            this.cli!.invoke(
+              'tencent',
+              'play',
+              {
+                vid: targets[0]!.vid,
+                vid2: targets[1]!.vid,
+                defn: targets[0]!.quality,
+                ...tencentPlayInput(this.cfg),
+              },
+              this.cli!.extra(this.cfg, 'tencent'),
+            ),
+          )
+          if (generation !== this.requestGeneration) return
+          const ok =
+            pickURL(result) ||
+            (Array.isArray(result.videos) &&
+              result.videos.some(
+                (v) => v && typeof v === 'object' && pickURL(v as Record<string, unknown>),
+              ))
+          if (!ok) throw new Error('双流探测：选定画质没有返回可用视频地址')
+        } else {
+          const first = targets[0]!
+          const result = await this.work(() =>
+            this.cli!.invoke(
+              'tencent',
+              'play',
+              { vid: first.vid, defn: first.quality, ...tencentPlayInput(this.cfg) },
+              this.cli!.extra(this.cfg, 'tencent'),
+            ),
+          )
+          if (generation !== this.requestGeneration) return
+          if (!pickURL(result)) throw new Error('选定画质没有返回可用视频地址')
+        }
       } catch (e) {
         if (generation !== this.requestGeneration) return
         this.searching = false
@@ -2175,6 +2231,83 @@ export class Runtime {
     this.emit()
   }
 
+
+  /** Paste one or two Tencent HTML page URLs → detail (cid) or dual-ep detail (vids). */
+  private async openTencentLinks(
+    links: Array<{ vid: string; cid: string; url: string }>,
+  ): Promise<void> {
+    if (!this.cli || !links.length) return
+    const generation = ++this.requestGeneration
+    this.detailProv = 'tencent'
+    const withCid = links.find((l) => l.cid)
+    if (withCid?.cid && (links.length === 1 || links.every((l) => !l.vid || l.cid === withCid.cid))) {
+      this.detailId = withCid.cid
+      await this.detail('tencent', withCid.cid)
+      return
+    }
+    const vids = links.map((l) => l.vid).filter(Boolean)
+    if (!vids.length && withCid?.cid) {
+      this.detailId = withCid.cid
+      await this.detail('tencent', withCid.cid)
+      return
+    }
+    if (!vids.length) {
+      this.say('腾讯链接里没有 vid/cid，换一条 HTML 页链接', 'warn')
+      this.emit()
+      return
+    }
+    try {
+      const input: Record<string, string> =
+        vids.length >= 2
+          ? { vid: vids[0]!, vid2: vids[1]! }
+          : links[0]!.url
+            ? { url: links[0]!.url }
+            : { vid: vids[0]! }
+      if (links[1]?.url && vids.length >= 2) input.url2 = links[1].url
+      const data = await this.work(() => this.cli!.invoke('tencent', 'resolve', input))
+      if (generation !== this.requestGeneration) return
+      const title = asString(data.title) || links[0]!.cid || '腾讯视频'
+      this.detailTitle = title
+      this.detailId = asString(data.cid) || links[0]!.cid || vids[0]!
+      const dualRows: Array<Record<string, unknown>> =
+        Array.isArray(data.videos) && data.videos.length >= 2
+          ? (data.videos as Array<Record<string, unknown>>)
+          : vids.map((vid, i) => ({ vid, title: i === 0 ? title : vid }))
+      this.eps = dualRows.slice(0, 2).map((row, i) => ({
+        vid: asString(row.vid) || vids[i] || '',
+        title: asString(row.title) || `视频 ${i + 1}`,
+        number: i + 1,
+        selected: true,
+      }))
+      this.detailInfo = {
+        title: this.detailTitle,
+        desc: links.length >= 2 ? '双链粘贴 · 两个播放目标' : '',
+        category: '',
+        tags: [],
+        score: '',
+        episodes: this.eps.length,
+        duration: 0,
+        vip: false,
+        drm: '',
+        kind: links.length >= 2 ? 'movie' : 'show',
+        year: 0,
+      }
+      this.cursor = 0
+      this.probeFailed = false
+      this.scene = 'detail'
+      this.say(
+        links.length >= 2
+          ? '已解析两个腾讯播放目标 · 空格可改选，Enter 取双流'
+          : `${this.detailTitle} · 1 个视频`,
+        'ok',
+      )
+    } catch (e) {
+      if (generation !== this.requestGeneration) return
+      this.say(e instanceof Error ? e.message : String(e), 'err')
+    }
+    this.emit()
+  }
+
   private async detail(provider: string, id: string): Promise<void> {
     if (!this.cli) return
     const generation = ++this.requestGeneration
@@ -2271,7 +2404,7 @@ export class Runtime {
     void this.pollQR()
     this.qrTimer = setInterval(() => {
       void this.pollQR()
-    }, this.qrTencent ? 3500 : 1500)
+    }, this.qrTencent || this.qrTencentDual ? 3500 : 1500)
   }
 
   private stopQR(): void {
@@ -2282,11 +2415,53 @@ export class Runtime {
     this.qrBusy = false
   }
 
+  private cancelQRScene(): void {
+    this.stopQR()
+    this.qrTencent = null
+    this.qrTencentDual = false
+    this.qrDualDone = { app: false, tv: false }
+    this.qrPngPaths = []
+    this.qrAscii = ''
+  }
+
   private async pollQR(): Promise<void> {
     if (this.scene !== 'qr' || !this.cli || this.qrBusy) return
-    if (!this.qrTencent && !this.qrTicket && !this.qrLoginToken) return
+    if (!this.qrTencentDual && !this.qrTencent && !this.qrTicket && !this.qrLoginToken) return
     this.qrBusy = true
     try {
+      if (this.qrTencentDual) {
+        const data = await pollTencentDualQR(this.cli)
+        if (this.scene !== 'qr' || !this.qrTencentDual) return
+        const mark = (side: 'app' | 'tv', row: Record<string, unknown>) => {
+          if (row.logged_in === true) this.qrDualDone[side] = true
+          if (row.status === 'expired' || row.status === 'cancelled') {
+            this.say(
+              side === 'app'
+                ? (row.status === 'cancelled' ? 'App 码已取消，请重新双扫' : 'App 码已过期，请重新双扫')
+                : (row.status === 'cancelled' ? 'TV 码已取消，请重新双扫' : 'TV 码已过期，请重新双扫'),
+              'warn',
+            )
+          }
+        }
+        mark('app', data.app)
+        mark('tv', data.tv)
+        if (this.qrDualDone.app && this.qrDualDone.tv) {
+          this.cfg.tencentMode = 'tv'
+          this.persistConfig()
+          this.say('App 与 TV 双扫均已登录；默认播放会话切到极光 TV（可在登录方式改回 App）', 'ok')
+          this.scene = 'settings'
+          this.qrTencentDual = false
+          this.stopQR()
+        } else if (this.qrDualDone.app || this.qrDualDone.tv) {
+          const done = this.qrDualDone.app ? 'App' : 'TV'
+          const wait = this.qrDualDone.app ? 'TV' : 'App'
+          this.say(`${done} 已登录 · 仍等待 ${wait} 扫码确认`, 'info')
+        } else {
+          this.say('等待 App / TV 双扫确认', 'info')
+        }
+        this.emit()
+        return
+      }
       if (this.qrTencent) {
         const mode = this.qrTencent
         const data = await pollTencentQR(this.cli, mode)

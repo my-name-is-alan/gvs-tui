@@ -223,7 +223,7 @@ const SCENE_TITLES: Record<string, string> = {
 }
 
 const HOME_DESC: Record<string, string> = {
-  粘贴链接: '优酷网页链接 / 抖音分享口令，直接解析下载',
+  粘贴链接: '优酷 / 腾讯 HTML 页链接 / 抖音分享口令，直接解析',
   搜索: '按标题在所选平台搜索',
   榜单: '平台热榜，找片最快',
   任务: '下载队列与进度',
@@ -1318,7 +1318,7 @@ function jobLine(job: Job): StyledText {
       >
         <Text
           :content="
-            ink(c.faint, '粘贴优酷视频链接或抖音分享口令，也可搜索标题')
+            ink(c.faint, '粘贴优酷 / 腾讯 v.qq.com 页链接或抖音口令，也可搜索标题')
           "
           :height="1"
         />
@@ -1353,7 +1353,7 @@ function jobLine(job: Job): StyledText {
             ref="searchField"
             v-model="query"
             autofocus
-            placeholder="搜片名，或粘贴节目链接"
+            placeholder="搜片名，或粘贴优酷/腾讯/抖音链接"
             :backgroundColor="c.sunken"
             :focusedBackgroundColor="c.sunken"
             :textColor="c.text"
