@@ -17,6 +17,10 @@ export type FileConfig = {
   tencentCookie: string
   /** Opt-in: probe play with encode=all (风控敏感，默认关) */
   tencentEncodeAll?: boolean
+  /** Opt-in: catalog probe with source=1 / 原画 (默认关，易触发权益锁) */
+  tencentProbeSource?: boolean
+  /** Opt-in: catalog probe with caption=all (默认关；默认只探 soft) */
+  tencentCaptionAll?: boolean
   hongguoMerge: boolean
   hongguoNfo: boolean
   hongguoFmt: string

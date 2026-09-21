@@ -520,7 +520,9 @@ export class Runtime {
     if (this.has('youku') || this.has('tencent')) f.push('TMDB Key')
     if (this.has('youku')) f.push('优酷扫码', '优酷登录')
     if (this.has('tencent')) f.push('腾讯双扫码', '腾讯 Cookie', '腾讯登录')
-    if (this.has('tencent')) f.push('腾讯 encode=all')
+    if (this.has('tencent')) {
+      f.push('腾讯 caption=all', '腾讯探测原画', '腾讯 encode=all')
+    }
     if (this.has('hongguo')) f.push('红果合并', '红果 NFO', '红果封装')
     f.push('运行日志')
     return f
@@ -572,6 +574,10 @@ export class Runtime {
             : '检查中…（回车刷新）'
       case '腾讯 Cookie':
         return this.cfg.tencentCookie ? '已保存' : '空 · 回车粘贴'
+      case '腾讯 caption=all':
+        return this.cfg.tencentCaptionAll ? '开（软+硬字幕）' : '关（默认 soft）'
+      case '腾讯探测原画':
+        return this.cfg.tencentProbeSource ? '开（source=1）' : '关（默认）'
       case '腾讯 encode=all':
         return this.cfg.tencentEncodeAll ? '开（风控敏感）' : '关（默认）'
       case '红果合并':
@@ -1627,6 +1633,30 @@ export class Runtime {
     }
     if (f === 'Yk-Sign') {
       this.say('登录态由扫码写入，不能手改。', 'warn')
+      this.emit()
+      return
+    }
+    if (f === '腾讯 caption=all') {
+      this.cfg.tencentCaptionAll = !this.cfg.tencentCaptionAll
+      this.persistConfig()
+      this.say(
+        this.cfg.tencentCaptionAll
+          ? '已开启 caption=all 探测（软+硬，请求更重）'
+          : '已关闭 caption=all（默认只探 soft）',
+        'ok',
+      )
+      this.emit()
+      return
+    }
+    if (f === '腾讯探测原画') {
+      this.cfg.tencentProbeSource = !this.cfg.tencentProbeSource
+      this.persistConfig()
+      this.say(
+        this.cfg.tencentProbeSource
+          ? '已开启画质列表 source=1 / 原画探测（易触发权益锁）'
+          : '已关闭画质列表原画探测（默认；选原画档仍会带 source=1）',
+        'ok',
+      )
       this.emit()
       return
     }
