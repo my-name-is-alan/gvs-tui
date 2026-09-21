@@ -1,5 +1,11 @@
 # 优酷下载与播放回归验证
 
+
+## 音轨分轨策略（帧享 HQ vs 酷喵 TV / App）
+
+- **帧享 HQ**（视频 `stream_type` 以 `cmfv` 开头，且存在独立 `audio_tracks[].playlist_url`）：分轨下载视频+音轨再混流；下载视频时 `--drop-audio`。
+- **非 HQ**（酷喵 TV / App 等 HLS）：视频 m3u8 **自带**音轨。不要强拉独立音轨、不要因缺 audio URL 失败，也不要复用 HQ 的 cmfa 去叠到 HLS 上（避免空音轨 / 重复混流）。网关字段 `audio_delivery`=`separate|muxed` 可作提示，最终以所选画质是否为 `cmfv*` 为准。
+
 本次改动修复 CDN 链接失效后的换链续传，以及分轨合并时丢失原始相对起点的问题。不能据此推断所有播放器上的口型同步已经验证通过。
 
 ## 启动

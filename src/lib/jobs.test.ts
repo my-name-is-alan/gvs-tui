@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { JobHub, cleanupOutputCaches, jobTitle, patchJob, youkuDRM, type DlTask } from './jobs.ts'
-import { youkuAudioPlaylist, youkuVideoPlaylist } from './media.ts'
+import { youkuAudioPlaylist, youkuUsesSeparateAudio, youkuVideoPlaylist } from './media.ts'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
 
@@ -119,4 +119,33 @@ test('finished download removes leftover cache folders next to the file', () => 
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+
+test('youku separate audio only for 帧享 HQ cmfv with playlist', () => {
+  const hq = {
+    audio_delivery: 'separate',
+    video: { stream_type: 'cmfv5hd4_dolbyvision_hfr_hbr_hq', playlist_url: 'https://v.m3u8' },
+    audio_tracks: [{ stream_type: 'cmfa4hd5_atmos51', playlist_url: 'https://a.m3u8', default: true }],
+  }
+  expect(youkuUsesSeparateAudio(hq, 'cmfv5hd4_dolbyvision_hfr_hbr_hq')).toBe(true)
+  expect(youkuUsesSeparateAudio(hq, '')).toBe(true)
+
+  const tv = {
+    audio_delivery: 'muxed',
+    video: { stream_type: 'hls5hd3', playlist_url: 'https://hls.m3u8' },
+    // leftover HQ inventory must NOT force separate download on TV/App
+    audio_tracks: [{ stream_type: 'cmfa4hd5_atmos51', playlist_url: 'https://hq-a.m3u8' }],
+  }
+  expect(youkuUsesSeparateAudio(tv, 'hls5hd3')).toBe(false)
+  expect(youkuUsesSeparateAudio(tv, 'hls5hd4_sdr_hfr_hbr_bit10_hq')).toBe(false)
+
+  // selecting HLS quality on a response that still advertises separate delivery
+  expect(youkuUsesSeparateAudio({ ...hq, audio_delivery: 'separate' }, 'hls5hd3')).toBe(false)
+
+  const invOnly = {
+    video: { stream_type: 'cmfv5hd4_sdr_hfr_hbr_bit10_hq' },
+    audio_tracks: [{ stream_type: 'cmfa1hd3' }],
+  }
+  expect(youkuUsesSeparateAudio(invOnly, 'cmfv5hd4_sdr_hfr_hbr_bit10_hq')).toBe(false)
 })
