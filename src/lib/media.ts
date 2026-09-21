@@ -124,7 +124,72 @@ export function pickURL(data: Record<string, unknown>): string {
     const u = asString(data.video.url) || asString(data.video.playlist_url)
     if (u) return u
   }
-  return asString(data.url)
+  const top = asString(data.url)
+  if (top) return top
+  // Tencent TV / catalog play may only put playlist on formats[] rows.
+  if (Array.isArray(data.formats)) {
+    for (const raw of data.formats) {
+      if (!isObj(raw)) continue
+      const u = asString(raw.url) || asString(raw.playlist_url)
+      if (u) return u
+    }
+  }
+  return ''
+}
+
+/**
+ * afterQuality verify for Tencent: play often returns formats[] / has_url without
+ * a top-level video.url. Treat that as success unless network_error / hard error.
+ */
+export function tencentPlayProbeOk(data: Record<string, unknown>): {
+  ok: boolean
+  via?: string
+  reason?: string
+} {
+  const network =
+    data.network_error === true ||
+    data.network_error === 1 ||
+    asString(data.network_error).toLowerCase() === 'true'
+  const err = asString(data.error)
+  const em = asString(data.em)
+  if (network) {
+    return {
+      ok: false,
+      reason: friendlyTencentPlayError(err || em || 'TV play request failed', true),
+    }
+  }
+  if (err) {
+    return { ok: false, reason: friendlyTencentPlayError(err, false) }
+  }
+
+  if (pickURL(data)) return { ok: true, via: 'url' }
+  if (data.has_url === true || asString(data.has_url) === 'true' || data.has_url === 1) {
+    return { ok: true, via: 'has_url' }
+  }
+  if (Array.isArray(data.formats) && data.formats.length > 0) {
+    // Soft em (empty / info) with a formats catalog is still a usable probe.
+    if (em && /fail|error|拒绝|不可用|超时|timeout|denied/i.test(em) && !pickURL(data)) {
+      return { ok: false, reason: friendlyTencentPlayError(em, false) }
+    }
+    return { ok: true, via: 'formats' }
+  }
+  if (Array.isArray(data.videos)) {
+    for (const v of data.videos) {
+      if (v && typeof v === 'object' && pickURL(v as Record<string, unknown>)) {
+        return { ok: true, via: 'videos' }
+      }
+    }
+  }
+  if (em) return { ok: false, reason: friendlyTencentPlayError(em, false) }
+  return { ok: false, reason: '选定画质没有返回可用视频地址' }
+}
+
+function friendlyTencentPlayError(raw: string, network: boolean): string {
+  const s = raw.trim()
+  if (!s) return network ? '腾讯取流网络错误' : '腾讯取流失败'
+  if (/TV play request failed/i.test(s)) return '腾讯 TV 取流请求失败'
+  if (/network/i.test(s)) return `腾讯取流网络错误：${s}`
+  return s
 }
 
 export function pickDouyinURL(data: Record<string, unknown>): string {
