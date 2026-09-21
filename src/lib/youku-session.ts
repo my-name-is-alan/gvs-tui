@@ -173,9 +173,9 @@ export function parseYkAccount(data: Record<string, unknown>): YkAccount {
     // 扫码时带回来的权益快照：能显示，但别当权威（到期时间看不到）。
     out.vipSource = 'login'
     out.isVip = true
-    out.hint = '会员到期查看需网页 Cookie（设置 → 优酷 Cookie）'
+    out.hint = '会员到期查看需网页 Cookie（扫码登录（网页 Cookie 接口仅作内部续期））'
   } else {
-    out.hint = '会员接口需要网页 Cookie（设置 → 优酷 Cookie）；能不能放看画质页的取流结果'
+    out.hint = '会员接口需要网页 Cookie（扫码登录（网页 Cookie 接口仅作内部续期））；能不能放看画质页的取流结果'
   }
 
   // 有 App 凭证就不算掉登录 —— 会员接口失败与登录态无关。

@@ -1,4 +1,5 @@
-import { startTencentQR, startTencentDualQR, pollTencentQR, pollTencentDualQR, tencentLabels, tencentPlayInput, type TencentMode } from './lib/tencent-qr.ts'
+import { startTencentDualQR, pollTencentQR, pollTencentDualQR, tencentLabels, tencentPlayInput, type TencentMode } from './lib/tencent-qr.ts'
+import { fetchTencentAccount, txAccountSummary, type TxAccount } from './lib/tencent-account.ts'
 import { Discovery, discoveryRows } from './lib/discovery'
 import { Navigation, moveCursor } from './lib/navigation'
 import { DownloadDraft } from './lib/download-draft'
@@ -27,7 +28,6 @@ import { moviePlayables, probeOptions, youkuEditionsFromDetail } from './lib/qua
 import { runTunnel } from './lib/tunnel.ts'
 import {
   hostIsLocal,
-  importYoukuCookie,
   pollYoukuQR,
   startYoukuQR,
 } from './lib/youku-qr.ts'
@@ -127,6 +127,7 @@ export class Runtime {
   private ykLogin: YkLogin | null = null
   /** 账号与会员真实状态（account/profile）。 */
   private ykAcct: YkAccount | null = null
+  private txAcct: TxAccount | null = null
   /** 最近一次取流带回来的权益真相（play 的 quality_gate）。 */
   private vipProbe: VipProbe | null = null
   /** 本机 Yk-Sign 已不在网关凭证库里（cred info 报 not found/revoked/invalid）。 */
@@ -267,7 +268,8 @@ export class Runtime {
       return
     }
     const k = normKey(name, mods.shift)
-    if (mods.alt && ['1', '2', '3'].includes(k)) {
+    // Alt/⌥+1..3 (Mac) or Ctrl+1..3 (Windows Terminal steals Alt+digit for tabs).
+    if ((mods.alt || mods.ctrl) && ['1', '2', '3'].includes(k)) {
       const p = ['youku', 'tencent', 'hongguo'][Number(k) - 1]
       if (this.has(p)) {
         this.requestGeneration++
@@ -466,17 +468,16 @@ export class Runtime {
     if (this.has('youku') || this.has('tencent') || this.has('hongguo'))
       f.push('发布组')
     if (this.has('youku') || this.has('tencent')) f.push('TMDB Key')
-    if (this.has('youku')) f.push('优酷扫码', '优酷 Cookie', '优酷登录')
-    if (this.has('tencent')) f.push('腾讯登录方式', '腾讯扫码', '腾讯双扫码', '腾讯 Cookie')
+    if (this.has('youku')) f.push('优酷扫码', '优酷登录')
+    if (this.has('tencent')) f.push('腾讯双扫码', '腾讯 Cookie', '腾讯登录')
     if (this.has('hongguo')) f.push('红果合并', '红果 NFO', '红果封装')
     return f
   }
 
   private settingValue(f: string): string {
     if ((Object.values(tencentLabels) as string[]).includes(f)) return '独立扫码 · 不覆盖其他 Cookie'
-    if (f === '腾讯登录方式') return ({cookie:'手动 Cookie',web:'网页 QQ',app:'腾讯 App（网页授权）',tv:'极光 TV'} as const)[this.cfg.tencentMode || 'cookie']
-    if (f === '腾讯扫码') return this.cfg.tencentMode === 'cookie' || !this.cfg.tencentMode ? '先选择扫码登录方式' : '回车出码 · 会话独立保存'
-    if (f === '腾讯双扫码') return 'App + 极光 TV 同时出码并轮询'
+    if (f === '腾讯双扫码') return '默认 · App + 极光 TV 同时出码并轮询'
+    if (f === '腾讯登录') return this.txAcct ? txAccountSummary(this.txAcct) : '回车刷新账号信息'
     if (f === '腾讯 TV 设备 ID') return this.cfg.tencentTVDevice ? '已配置' : '未配置'
     if (f === '腾讯 TV QUA') return this.cfg.tencentTVQUA ? '已配置' : '未配置'
     if (f === '腾讯 TV 版本') return this.cfg.tencentTVVersion || '未配置'
@@ -507,8 +508,8 @@ export class Runtime {
         return this.cfg.releaseGroup || '未设'
       case 'TMDB Key':
         return this.cfg.tmdbKey ? '已配置' : '未配置'
-      case '优酷 Cookie':
-        return '粘贴浏览器 Cookie（含 P_sck）'
+      case '优酷扫码':
+        return '仅支持扫码登录（不再提供 Cookie 导入）'
       case '优酷登录':
         if (!this.cfg.youkuSign) return '未登录 · 回车扫码'
         if (this.signMissing) return '本机签名已不在网关凭证库 · 回车重新扫码'
@@ -1438,8 +1439,7 @@ export class Runtime {
         'Key',
         '优酷登录',
         '优酷扫码',
-        '优酷 Cookie',
-        '腾讯 Cookie', '腾讯扫码', '腾讯双扫码',
+        '腾讯 Cookie', '腾讯双扫码', '腾讯登录',
       ].includes(f)
     ) {
       this.say('离线演示不连接账号服务；可测试目录、命名和封装设置')
@@ -1490,11 +1490,6 @@ export class Runtime {
       this.emit()
       return
     }
-    if (f === '腾讯登录方式') {
-      const modes = ['cookie','web','app','tv'] as const
-      this.cfg.tencentMode = modes[(modes.indexOf(this.cfg.tencentMode || 'cookie')+1)%modes.length]
-      this.persistConfig(); this.emit(); return
-    }
     if (f === '腾讯双扫码' && this.cli) {
       this.stopQR()
       this.qrTencent = null
@@ -1515,20 +1510,9 @@ export class Runtime {
       this.emit()
       return
     }
-    if (f === '腾讯扫码' && (!this.cfg.tencentMode || this.cfg.tencentMode === 'cookie')) { this.say('先在腾讯登录方式选择网页 QQ / App / 极光 TV，或用「腾讯双扫码」', 'info'); this.emit(); return }
-    const txMode = f === '腾讯扫码' ? this.cfg.tencentMode as TencentMode : undefined
-    if (txMode && this.cli) {
-      this.stopQR()
-      this.qrTencentDual = false
-      this.qrTencent = txMode
-      this.qrHint = txMode === 'web' ? '手机 QQ 扫码（网页方式历史上有风控）；独立保存网页会话' : txMode === 'tv' ? '云视听极光扫码；独立保存 TV 会话' : '腾讯视频 App 扫码；保存网页授权，手机播放尚未适配'
-      try {
-        const path = await this.work(() => startTencentQR(this.cli!, this.cfg, txMode))
-        this.qrPngPaths = [path]; this.qrAscii = ''; this.scene = 'qr'
-        this.say('二维码已保存本机；扫码不会修改手贴 Cookie', 'info')
-        this.startQRPoll()
-      } catch(e) { this.say(e instanceof Error ? e.message : String(e), 'err') }
-      this.emit(); return
+    if (f === '腾讯登录') {
+      await this.refreshTencentAccount(true)
+      return
     }
     if (f === '优酷扫码') {
       this.qrTencent = null
@@ -1567,7 +1551,7 @@ export class Runtime {
       return
     }
     if (f === 'Yk-Sign') {
-      this.say('登录态由扫码或导入 Cookie 写入，不能手改。', 'warn')
+      this.say('登录态由扫码写入，不能手改。', 'warn')
       this.emit()
       return
     }
@@ -1642,59 +1626,14 @@ export class Runtime {
       case '腾讯 TV 版本': this.cfg.tencentTVVersion = v; break
       case '腾讯 Cookie':
         this.cfg.tencentCookie = v
+        this.cfg.tencentMode = 'cookie'
         break
-      case '优酷 Cookie':
-        if (!v) {
-          this.say('Cookie 为空', 'warn')
-          this.scene = 'settings'
-          this.emit()
-          return
-        }
-        if (!this.cli) return
-        this.scene = 'settings'
-        this.say('正在导入优酷 Cookie…')
-        this.emit()
-        try {
-          const imported = await this.work(() =>
-            importYoukuCookie(this.cli!, v),
-          )
-          this.cfg.youkuSign = imported.sign
-          this.persistConfig()
-          this.signMissing = false
-          this.ykLogin = null
-          this.ykAcct = imported.accountInfo
-            ? parseYkAccount(imported.accountInfo)
-            : null
-          if (this.ykAcct) {
-            this.ykLogin = await ykLoginInfo(this.cli, this.cfg.youkuSign)
-            this.say(
-              `优酷 Cookie 已导入 · ${accountSummary(this.ykAcct)}`,
-              this.ykAcct.needsScan ? 'warn' : 'ok',
-            )
-          } else if (this.tunnelOk) {
-            await this.ensureYouku()
-            const account = this.ykAcct as YkAccount | null
-            this.say(
-              `优酷 Cookie 已导入 · ${accountSummary(account)}`,
-              account?.needsScan ? 'warn' : 'ok',
-            )
-          } else {
-            this.say('优酷 Cookie 已导入，等待隧道连接后查询账户', 'ok')
-            this.queueEnsureYouku()
-          }
-        } catch (e) {
-          this.say(
-            `Cookie 导入失败：${e instanceof Error ? e.message : e}`,
-            'err',
-          )
-        }
-        this.emit()
-        return
     }
     this.persistConfig()
     this.say(`${this.editField} 已保存`, 'ok')
     this.scene = 'settings'
     this.emit()
+    if (this.editField === '腾讯 Cookie') void this.refreshTencentAccount(false)
   }
 
   private isMovie(): boolean {
@@ -2448,7 +2387,8 @@ export class Runtime {
         if (this.qrDualDone.app && this.qrDualDone.tv) {
           this.cfg.tencentMode = 'tv'
           this.persistConfig()
-          this.say('App 与 TV 双扫均已登录；默认播放会话切到极光 TV（可在登录方式改回 App）', 'ok')
+          this.say('App 与 TV 双扫均已登录；默认播放会话切到极光 TV', 'ok')
+          void this.refreshTencentAccount(false)
           this.scene = 'settings'
           this.qrTencentDual = false
           this.stopQR()
@@ -2498,11 +2438,39 @@ export class Runtime {
       this.say(`等待扫码确认 · 已轮询 ${this.qrPolls} 次`, 'info')
       this.emit()
     } catch (e) {
-      this.say(e instanceof Error ? e.message : String(e), 'err')
+      const msg = e instanceof Error ? e.message : String(e)
+      if (
+        this.qrTencentDual &&
+        /missing result code|QRCodeStatus|request failed|polling/i.test(msg)
+      ) {
+        this.say('等待 App / TV 双扫确认（网关轮询中）', 'info')
+      } else {
+        this.say(msg, 'err')
+      }
       this.emit()
     } finally {
       this.qrBusy = false
     }
+  }
+
+  private async refreshTencentAccount(announce: boolean): Promise<void> {
+    if (!this.cli) {
+      if (announce) this.say('未连接网关', 'warn')
+      return
+    }
+    if (announce) {
+      this.say('正在查询腾讯账号…')
+      this.emit()
+    }
+    try {
+      this.txAcct = await this.work(() => fetchTencentAccount(this.cli!))
+      if (announce) {
+        this.say(txAccountSummary(this.txAcct), this.txAcct.loggedIn ? 'ok' : 'info')
+      }
+    } catch (e) {
+      if (announce) this.say(e instanceof Error ? e.message : String(e), 'err')
+    }
+    this.emit()
   }
 }
 

@@ -2,9 +2,8 @@
 
 ## 双扫码（App + TV）
 
-设置 → **腾讯双扫码**：同时向网关请求 `method=app` 与 `method=tv`（TV 默认 `tv_fp_profile=virtual_ott_4k`，可用环境变量 `TENCENT_TV_FP_PROFILE` 覆盖），保存两张官方 PNG 并并行轮询。两路都登录成功后，默认把播放会话切到极光 TV（可在「腾讯登录方式」改回 App）。
+设置 → **腾讯双扫码**：同时向网关请求 `method=app` 与 `method=tv`（TV 默认 `tv_fp_profile=virtual_ott_4k`，可用环境变量 `TENCENT_TV_FP_PROFILE` 覆盖），保存两张官方 PNG 并并行轮询。两路都登录成功后，默认把播放会话切到极光 TV（默认播放会话为极光 TV）。
 
-单路扫码仍用「腾讯登录方式」+「腾讯扫码」。
 
 ## 两个视频流
 
