@@ -142,8 +142,8 @@ onKeyDown((event) => {
     return
   }
   if (state.value.scene === 'search') {
-    if (['enter', 'return', 'escape', 'esc'].includes(name)) {
-      bridge.key(event.name)
+    if (['enter', 'return', 'escape', 'esc', 'tab'].includes(name)) {
+      bridge.key(event.name, { shift: event.shift })
       event.preventDefault()
     }
     return
@@ -274,6 +274,7 @@ const HINTS: Record<string, Array<[string, string]>> = {
     ['q', '退出'],
   ],
   search: [
+    ['Tab', '切平台'],
     ['Ctrl/⌥+1/2/3', '切平台'],
     ['⏎', '搜索 / 打开链接'],
     ['esc', '返回'],
@@ -680,7 +681,8 @@ function wsRow(row: Row, index: number) {
 const helpLines = [
   '平台工作台 · 键盘操作',
   '',
-  '切平台：Win 用 Ctrl+1/2/3（Windows Terminal 会吃掉 Alt+数字切标签）；Mac 用 ⌥/Alt+1/2/3（不要用 ⌘1，那是系统切窗口）',
+  '搜索页：Tab / Shift+Tab 切平台；也可 Ctrl/⌥+1/2/3',
+  '切平台（工作台）：Win 用 Ctrl+1/2/3（Windows Terminal 会吃掉 Alt+数字切标签）；Mac 用 ⌥/Alt+1/2/3（不要用 ⌘1，那是系统切窗口）',
   'F2 搜索    F3 任务    F4 设置    F1 帮助',
   '',
   'Tab / Shift+Tab 在栏目与内容列表之间切换焦点',
