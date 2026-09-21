@@ -95,7 +95,6 @@ const SETTINGS = [
   { label: '发布组', value: 'ADWeb' },
   { label: 'TMDB Key', value: '已配置' },
   { label: '优酷扫码', value: '扫码把登录态写进本机' },
-  { label: '优酷 Cookie', value: '粘贴浏览器 Cookie（含 P_sck）' },
   { label: '优酷登录', value: '可续期 · 上次续期 3 分钟前 · 酷友福克纳君的杏花 · uid 2223055214990 · 非 VIP' },
   { label: '腾讯 Cookie', value: '空 · 回车粘贴' },
   { label: '红果合并', value: '开' },

@@ -223,12 +223,31 @@ test('youku multi-ep applyOptions rebinds probe audio vids onto each episode', a
   expect(internal.pending[0].audioTracks).not.toBe(internal.pending[1].audioTracks)
 })
 
-test('Tencent settings hide device internals and expose App website authorization',async()=>{
+
+test('Ctrl+1/2/3 switches platform like Alt (Windows Terminal friendly)', async () => {
+  const r = await start()
+  r.handleKey('2', { ctrl: true })
+  await Bun.sleep(110)
+  expect(r.snapshot.providers?.[r.snapshot.providerIndex]).toBe('tencent')
+  expect(r.snapshot.workspace?.provider ?? r.snapshot.providers?.[r.snapshot.providerIndex]).toBe('tencent')
+  r.handleKey('3', { ctrl: true })
+  await Bun.sleep(110)
+  expect(r.snapshot.providers?.[r.snapshot.providerIndex]).toBe('hongguo')
+  r.handleKey('1', { ctrl: true })
+  await Bun.sleep(110)
+  expect(r.snapshot.providers?.[r.snapshot.providerIndex]).toBe('youku')
+  // Alt path still works
+  r.handleKey('2', { alt: true })
+  await Bun.sleep(110)
+  expect(r.snapshot.providers?.[r.snapshot.providerIndex]).toBe('tencent')
+})
+
+test('settings expose dual QR + cookie + account; Youku QR-only',async()=>{
  const r=await start();const x=r as any
  x.keyInfo={all:true,scope:[]};x.emit()
- expect(x.settingFields().filter((f:string)=>f.startsWith('腾讯'))).toEqual(['腾讯登录方式','腾讯扫码','腾讯双扫码','腾讯 Cookie'])
+ expect(x.settingFields().filter((f:string)=>f.startsWith('腾讯'))).toEqual(['腾讯双扫码','腾讯 Cookie','腾讯登录'])
  expect(x.settingValue('腾讯双扫码')).toContain('App')
- x.cfg.tencentMode='app'
- expect(x.settingValue('腾讯登录方式')).toContain('网页授权')
- expect(x.settingValue('腾讯扫码')).toContain('回车出码')
+ expect(x.settingValue('腾讯登录')).toMatch(/未登录|回车刷新/)
+ expect(x.settingFields().filter((f:string)=>f.startsWith('优酷'))).toEqual(['优酷扫码','优酷登录'])
+ expect(x.settingValue('优酷扫码')).toContain('仅支持扫码')
 })

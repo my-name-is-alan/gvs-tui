@@ -125,12 +125,17 @@ onKeyDown((event) => {
     return
   }
 
-  // Option/Alt+1..3 only. Command (meta/super) is iTerm/VS Code/Finder ⌘1-9.
-  const platformShortcut = event.option && ['1', '2', '3'].includes(name)
+  // Platform switch:
+  // - Alt/⌥+1..3: Mac Option sets event.option; many terminals send ESC+digit as event.meta
+  // - Ctrl+1..3: Windows Terminal often steals Alt+digit for tab switching
+  // - Never ⌘/super+digit (iTerm/VS Code/Finder window switching)
+  const digit = ['1', '2', '3'].includes(name)
+  const altLike = !!(event.option || event.meta) && !event.super
+  const platformShortcut = digit && (altLike || event.ctrl)
   if (platformShortcut || /^f[1-4]$/.test(name)) {
     bridge.key(event.name, {
       ctrl: event.ctrl,
-      alt: event.option,
+      alt: altLike || (event.ctrl && digit),
       shift: event.shift,
     })
     event.preventDefault()
@@ -232,7 +237,7 @@ const HOME_DESC: Record<string, string> = {
 
 const HINTS: Record<string, Array<[string, string]>> = {
   workspace: [
-    ['⌥/alt+1/2/3', '平台'],
+    ['Ctrl/⌥+1/2/3', '平台'],
     ['←→', '栏目切换'],
     ['tab', '焦点'],
     ['⏎', '打开'],
@@ -269,7 +274,7 @@ const HINTS: Record<string, Array<[string, string]>> = {
     ['q', '退出'],
   ],
   search: [
-    ['⌥/alt+1/2/3', '切平台'],
+    ['Ctrl/⌥+1/2/3', '切平台'],
     ['⏎', '搜索 / 打开链接'],
     ['esc', '返回'],
   ],
@@ -675,7 +680,7 @@ function wsRow(row: Row, index: number) {
 const helpLines = [
   '平台工作台 · 键盘操作',
   '',
-  '⌥/Alt+1 优酷 / ⌥/Alt+2 腾讯 / ⌥/Alt+3 红果（Mac 不要用 ⌘1，那是系统切窗口）',
+  '切平台：Win 用 Ctrl+1/2/3（Windows Terminal 会吃掉 Alt+数字切标签）；Mac 用 ⌥/Alt+1/2/3（不要用 ⌘1，那是系统切窗口）',
   'F2 搜索    F3 任务    F4 设置    F1 帮助',
   '',
   'Tab / Shift+Tab 在栏目与内容列表之间切换焦点',

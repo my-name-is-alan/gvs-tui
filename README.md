@@ -125,7 +125,7 @@ bun run dev:clean      # 清理 Vite 缓存后重新启动
 | `session.logged_in=true` + `risk.level=none` | App 会话正常，能搜能放 |
 | `quality_gate.is_vip=true / can_play=true` | 会员权益真的生效（唯一的功能性判据） |
 
-会员到期时间要看网页 Cookie（设置 → 优酷 Cookie 导入）；没有它就只能靠取流结果判断权益。
+会员到期时间要看网页 Cookie（优酷扫码登录）；没有它就只能靠取流结果判断权益。
 `data/youku_creds/*.json`（或网关的 `$YOUKU_CRED_DIR`）必须落在持久化卷上，否则网关一重启
 签名全失效，表现就是"刚扫完又让你重扫"。
 
