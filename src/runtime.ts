@@ -17,6 +17,7 @@ import {
 import { GwClient, ReloginRequired, type KeyInfo } from './lib/client.ts'
 import {
   JobHub,
+  bindYoukuAudioTracksToTask,
   jobTitle,
   nextJobID,
   patchJob,
@@ -1347,7 +1348,11 @@ export class Runtime {
           ? tierHeight(q.height, q.width) : tierHeight(q.width, q.height))
         if (q.codec) t.codec = q.codec
       }
-      t.audioTracks = tracks
+      // Clone per task. Youku: rebind probe-episode audio vids onto this episode
+      // (or its language sibling) so batch downloads never cross-wire A/V.
+      t.audioTracks = t.provider === 'youku'
+        ? bindYoukuAudioTracksToTask(tracks, t)
+        : tracks.map((a) => ({ ...a }))
     }
     this.probeFailed = false
     if (q)
