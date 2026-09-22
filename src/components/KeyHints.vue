@@ -20,10 +20,13 @@ function measure(hints: Array<[string, string]>): number {
 
 const fitted = computed(() => {
   const all = props.hints
-  if (measure(all) <= props.width || all.length <= 1) return all
+  if (measure(all) <= props.width || all.length <= 2) return all
+  const head = all[0]!
   const tail = all[all.length - 1]!
-  const kept: Array<[string, string]> = []
-  for (const hint of all.slice(0, -1)) {
+  if (measure([head, tail]) > props.width)
+    return measure([head]) <= props.width ? [head] : [tail]
+  const kept: Array<[string, string]> = [head]
+  for (const hint of all.slice(1, -1)) {
     if (measure([...kept, hint, tail]) > props.width) break
     kept.push(hint)
   }

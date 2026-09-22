@@ -136,6 +136,26 @@ test('youkuMergeEditionAudios keeps 英语 and 普通话 cmfa1hd3 as separate ro
   expect(rows[1]!.vid).toBe('XCN')
 })
 
+test('probeYouku keeps per-stream fps and lists the largest file first', async () => {
+  const cli = {
+    extra: () => ({}),
+    invoke: async () => ({
+      streams: [
+        { stream_type: 'cmfv5hd4_hdr', media_type: 'video', playlist_url: 'https://cdn/hdr', width: 3840, height: 1608, size: 100, fps: 60 },
+        { stream_type: 'mp4hd3', media_type: 'video', playlist_url: 'https://cdn/1080', width: 1920, height: 808, size: 500, fps: 25 },
+      ],
+      video_types: [
+        { stream_type: 'cmfv5hd4_hdr', name: 'HDR10' },
+        { stream_type: 'mp4hd3', name: '1080P' },
+      ],
+    }),
+  } as unknown as GwClient
+  const opts = await probeOptions(cli, {} as FileConfig, 'youku', 'VID')
+  expect(opts.qualities.map((q) => q.label)).toEqual(['1080P', 'HDR10'])
+  expect(opts.qualities.map((q) => q.size)).toEqual([500, 100])
+  expect(opts.qualities.map((q) => q.fps)).toEqual([25, 60])
+})
+
 test('probeYouku also plays the sibling language vid for audio', async () => {
   const vids: string[] = []
   const cli = {
@@ -251,9 +271,14 @@ import {
   qualityFormatId,
   qualityResolution,
   QUALITY_COLS,
+  qualityCaptionText,
+  qualityChoiceLabel,
+  qualityFpsText,
+  qualityHdrText,
   sortTencentQualities,
   tencentCatalogProbeInput,
   tencentEncodeTag,
+  tencentFormatHDR,
   tencentPersonaKey,
   tencentPlayQualityInput,
   tencentQualityBaseName,
@@ -261,8 +286,7 @@ import {
   TENCENT_EM93_STATUS,
   TENCENT_HEVC_FPS_ENCODE_TAGS,
 } from './quality.ts'
-import { displayWidth } from './text.ts'
-import { column } from './text.ts'
+import { clip, column, displayWidth } from './text.ts'
 
 describe('qualitiesFromTencentFormats', () => {
   test('maps soft/hard ladder with real sizes and pairs by name', () => {
@@ -271,7 +295,6 @@ describe('qualitiesFromTencentFormats', () => {
       { id: 3, name: 'fhd', cname: '蓝光', caption: 'soft', width: 1920, height: 1080, vfps: 25, fs: 1_100_000_000, persona: 'l3_soft' },
       { id: 322095, name: 'maxplus', cname: '臻彩MAX+', caption: 'soft', width: 3840, height: 2160, vfps: 60, fs: 5_200_000_000, persona: 'l3_soft' },
       { id: 322095, name: 'maxplus', cname: '臻彩MAX+', caption: 'hard', width: 3840, height: 2160, vfps: 60, fs: 5_400_000_000, persona: 'l3_hard' },
-      { id: 10017, name: 'source', cname: '原画/source', fs: 25_440_000_000, persona: 'source' },
       { id: 9, name: 'hd', cname: '高清', caption: 'soft', width: 848, height: 480, fs: 400_000_000, persona: '2741517771455_soft' },
       { id: 320001, name: 'audio', cname: '音轨', caption: 'soft', persona: 'l3_soft', fs: 12_000_000 },
       { id: 320001, name: 'audio', cname: '音轨', caption: 'hard', persona: 'l3_hard', fs: 12_000_000 },
@@ -282,28 +305,67 @@ describe('qualitiesFromTencentFormats', () => {
       'fhd',
       'fhd',
       'hd',
-      'source',
     ])
     expect(rows.every((r) => r.stream !== 'audio')).toBe(true)
-    expect(rows.map((r) => r.caption)).toEqual(['soft', 'hard', 'soft', 'hard', 'soft', undefined])
-    expect(rows.map((r) => r.group)).toEqual(['main', 'main', 'main', 'main', 'encode', 'source'])
-    expect(rows[0]!.size).toBe(5_200_000_000)
-    expect(rows[0]!.fps).toBe(60)
-    expect(rows[0]!.formatId).toBe('322095')
-    expect(qualityFormatId(rows[0]!)).toBe('322095')
-    expect(rows.at(-1)!.size).toBe(25_440_000_000)
-    expect(rows.at(-1)!.group).toBe('source')
+    expect(rows.map((r) => r.caption)).toEqual(['hard', 'soft', 'hard', 'soft', 'soft'])
+    expect(rows.map((r) => r.group)).toEqual(['main', 'main', 'main', 'main', 'encode'])
+    const max = rows.find((r) => r.stream === 'maxplus' && r.caption === 'soft')!
+    expect(max.size).toBe(5_200_000_000)
+    expect(max.fps).toBe(60)
+    expect(max.formatId).toBe('322095')
+    expect(qualityFormatId(max)).toBe('322095')
+    expect(rows[0]!.size).toBe(5_400_000_000)
+    expect(rows.at(-1)!.size).toBe(400_000_000)
   })
 
-  test('encode personas sort after main ladder', () => {
+  test('keeps soft/hard and HDR/HDR10/SDR on MAX+ and MAX rows', () => {
+    const rows = qualitiesFromTencentFormats([
+      { id: 322095, name: 'maxplus', sname: '臻彩MAX+', cname: '臻彩MAX+;(4K)', caption: 'soft', width: 3840, height: 2160, vfps: 60 },
+      { id: 322175, name: 'maxplus', sname: '臻彩MAX+', cname: '臻彩MAX+;(4K)', caption: 'hard', width: 3840, height: 2160, vfps: 60 },
+      { id: 2, name: 'suhd', sname: '臻彩 MAX', cname: '臻彩 MAX;(4K)', caption: 'soft' },
+      { id: 3, name: 'max', sname: '臻彩MAX', caption: 'hard', hdr: 'sdr' },
+      { id: 4, name: 'uhd', sname: '超高清SDR', cname: '超高清SDR;(4K)', caption: 'soft' },
+      { id: 5, name: 'fhd', sname: '蓝光', caption: 'hard', hdr10enh: 1 },
+      { id: 6, name: 'fhd', sname: '蓝光', caption: 'soft' },
+      { id: 7, name: 'maxplus', caption: 'soft' },
+      { id: 8, name: 'max', caption: 'hard' },
+    ])
+    const pick = (stream: string, caption?: string) =>
+      rows.find((r) => r.stream === stream && r.caption === caption)!
+    expect(pick('maxplus', 'soft').hdr).toBe('hdr')
+    expect(pick('maxplus', 'hard').hdr).toBe('hdr')
+    expect(pick('maxplus', 'soft').fps).toBe(60)
+    expect(qualityFpsText(60)).toBe('60fps')
+    expect(qualityFpsText(0)).toBe('')
+    expect(qualityChoiceLabel(pick('maxplus', 'soft'))).toBe('臻彩MAX+ · HDR · 60fps · 软字幕')
+    expect(qualityChoiceLabel(pick('maxplus', 'hard'))).toBe('臻彩MAX+ · HDR · 60fps · 硬字幕')
+    expect(pick('suhd', 'soft').label).toBe('臻彩 MAX')
+    expect(pick('suhd', 'soft').hdr).toBe('sdr')
+    expect(qualityChoiceLabel(pick('suhd', 'soft'))).toBe('臻彩 MAX · SDR · 软字幕')
+    expect(pick('max', 'hard').hdr).toBe('sdr')
+    expect(qualityHdrText(pick('max', 'hard').hdr)).toBe('SDR')
+    expect(pick('uhd', 'soft').hdr).toBe('sdr')
+    expect(qualityChoiceLabel(pick('uhd', 'soft'))).toBe('超高清SDR · 软字幕')
+    expect(pick('fhd', 'hard').hdr).toBe('hdr10')
+    expect(qualityHdrText('hdr10')).toBe('HDR10')
+    expect(qualityCaptionText('soft')).toBe('软字幕')
+    expect(qualityCaptionText('hard')).toBe('硬字幕')
+    expect(pick('fhd', 'soft').hdr).toBeUndefined()
+    expect(rows.find((r) => r.stream === 'maxplus' && r.label === 'MAX+')!.hdr).toBe('hdr')
+    expect(rows.find((r) => r.label === 'MAX')!.hdr).toBe('sdr')
+    expect(tencentFormatHDR({ name: 'fhd', sname: '蓝光' })).toBe('')
+    expect(tencentFormatHDR({ hdr: 'hdr10', name: 'maxplus' })).toBe('hdr10')
+  })
+
+  test('sorts by file size, largest first', () => {
     const rows = sortTencentQualities(
       qualitiesFromTencentFormats([
         { id: 1, name: 'uhd', caption: 'soft', persona: 'default_soft', fs: 9 },
         { id: 2, name: 'uhd', caption: 'soft', persona: 'l3_soft', fs: 8 },
-        { id: 3, name: 'source', persona: 'source', fs: 99 },
       ]),
     )
-    expect(rows.map((r) => r.group)).toEqual(['main', 'encode', 'source'])
+    expect(rows.map((r) => r.size)).toEqual([9, 8])
+    expect(rows.map((r) => r.group)).toEqual(['encode', 'main'])
   })
 })
 
@@ -312,13 +374,6 @@ describe('tencentPlayQualityInput', () => {
     expect(
       tencentPlayQualityInput({ quality: 'maxplus', stream: 'maxplus', caption: 'soft' }),
     ).toEqual({ defn: 'maxplus', caption: 'soft' })
-  })
-
-  test('source rows force source=1 and companion defn', () => {
-    expect(tencentPlayQualityInput({ stream: 'source', group: 'source' })).toEqual({
-      source: '1',
-      defn: 'uhd',
-    })
   })
 
   test('strips composite id to defn name', () => {
@@ -366,6 +421,18 @@ describe('audiosFromTencent', () => {
 })
 
 describe('quality table alignment helpers', () => {
+  test('HDR and caption labels fit without collapsing to a dot ellipsis', () => {
+    for (const text of ['HDR', 'HDR10', 'SDR', '软字幕', '硬字幕']) {
+      const fitted = column(text, Math.max(12, displayWidth(text) + 2))
+      expect(fitted.includes(text)).toBe(true)
+      expect(fitted.includes('..')).toBe(false)
+    }
+    const cut = clip('HDR10', 4)
+    expect(cut.startsWith('HD')).toBe(true)
+    expect(cut.endsWith('..')).toBe(true)
+    expect(displayWidth(cut)).toBeLessThanOrEqual(4)
+  })
+
   test('ASCII resolution width matches terminal cells for 4K', () => {
     // 3840 + x + 2160 = 9 cells; column is 10 so one pad remains.
     expect(qualityResolution(3840, 2160)).toBe('3840x2160')
@@ -435,7 +502,6 @@ describe('tencentEncodeTag mapping', () => {
     expect(tencentEncodeTag('default_软')).toBe('默认')
     expect(tencentEncodeTag('h264_软')).toBe('H264')
     expect(tencentEncodeTag('l3_soft')).toBe('')
-    expect(tencentEncodeTag('source')).toBe('')
     const expected = ['HEVC·A', 'HEVC·B', 'HEVC·C', 'HEVC·D', 'HEVC·E', 'HEVC·F']
     const ids = Object.keys(TENCENT_HEVC_FPS_ENCODE_TAGS)
     expect(ids).toEqual([
@@ -537,9 +603,13 @@ describe('tencent quality label disambiguation', () => {
     expect(byPersona['2741527771455_硬']!.label).toBe('臻彩MAX+ · HEVC·B')
     expect(byPersona['2741527771455_软']!.caption).toBe('soft')
     expect(byPersona['2741527771455_硬']!.caption).toBe('hard')
-    // main first, then encode block
-    expect(rows[0]!.group).toBe('main')
-    expect(rows.slice(1).every((r) => r.group === 'encode')).toBe(true)
+    expect(rows.map((r) => r.size)).toEqual([
+      6_000_000_000,
+      5_200_000_000,
+      5_150_000_000,
+      5_100_000_000,
+      5_000_000_000,
+    ])
   })
 })
 

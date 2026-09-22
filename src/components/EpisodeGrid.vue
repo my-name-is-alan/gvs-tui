@@ -30,8 +30,10 @@ const lines = computed(() => {
       const ep = props.episodes[index]
       if (!ep) break
       const number = padStart(String(ep.number || index + 1), numWidth)
-      const label = column(`${ep.selected ? '✓' : '□'} ${number}`, cellWidth)
       const here = index === props.cursor
+      const label = here
+        ? column(`[${ep.selected ? '✓' : ' '}${number}]`, cellWidth)
+        : column(`${ep.selected ? '✓' : '□'} ${number}`, cellWidth)
       const chunk = fg(here ? c.text : ep.selected ? c.ok : c.faint)(label)
       chunks.push(here ? bg(c.sel)(chunk) : chunk)
     }

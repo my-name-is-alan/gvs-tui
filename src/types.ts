@@ -36,6 +36,8 @@ export type Quality = {
   audios?: Audio[]
   /** soft | hard — 腾讯 TV caption */
   caption?: string
+  /** hdr | hdr10 | sdr — 腾讯 fi 动态范围（MAX+ / HDR10 / 臻彩 MAX·SDR） */
+  hdr?: string
   fps?: number
   /** play defn / format name (maxplus, fhd, source…) */
   stream?: string

@@ -2,9 +2,9 @@
 
 在 TUI 目录执行 `bun run demo`，会构建并启动可交互模拟模式。无需 Key，不连接网关，不保存设置，不下载媒体；确认入队只生成演示任务。
 
-Alt+1/2/3 切平台，Tab/Shift+Tab 切栏目与列表焦点。栏目焦点下左右切推荐/榜单，上下选子榜。列表用方向键、Home/End、PgUp/PgDn，末尾“加载更多”需 Enter。F 打开筛选面板；R 刷新。F1 帮助，F2 搜索（也接受链接），F3 任务，F4 设置。
+发现页：1/2/3/4 切平台（优酷/腾讯/红果/抖音）。Windows Terminal 会把 Alt+数字当成切标签，用 Ctrl+1/2/3/4。←→ 换栏目；只有一个栏目时左右切推荐/榜单，Tab 也切推荐/榜单。列表用方向键、Home/End、PgUp/PgDn，末尾“加载更多”需 Enter。/ 搜索，F 筛选，R 刷新。F1 帮助，F2 搜索，F3 任务，F4 设置。
 
-详情空格选集、A 全选、C 清空、Enter 下一步；画质与音轨以 Tab 切换；TMDB 用 S 跳过，R 重试；最终确认页 Enter 才入队，O 改目录。Esc 返回原上下文，Ctrl+C 退出。
+详情空格勾选，Shift+方向从当前集连选，A 全选，C 清空，Enter 去画质。画质页 ←→ 切音轨，空格勾选音轨。TMDB：Enter 采用，S 跳过，R 重试。最终确认页 Enter 才入队，O 改目录。Esc 返回上一步，不会入队。Ctrl+C 退出。
 
 静态预览使用 `bun run preview`。PowerShell 中设置 `$env:PREVIEW_SIZE='80x24'`、`100x30`、`140x40` 后分别运行；输出位于 `preview/`。预览覆盖加载、空列表、错误、无权限、长中文标题、长日志等状态。`bun test scripts/interaction.test.ts` 会向真实渲染器输入终端按键，验证文本编辑和完整确认流程。
 

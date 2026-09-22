@@ -262,17 +262,10 @@ export async function probeOptions(
 
 /** Fallback when play returns no formats[] (old gateway / cookie path). */
 function tencentQualityList(): Quality[] {
-  return [
-    { id: 'fhd', label: '蓝光', title: '蓝光', size: 0, width: 1920, height: 1080, codec: 'H265', drm: '', stream: 'fhd', group: 'main' },
-    { id: 'shd', label: '超清', title: '超清', size: 0, width: 1280, height: 720, codec: 'H265', drm: '', stream: 'shd', group: 'main' },
-    { id: 'hd', label: '高清', title: '高清', size: 0, width: 848, height: 480, codec: 'H264', drm: '', stream: 'hd', group: 'main' },
-    { id: 'sd', label: '标清', title: '标清', size: 0, width: 640, height: 360, codec: 'H264', drm: '', stream: 'sd', group: 'main' },
-  ]
+  return []
 }
 
 const TENCENT_DEFN_RANK: Record<string, number> = {
-  source: 1000,
-  original: 1000,
   '8k': 900,
   suhd: 850,
   maxplus: 800,
@@ -296,14 +289,11 @@ function tencentDefnRank(name: string): number {
   if (n.includes('fhd') || n.includes('1080')) return 700
   if (n.includes('shd') || n.includes('720')) return 600
   if (n.includes('hd') || n.includes('480')) return 500
-  if (n === 'source' || n.includes('原画')) return 1000
   return 200
 }
 
-function tencentFormatGroup(f: Record<string, unknown>): 'main' | 'encode' | 'source' {
-  const name = asString(f.name).toLowerCase()
+function tencentFormatGroup(f: Record<string, unknown>): 'main' | 'encode' {
   const persona = asString(f.persona).toLowerCase()
-  if (name === 'source' || name === 'original' || persona === 'source') return 'source'
   // encode=all personas: default_soft, 2741517771455_hard, h264_soft…
   if (
     persona &&
@@ -353,7 +343,6 @@ export function tencentEncodeTag(persona: string): string {
   // Main-ladder / non-encode personas: no tag column noise.
   if (
     lower === 'l3' ||
-    lower === 'source' ||
     lower === 'samsung_dolby' ||
     lower === 'phone_normal'
   ) {
@@ -378,8 +367,70 @@ export function tencentQualityBaseName(raw: Record<string, unknown>, name: strin
     const cleaned = cname.replace(/;\s*\([^)]*\)\s*$/u, '').trim()
     return cleaned || cname
   }
-  if (name === 'source' || name === 'original') return '原画'
+  if (name === 'maxplus') return 'MAX+'
+  if (name === 'max') return 'MAX'
   return name.toUpperCase()
+}
+
+/**
+ * Dynamic range for a Tencent `fi` row.
+ * Matches gateway `formatHDR`: hdr10enh → HDR10, MAX+ → HDR, 臻彩 MAX / suhd / an SDR label → SDR.
+ * An explicit `hdr` from the gateway wins.
+ */
+export function tencentFormatHDR(raw: Record<string, unknown>): string {
+  const given = asString(raw.hdr).trim().toLowerCase()
+  if (given === 'hdr10' || given === 'hdr' || given === 'sdr') return given
+  if (given === 'hdr vivid' || given === 'hdrvivid' || given === 'vivid') return 'hdr'
+  if (anyInt(raw.hdr10enh) > 0) return 'hdr10'
+  const name = (asString(raw.name) || asString(raw.defn)).toLowerCase()
+  const label = `${asString(raw.sname)}${asString(raw.cname)}`
+  const lower = label.toLowerCase()
+  if (label.includes('SDR') || lower.includes('sdr')) return 'sdr'
+  if (name === 'hdr10' || lower.includes('hdr10')) return 'hdr10'
+  if (name === 'maxplus' || label.includes('MAX+')) return 'hdr'
+  if (name === 'suhd' || name === 'max' || label.includes('臻彩')) return 'sdr'
+  if (label.includes('HDR') || lower.includes('hdr')) return 'hdr'
+  return ''
+}
+
+/** 画质表「字幕」列：软字幕 / 硬字幕。 */
+export function qualityCaptionText(caption?: string): string {
+  if (caption === 'soft') return '软字幕'
+  if (caption === 'hard') return '硬字幕'
+  return ''
+}
+
+/** 画质表「HDR」列：HDR / HDR10 / SDR。 */
+export function qualityHdrText(hdr?: string): string {
+  switch ((hdr || '').toLowerCase()) {
+    case 'hdr10':
+      return 'HDR10'
+    case 'hdr':
+      return 'HDR'
+    case 'sdr':
+      return 'SDR'
+    default:
+      return ''
+  }
+}
+
+/** 画质表「fps」列：60fps / 25fps。 */
+export function qualityFpsText(fps?: number): string {
+  if (!fps || fps <= 0) return ''
+  return `${fps}fps`
+}
+
+/** 确认页和状态行：档位名后面带上动态范围、帧率和软硬字幕。名字里已经写了的不再重复。 */
+export function qualityChoiceLabel(q: Pick<Quality, 'label' | 'title' | 'caption' | 'hdr' | 'fps'>): string {
+  const base = (q.label || q.title || '').trim()
+  const hdr = qualityHdrText(q.hdr)
+  const fps = qualityFpsText(q.fps)
+  const cap = qualityCaptionText(q.caption)
+  const parts = [base]
+  if (hdr && !base.toUpperCase().includes(hdr.toUpperCase())) parts.push(hdr)
+  if (fps && !base.toLowerCase().includes(fps.toLowerCase())) parts.push(fps)
+  if (cap && !base.includes(cap)) parts.push(cap)
+  return parts.filter(Boolean).join(' · ')
 }
 
 /** Display label: clean for main/default; `name · tag` for encode variants. */
@@ -459,10 +510,9 @@ export function qualitiesFromTencentFormats(formats: unknown): Quality[] {
     const height = anyInt(raw.height)
     const fps = anyInt(raw.vfps) || anyInt(raw.fps)
     const size = anyInt(raw.fs) || anyInt(raw.size)
-    const hdr = asString(raw.hdr)
+    const hdr = tencentFormatHDR(raw)
     const profile = asString(raw.profile)
     let codec = profile.toUpperCase()
-    if (!codec && hdr) codec = hdr.toUpperCase()
     if (!codec && /hevc|h265|hvc/i.test(asString(raw.vencoding) + asString(raw.codec))) codec = 'H265'
     out.push({
       id,
@@ -475,6 +525,7 @@ export function qualitiesFromTencentFormats(formats: unknown): Quality[] {
       drm: asString(raw.drm) || (anyInt(raw.lmt) > 0 ? 'DRM' : ''),
       tier: height || tencentDefnRank(name),
       caption: caption || undefined,
+      hdr: hdr || undefined,
       fps: fps > 0 ? fps : undefined,
       stream: name,
       formatId: fid || undefined,
@@ -535,25 +586,20 @@ export function audiosFromTencent(data: Record<string, unknown>): Audio[] {
   return out
 }
 
-/** main soft/hard ladder (hi→lo) → encode extras → source last; pair soft/hard by name. */
-export function sortTencentQualities(rows: Quality[]): Quality[] {
-  const groupRank = (g: Quality['group']) => (g === 'main' ? 0 : g === 'encode' ? 1 : 2)
-  const capRank = (c?: string) => (c === 'soft' ? 0 : c === 'hard' ? 1 : 2)
+/** 画质列表按文件体积从大到小。体积相同再比分辨率、帧率。 */
+export function sortQualitiesBySize(rows: Quality[]): Quality[] {
   return [...rows].sort((a, b) => {
-    const ga = groupRank(a.group)
-    const gb = groupRank(b.group)
-    if (ga !== gb) return ga - gb
-    const ra = tencentDefnRank(a.stream || a.title || a.id)
-    const rb = tencentDefnRank(b.stream || b.title || b.id)
-    if (ra !== rb) return rb - ra
-    const na = (a.stream || a.title).toLowerCase()
-    const nb = (b.stream || b.title).toLowerCase()
-    if (na !== nb) return na < nb ? -1 : 1
-    const ca = capRank(a.caption)
-    const cb = capRank(b.caption)
-    if (ca !== cb) return ca - cb
-    return (b.fps || 0) - (a.fps || 0) || (b.size || 0) - (a.size || 0)
+    const ds = (b.size || 0) - (a.size || 0)
+    if (ds) return ds
+    const dp = b.width * b.height - a.width * a.height
+    if (dp) return dp
+    return (b.fps || 0) - (a.fps || 0)
   })
+}
+
+/** 腾讯画质也按体积从大到小，不再把主档/转码/原画拆成三段。 */
+export function sortTencentQualities(rows: Quality[]): Quality[] {
+  return sortQualitiesBySize(rows)
 }
 
 /**
@@ -624,17 +670,10 @@ export function tencentPlayQualityInput(q: {
   stream?: string
   caption?: string
   group?: string
-  needSource?: boolean
 }): Record<string, string> {
   const stream = (q.stream || q.quality || 'fhd').trim()
   const out: Record<string, string> = {}
-  if (stream === 'source' || q.group === 'source' || q.needSource) {
-    out.source = '1'
-    // Primary ladder still needs a defn; uhd is the friend/source companion ladder.
-    out.defn = 'uhd'
-  } else {
-    out.defn = stream.includes('|') ? stream.split('|')[0]! : stream
-  }
+  out.defn = stream.includes('|') ? stream.split('|')[0]! : stream
   const cap = (q.caption || '').toLowerCase()
   if (cap === 'soft' || cap === 'hard') out.caption = cap
   return out
@@ -667,7 +706,8 @@ export function hongguoStreamOptions(data: Record<string, unknown>, vid: string)
    return {tier:Number(/^(\d+)p$/i.exec(quality)?.[1] || 0),id:asString(s.id) || quality,label:quality || '分辨率未提供',title:quality || '分辨率未提供',width:anyInt(s.width),height,codec,size:anyInt(s.size),drm:asString(s.key) ? 'CENC' : '',audios}
  })
  if (!qualities.length) qualities.push({id:'',label:'默认流',title:'默认流（网关未提供媒体信息）',size:0,width:0,height:0,codec:'',drm:picked.key?'CENC':'',audios:[{id:'embedded',label:'编码未提供',lang:'未提供',codec:'',isDefault:true,selected:true,embedded:true}]})
- return { qualities, audios: qualities[0].audios ?? [] }
+ const ordered = sortQualitiesBySize(qualities)
+ return { qualities: ordered, audios: ordered[0]!.audios ?? [] }
 }
 
 async function probeHongguo(cli: GwClient, vid: string): Promise<StreamOptions> {
@@ -697,7 +737,7 @@ async function probeDouyin(cli: GwClient, vid: string): Promise<Quality[]> {
     })
   }
   if (!out.length) throw new Error('抖音没有媒体')
-  return out
+  return sortQualitiesBySize(out)
 }
 
 /**
@@ -724,7 +764,7 @@ async function probeYouku(
   }
 
   const seen = new Set<string>()
-  const qualities: Quality[] = []
+  let qualities: Quality[] = []
   /** 优酷 stream_type → 人话。4K 档用 video_types 给的名字（杜比/HDR10/SDR），
    *  普通码按命名规则推断，因为 letterbox 过的真实高度（1608/808…）不能当档位名。 */
   const label = (st: string, height: number): string => {
@@ -745,6 +785,7 @@ async function probeYouku(
     size: number,
     codecRaw: string,
     drm: string,
+    fps: number,
   ): void => {
     if (!st || seen.has(st)) return
     seen.add(st)
@@ -758,6 +799,7 @@ async function probeYouku(
       height,
       codec: codec || '—',
       drm,
+      fps: fps > 0 ? fps : undefined,
     })
   }
 
@@ -787,6 +829,7 @@ async function probeYouku(
       anyInt(s.size) || anyInt(m.size) || anyInt(meta.size),
       asString(s.codecs) || asString(m.codec) || asString(meta.codecs) || (asBool(s.h265) ? 'H265' : ''),
       asString(s.drm) || asString(m.drm) || asString(meta.drm),
+      anyInt(s.fps) || anyInt(m.fps) || anyInt(meta.fps),
     )
   }
 
@@ -805,17 +848,28 @@ async function probeYouku(
         anyInt(m.size) || anyInt(meta.size),
         asString(m.codec) || asString(meta.codecs),
         asString(m.drm) || asString(meta.drm),
+        anyInt(m.fps) || anyInt(meta.fps),
       )
     }
   }
   if (!qualities.length && isObj(data.video)) {
     const h = anyInt(data.video.height)
     const st = asString(data.video.stream_type) || 'default'
-    qualities.push({ id: st, label: h > 0 ? `${h}P` : st.toUpperCase(), title: st, size: 0, width: 0, height: h, codec: '', drm: '' })
+    const fps = anyInt(data.video.fps)
+    qualities.push({
+      id: st,
+      label: h > 0 ? `${h}P` : st.toUpperCase(),
+      title: st,
+      size: anyInt(data.video.size),
+      width: anyInt(data.video.width),
+      height: h,
+      codec: '',
+      drm: '',
+      fps: fps > 0 ? fps : undefined,
+    })
   }
   if (!qualities.length) throw new Error('优酷没有画质列表')
-  // 高分辨率在前；同分辨率保持接口给的顺序（4K 杜比/HDR 在前，普通码在后）。
-  qualities.sort((a, b) => b.width * b.height - a.width * a.height || b.size - a.size)
+  qualities = sortQualitiesBySize(qualities)
 
   const extraVids: string[] = []
   const langByVid: Record<string, string> = {}

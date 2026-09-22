@@ -93,53 +93,6 @@ describe('tencentPlayProbeOk', () => {
 })
 
 describe('pickTencentDownloadURL', () => {
-  test('source fname+vkey builds videohywb URL', () => {
-    const u = pickTencentDownloadURL(
-      {
-        has_url: true,
-        formats: [
-          { name: 'maxplus', caption: 'soft' },
-          {
-            name: 'source',
-            stream: 'original',
-            fname: 'gzc_1000102_abc.f10005.mp4',
-            vkey: 'VKEY+/=',
-          },
-        ],
-      },
-      { needSource: true },
-    )
-    expect(u).toBe(
-      'https://videohywb.tc.qq.com/gzc_1000102_abc.f10005.mp4?vkey=VKEY%2B%2F%3D',
-    )
-  })
-
-  test('source prefers gateway-emitted url over rebuild', () => {
-    const u = pickTencentDownloadURL(
-      {
-        formats: [
-          {
-            name: 'source',
-            fname: 'a.mp4',
-            vkey: 'k',
-            url: 'https://videohywb.tc.qq.com/a.mp4?vkey=k',
-          },
-        ],
-      },
-      { stream: 'source' },
-    )
-    expect(u).toBe('https://videohywb.tc.qq.com/a.mp4?vkey=k')
-  })
-
-  test('source row without vkey/fname throws 原画缺少', () => {
-    expect(() =>
-      pickTencentDownloadURL(
-        { formats: [{ name: 'source', stream: 'original' }] },
-        { needSource: true },
-      ),
-    ).toThrow(/原画缺少 vkey\/fname/)
-  })
-
   test('HLS top-level url via pickURL path', () => {
     const u = pickTencentDownloadURL(
       {
@@ -167,5 +120,19 @@ describe('pickTencentDownloadURL', () => {
       { stream: 'maxplus', caption: 'soft' },
     )
     expect(u).toBe('https://cdn.example/soft.m3u8')
+  })
+
+  test('selected format wins over default video URL', () => {
+    const u = pickTencentDownloadURL(
+      {
+        video: { url: 'https://cdn.example/default-aac.mp4' },
+        formats: [
+          { name: 'fhd', caption: 'hard', playlist_url: 'https://cdn.example/fhd-hard.mp4' },
+          { name: 'maxplus', caption: 'soft', playlist_url: 'https://cdn.example/maxplus-soft.mp4' },
+        ],
+      },
+      { stream: 'maxplus', caption: 'soft' },
+    )
+    expect(u).toBe('https://cdn.example/maxplus-soft.mp4')
   })
 })

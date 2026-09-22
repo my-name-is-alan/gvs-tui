@@ -35,19 +35,27 @@ export function displayWidth(text: string): number {
   return w
 }
 
-/** Cut to at most `max` cells, with a single-cell ellipsis when anything was cut. */
+/**
+ * Cut to at most `max` cells.
+ * ASCII dots, not U+2026: Windows Terminal paints that glyph about two cells
+ * wide (it looks like "..."), which covers the letters it was meant to follow.
+ */
+const CLIP_MARK = '..'
+
 export function clip(text: string, max: number): string {
   if (max <= 0) return ''
   if (displayWidth(text) <= max) return text
+  const markW = displayWidth(CLIP_MARK)
+  if (max <= markW) return CLIP_MARK.slice(0, max)
   let out = ''
   let w = 0
   for (const ch of text) {
     const cw = charWidth(ch.codePointAt(0) ?? 0)
-    if (w + cw > max - 1) break
+    if (w + cw > max - markW) break
     out += ch
     w += cw
   }
-  return `${out}…`
+  return out + CLIP_MARK
 }
 
 export function padEnd(text: string, cells: number): string {

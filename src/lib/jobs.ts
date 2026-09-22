@@ -35,8 +35,6 @@ export type DlTask = {
   quality: string
   /** Tencent TV caption soft|hard */
   caption?: string
-  /** Tencent: request source=1 (原画) */
-  needSource?: boolean
   /** Audio tracks to mux in (空格勾选的那些）；空 = 只封平台默认音轨。 */
   audioTracks?: Array<{ id: string; label: string; lang: string; vid?: string }>
   group: string
@@ -246,7 +244,6 @@ function tencentDlPickOpts(t: DlTask) {
   return {
     stream: t.quality,
     caption: t.caption,
-    needSource: t.needSource,
   }
 }
 
@@ -254,7 +251,7 @@ function logTencentDownloadHost(cdn: string, t: DlTask): void {
   try {
     const host = new URL(cdn).host
     runLog(
-      `tencent download host=${host} source=${t.needSource ? 1 : 0} stream=${(t.quality || '').slice(0, 24)}`,
+      `tencent download host=${host} stream=${(t.quality || '').slice(0, 24)}`,
     )
   } catch {
     /* ignore bad URL */
@@ -270,7 +267,7 @@ async function dlTencent(
   const play = () => cli.invoke('tencent', 'play', { vid: t.vid, ...tencentPlayQualityInput(t), ...tencentPlayInput(cfg) }, cli.extra(cfg, 'tencent'))
   const pick = (data: Record<string, unknown>) => pickTencentDownloadURL(data, tencentDlPickOpts(t))
   let cdn = pick(await play())
-  if (!cdn) throw new Error(t.needSource ? '原画缺少 vkey/fname' : '腾讯没有 video.url')
+  if (!cdn) throw new Error('腾讯没有可用视频地址')
   logTencentDownloadHost(cdn, t)
   const raw = join(dir, `.${t.vid}.bin`)
   emit('下载', 0.1, '')
@@ -280,7 +277,7 @@ async function dlTencent(
     if (!(e instanceof CdnDenied)) throw e
     emit('重取', 0.1, `CDN ${e.status}，重新取链后下载`)
     cdn = pick(await play())
-    if (!cdn) throw new Error(t.needSource ? '原画重新取链缺少 vkey/fname' : '腾讯重新取链失败')
+    if (!cdn) throw new Error('腾讯重新取链失败')
     logTencentDownloadHost(cdn, t)
     await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote, cfg.threads)
   }

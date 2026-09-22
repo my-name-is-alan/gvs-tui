@@ -25,7 +25,7 @@ import {
   patchJob,
   type DlTask,
 } from './lib/jobs.ts'
-import { moviePlayables, probeOptions, youkuEditionsFromDetail, tencentPlayQualityInput} from './lib/quality.ts'
+import { moviePlayables, probeOptions, qualityChoiceLabel, youkuEditionsFromDetail, tencentPlayQualityInput} from './lib/quality.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import {
   hostIsLocal,
@@ -161,6 +161,7 @@ export class Runtime {
   private pageLoading = false
   private readonly simulated: boolean
   private detailCursor = 0
+  private selectAnchor = 0
   private detailTitle = ''
   private detailId = ''
   private detailProv = ''
@@ -313,22 +314,9 @@ export class Runtime {
       return
     }
     const k = normKey(name, mods.shift)
-    // Alt/⌥+1..3 (Mac) or Ctrl+1..3 (Windows Terminal steals Alt+digit for tabs).
-    if ((mods.alt || mods.ctrl) && ['1', '2', '3'].includes(k)) {
-      const p = ['youku', 'tencent', 'hongguo'][Number(k) - 1]
-      if (this.has(p)) {
-        this.requestGeneration++
-        this.searching = false
-        this.navigation.clear()
-        this.draft.clear()
-        this.provIdx = this.providers().indexOf(p)
-        if (this.scene !== 'search') {
-          this.scene = 'workspace'
-          void this.discovery.open(p, this.discovery.view.mode)
-        } else {
-          void this.discovery.open(p, this.discovery.view.mode)
-        }
-      } else this.say('当前 Key 没有这个平台权限', 'warn')
+    // Alt/⌥ or Ctrl+1..4. Bare 1-4 is workspace-only (see updateWorkspace).
+    if ((mods.alt || mods.ctrl) && ['1', '2', '3', '4'].includes(k)) {
+      this.switchPlatform(Number(k) - 1)
       this.emit()
       return
     }
@@ -408,7 +396,7 @@ export class Runtime {
         this.updateResults(k)
         break
       case 'detail':
-        this.updateDetail(k)
+        this.updateDetail(k, mods.shift)
         break
       case 'quality':
         this.updateQuality(k)
@@ -1057,7 +1045,9 @@ export class Runtime {
       title: first?.series || first?.title || this.detailTitle,
       episodes: this.pending.map((t) => String(t.episode || 1)).join(', '),
       quality:
-        this.qualities[this.qIdx]?.label ||
+        (this.qualities[this.qIdx]
+          ? qualityChoiceLabel(this.qualities[this.qIdx]!)
+          : '') ||
         first?.quality ||
         '平台提供的单一视频流',
       audio:
@@ -1099,28 +1089,56 @@ export class Runtime {
         : '',
     }
   }
+  private switchPlatform(slot: number): void {
+    const p = ['youku', 'tencent', 'hongguo', 'douyin'][slot]
+    if (!p) return
+    if (!this.has(p)) {
+      this.say('当前 Key 没有这个平台权限', 'warn')
+      return
+    }
+    this.requestGeneration++
+    this.searching = false
+    this.navigation.clear()
+    this.draft.clear()
+    this.provIdx = Math.max(0, this.providers().indexOf(p))
+    if (this.scene !== 'search') this.scene = 'workspace'
+    void this.discovery.open(p, this.discovery.view.mode)
+  }
+
+  private toggleMode(): void {
+    const v = this.discovery.view
+    void this.discovery.open(v.provider, v.mode === 'home' ? 'rank' : 'home')
+  }
+
+  /** Left/right move the column. One column means the other mode is the only move. */
+  private stepSection(dir: -1 | 1): void {
+    const sections = this.discovery.visibleSections
+    if (sections.length <= 1) {
+      this.toggleMode()
+      return
+    }
+    const next = this.discovery.view.sectionIndex + dir
+    const index = next < 0 ? sections.length - 1 : next >= sections.length ? 0 : next
+    void this.discovery.choose(index)
+  }
+
   private updateWorkspace(k: string, _shift?: boolean) {
     if (!this.providers().includes(this.discovery.view.provider)) {
       this.say('当前 Key 无此平台权限', 'warn')
       return
     }
-    const v = this.discovery.view,
-      sections = this.discovery.visibleSections
-    if (k === 'esc' && v.focus === 'sections') {
-      v.focus = 'list'
+    if (['1', '2', '3', '4'].includes(k)) {
+      this.switchPlatform(Number(k) - 1)
       return
     }
+    const v = this.discovery.view
+    v.focus = 'list'
     if (k === 'tab') {
-      v.focus = v.focus === 'sections' ? 'list' : 'sections'
+      this.toggleMode()
       return
     }
-    if ((k === 'left' || k === 'right') && v.focus === 'sections') {
-      void this.discovery
-        .open(v.provider, v.mode === 'home' ? 'rank' : 'home')
-        .then(() => {
-          this.discovery.view.focus = 'sections'
-          this.emit()
-        })
+    if (k === 'left' || k === '[' || k === 'right' || k === ']') {
+      this.stepSection(k === 'left' || k === '[' ? -1 : 1)
       return
     }
     if (k === '/' || k === 's') {
@@ -1132,21 +1150,13 @@ export class Runtime {
       void this.discovery.open(v.provider, v.mode, true)
       return
     }
-    if (k === 'f' && this.discovery.section?.filters?.length) {
+    if (k === 'f') {
+      if (!this.discovery.section?.filters?.length) {
+        this.say('这个栏目没有筛选', 'warn')
+        return
+      }
       this.filterIndex = 0
       this.scene = 'filters'
-      return
-    }
-    if (v.focus === 'sections') {
-      if (['down', 'up', 'home', 'end', 'pageup', 'pagedown'].includes(k)) {
-        const index = moveCursor(
-          v.sectionIndex,
-          k,
-          sections.length,
-          sections.length,
-        )
-        void this.discovery.choose(index)
-      } else if (k === 'enter') v.focus = 'list'
       return
     }
     if (k === 'enter') {
@@ -1237,13 +1247,12 @@ export class Runtime {
       this.back()
       return
     }
-    if (k === 'tab') {
+    if (k === 'left' || k === 'right' || k === 'tab') {
       const list = this.providers()
       if (!list.length) return
       const n = list.length
-      this.provIdx = shift
-        ? (this.provIdx - 1 + n) % n
-        : (this.provIdx + 1) % n
+      const back = k === 'left' || (k === 'tab' && shift)
+      this.provIdx = back ? (this.provIdx - 1 + n) % n : (this.provIdx + 1) % n
       this.requestGeneration++
       this.searching = false
       return
@@ -1278,6 +1287,10 @@ export class Runtime {
       this.back()
       return
     }
+    if (k === '/') {
+      this.scene = 'search'
+      return
+    }
     if (k === 'enter') {
       if (this.cursor === this.rows.length && this.listMore) {
         void this.loadMore()
@@ -1294,12 +1307,13 @@ export class Runtime {
       )
   }
 
-  private updateDetail(k: string): void {
+  private updateDetail(k: string, shift = false): void {
     const n = this.eps.length
     if (!n) {
       if (k === 'esc') this.back()
       return
     }
+    if (this.selectAnchor < 0 || this.selectAnchor >= n) this.selectAnchor = this.cursor
     if (k === 'esc') {
       this.back()
       return
@@ -1308,24 +1322,36 @@ export class Runtime {
       this.scene = 'quality'
       return
     }
-    if (k === 'left' || k === 'h') this.cursor = Math.max(0, this.cursor - 1)
-    else if (k === 'right' || k === 'l')
-      this.cursor = Math.min(n - 1, this.cursor + 1)
+    const move = (next: number) => {
+      const clamped = Math.max(0, Math.min(n - 1, next))
+      if (shift) {
+        const a = Math.min(this.selectAnchor, clamped)
+        const b = Math.max(this.selectAnchor, clamped)
+        for (let i = a; i <= b; i++) this.eps[i]!.selected = true
+        this.say(`已连选 ${b - a + 1} ${this.pickNoun()}`, 'ok')
+      } else this.selectAnchor = clamped
+      this.cursor = clamped
+    }
+    if (k === 'left' || k === 'h') move(this.cursor - 1)
+    else if (k === 'right' || k === 'l') move(this.cursor + 1)
     else if (
       ['down', 'up', 'pageup', 'pagedown', 'home', 'end', 'j', 'k'].includes(k)
     )
-      this.cursor = moveCursor(
-        this.cursor,
-        k === 'j' ? 'down' : k === 'k' ? 'up' : k,
-        n,
-        this.viewport.height - 8,
-        this.isMovie()
-          ? 1
-          : gridWindow(n, this.cursor, this.viewport.width - 2, 1).perRow,
+      move(
+        moveCursor(
+          this.cursor,
+          k === 'j' ? 'down' : k === 'k' ? 'up' : k,
+          n,
+          this.viewport.height - 8,
+          this.isMovie()
+            ? 1
+            : gridWindow(n, this.cursor, this.viewport.width - 2, 1).perRow,
+        ),
       )
-    else if (k === ' ' || k === 'space')
-      this.eps[this.cursor].selected = !this.eps[this.cursor].selected
-    else if (k === 'a') {
+    else if (k === ' ' || k === 'space') {
+      this.eps[this.cursor]!.selected = !this.eps[this.cursor]!.selected
+      this.selectAnchor = this.cursor
+    } else if (k === 'a') {
       for (const ep of this.eps) ep.selected = true
       this.say(`已选 ${n} ${this.pickNoun()}`, 'ok')
     } else if (k === 'c') {
@@ -1350,6 +1376,7 @@ export class Runtime {
       this.searching = false
       this.scene = 'detail'
       this.cursor = this.detailCursor
+      this.selectAnchor = this.detailCursor
       return
     }
     if (this.searching) return
@@ -1392,11 +1419,11 @@ export class Runtime {
       return
     }
     if (k === 'j' || k === 'down') {
-      if (onAudio) this.audioIdx = (this.audioIdx + 1) % n
-      else this.qIdx = (this.qIdx + 1) % n
+      if (onAudio) this.audioIdx = Math.min(n - 1, this.audioIdx + 1)
+      else this.qIdx = Math.min(n - 1, this.qIdx + 1)
     } else if (k === 'k' || k === 'up') {
-      if (onAudio) this.audioIdx = (this.audioIdx - 1 + n) % n
-      else this.qIdx = (this.qIdx - 1 + n) % n
+      if (onAudio) this.audioIdx = Math.max(0, this.audioIdx - 1)
+      else this.qIdx = Math.max(0, this.qIdx - 1)
     } else if (k === 'enter') {
       this.applyOptions()
       void this.afterQuality()
@@ -1428,7 +1455,6 @@ export class Runtime {
       if (q) {
         t.quality = q.stream || q.id
         t.caption = q.caption
-        t.needSource = q.group === 'source' || q.stream === 'source'
         t.group = this.cfg.releaseGroup
         if (q.height > 0) t.height = q.tier || (t.provider === 'hongguo' && q.width > 0 && q.height > q.width
           ? tierHeight(q.height, q.width) : tierHeight(q.width, q.height))
@@ -1441,11 +1467,10 @@ export class Runtime {
         : tracks.map((a) => ({ ...a }))
     }
     this.probeFailed = false
-    if (q)
-      this.say(
-        a ? `画质 ${q.label} · 音轨 ${a.label}` : `画质 ${q.label}`,
-        'ok',
-      )
+    if (q) {
+      const name = qualityChoiceLabel(q)
+      this.say(a ? `画质 ${name} · 音轨 ${a.label}` : `画质 ${name}`, 'ok')
+    }
   }
 
   private updateTMDB(k: string): void {
@@ -2172,6 +2197,7 @@ export class Runtime {
         },
       ]
       this.scene = 'detail'
+      this.selectAnchor = this.cursor
       this.emit()
     } catch (e) {
       this.say(e instanceof Error ? e.message : String(e), 'err')
@@ -2298,6 +2324,7 @@ export class Runtime {
       episode ?? { vid, title: this.detailTitle, number: 1, selected: true },
     ]
     this.cursor = 0
+    this.selectAnchor = 0
     this.probeFailed = false
     this.pushNavigation(origin, originCursor)
     this.scene = 'detail'
@@ -2367,6 +2394,7 @@ export class Runtime {
         year: 0,
       }
       this.cursor = 0
+      this.selectAnchor = 0
       this.probeFailed = false
       this.scene = 'detail'
       this.say(
@@ -2408,6 +2436,7 @@ export class Runtime {
       await this.applyMovieEditions(provider, data)
       if (generation !== this.requestGeneration) return
       this.cursor = 0
+      this.selectAnchor = 0
       this.probeFailed = false
       if (generation !== this.requestGeneration) return
       this.scene = 'detail'
@@ -2419,7 +2448,7 @@ export class Runtime {
             : '电影'
           : `${n} 集`
       this.say(
-        n ? `${this.detailTitle} · ${noun}` : '这部没有返回正片',
+        n ? `${this.detailTitle} · ${noun} · 回车去画质` : '这部没有返回正片',
         n ? 'ok' : 'warn',
       )
     } catch (e) {

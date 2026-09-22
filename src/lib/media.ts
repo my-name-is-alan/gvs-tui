@@ -138,65 +138,21 @@ export function pickURL(data: Record<string, unknown>): string {
 }
 
 
-/** Friend-tool 原画 CDN (gateway play_tv_source.go). */
-export const TENCENT_SOURCE_CDN_HOST = 'https://videohywb.tc.qq.com'
-
 export type TencentDownloadPickOpts = {
   stream?: string
   caption?: string
-  needSource?: boolean
   formatId?: string
 }
 
-function tencentSourceRow(raw: Record<string, unknown>): boolean {
-  const name = asString(raw.name).toLowerCase()
-  const stream = asString(raw.stream).toLowerCase()
-  return name === 'source' || name === 'original' || stream === 'original' || stream === 'source'
-}
-
-function tencentBuildSourceURL(fname: string, vkey: string): string {
-  const f = fname.trim()
-  const k = vkey.trim()
-  if (!f || !k) return ''
-  return `${TENCENT_SOURCE_CDN_HOST}/${f}?vkey=${encodeURIComponent(k)}`
-}
-
 /**
- * Pick a downloadable Tencent URL from play().
- * - Source/原画: prefer formats[] name=source with url, else build videohywb from fname+vkey.
- * - Otherwise: pickURL (video.url / top-level / any format url), then match defn/caption/id.
+ * Pick a downloadable Tencent URL from play(), matching the selected normal
+ * quality/caption format before falling back to the default video URL.
  */
 export function pickTencentDownloadURL(
   data: Record<string, unknown>,
   opts: TencentDownloadPickOpts = {},
 ): string {
   const stream = (opts.stream || '').trim().toLowerCase()
-  const wantSource =
-    !!opts.needSource || stream === 'source' || stream === 'original'
-
-  if (wantSource) {
-    const formats = Array.isArray(data.formats) ? data.formats : []
-    let sawSource = false
-    for (const raw of formats) {
-      if (!isObj(raw) || !tencentSourceRow(raw)) continue
-      sawSource = true
-      const existing = asString(raw.url) || asString(raw.playlist_url)
-      if (existing) return existing
-      const built = tencentBuildSourceURL(asString(raw.fname), asString(raw.vkey))
-      if (built) return built
-    }
-    if (sawSource) throw new Error('原画缺少 vkey/fname')
-    throw new Error('原画缺少 vkey/fname')
-  }
-
-  // Prefer explicit play URLs (gateway TV attachPlayURLs) before formats[].
-  if (isObj(data.video)) {
-    const u = asString(data.video.url) || asString(data.video.playlist_url)
-    if (u) return u
-  }
-  const top = asString(data.url) || asString(data.playlist_url)
-  if (top) return top
-
   const wantCap = (opts.caption || '').trim().toLowerCase()
   const wantId = (opts.formatId || '').trim()
   const formats = Array.isArray(data.formats) ? data.formats : []
@@ -223,6 +179,16 @@ export function pickTencentDownloadURL(
     }
     if (best && bestScore > 0) return best
   }
+
+  // A selected format must win over the gateway's default video URL. The
+  // default URL can point at a different ladder (often AAC audio), while the
+  // formats catalog carries the requested caption/quality variant.
+  if (isObj(data.video)) {
+    const u = asString(data.video.url) || asString(data.video.playlist_url)
+    if (u) return u
+  }
+  const top = asString(data.url) || asString(data.playlist_url)
+  if (top) return top
 
   // Last resort: pickURL (video already checked; may hit first formats[] url).
   return pickURL(data)
