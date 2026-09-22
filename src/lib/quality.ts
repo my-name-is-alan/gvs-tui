@@ -542,17 +542,27 @@ export function qualitiesFromTencentFormats(formats: unknown): Quality[] {
 export function audiosFromTencent(data: Record<string, unknown>): Audio[] {
   const out: Audio[] = []
   const seen = new Set<string>()
-  const add = (id: string, label: string, lang: string, codec: string, isDefault: boolean) => {
+  const add = (
+    id: string,
+    label: string,
+    lang: string,
+    codec: string,
+    isDefault: boolean,
+    url = '',
+  ) => {
     const key = id || label
     if (!key || seen.has(key)) return
     seen.add(key)
+    const playlist = url.trim()
     out.push({
       id: key,
       label: label || key,
       lang: lang || '原声',
       codec: codec || '',
       isDefault,
-      selected: true,
+      selected: !playlist ? false : true,
+      embedded: !playlist,
+      url: playlist || undefined,
     })
   }
 
@@ -562,7 +572,15 @@ export function audiosFromTencent(data: Record<string, unknown>): Audio[] {
     const id = asString(tr.id) || asString(tr.name)
     const label = asString(tr.cname) || asString(tr.sname) || asString(tr.name) || id
     if (!id && !label) continue
-    add(id || label, label, asString(tr.lang) || asString(tr.name), asString(tr.name), out.length === 0)
+    const url = asString(tr.playlist_url) || asString(tr.url)
+    add(
+      id || label,
+      label,
+      tencentAudioLang(tr, label),
+      asString(tr.codec) || tencentAudioCodecLabel(tr),
+      out.length === 0,
+      url,
+    )
   }
   if (out.length) {
     if (!out.some((a) => a.isDefault)) out[0]!.isDefault = true
@@ -584,6 +602,55 @@ export function audiosFromTencent(data: Record<string, unknown>): Audio[] {
   }
   if (out.length && !out.some((a) => a.isDefault)) out[0]!.isDefault = true
   return out
+}
+
+function tencentAudioBlob(tr: Record<string, unknown>): string {
+  return [tr.track, tr.name, tr.cname, tr.sname, tr.codec].map(asString).join(' ').toLowerCase()
+}
+
+/** Codec column. Chinese display names are not codecs. */
+export function tencentAudioCodecLabel(tr: Record<string, unknown>): string {
+  const blob = tencentAudioBlob(tr)
+  if (/atmos|全景声/.test(blob)) return 'Atmos'
+  if (/dts/.test(blob)) return 'DTS'
+  if (/e-?ac-?3|杜比/.test(blob)) return 'E-AC-3'
+  if (/ac-?3|5\.1|环绕/.test(blob)) return 'AC-3'
+  if (/aac/.test(blob)) return 'AAC'
+  return ''
+}
+
+/** Language column. Do not repeat the track title. */
+export function tencentAudioLang(tr: Record<string, unknown>, label: string): string {
+  const lang = asString(tr.lang) || asString(tr.language)
+  if (!lang) return '原声'
+  if (lang === label || lang === asString(tr.name) || lang === asString(tr.cname)) return '原声'
+  return lang
+}
+
+export type TencentAudioFile = { id: string; label: string; lang: string; url: string }
+
+/** Selected Tencent tracks that have their own playlist. Missing URLs are named. */
+export function tencentAudioDownloadPlan(
+  data: Record<string, unknown>,
+  selected: Array<{ id: string; label: string; lang: string }>,
+): { files: TencentAudioFile[]; missing: string[] } {
+  if (!selected.length) return { files: [], missing: [] }
+  const byId = new Map<string, Record<string, unknown>>()
+  const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
+  for (const tr of tracks) {
+    if (!isObj(tr)) continue
+    const id = asString(tr.id) || asString(tr.name)
+    if (id) byId.set(id, tr)
+  }
+  const files: TencentAudioFile[] = []
+  const missing: string[] = []
+  for (const s of selected) {
+    const row = byId.get(s.id)
+    const url = row ? asString(row.playlist_url) || asString(row.url) : ''
+    if (!url) missing.push(s.label || s.id)
+    else files.push({ id: s.id, label: s.label, lang: s.lang, url })
+  }
+  return { files, missing }
 }
 
 /** 画质列表按文件体积从大到小。体积相同再比分辨率、帧率。 */

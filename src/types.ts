@@ -51,7 +51,7 @@ export type Quality = {
   encodeTag?: string
 }
 /** Selectable audio track (only some platforms expose more than one). */
-export type Audio = { id: string; label: string; lang: string; codec: string; isDefault: boolean; selected: boolean; embedded?: boolean; vid?: string }
+export type Audio = { id: string; label: string; lang: string; codec: string; isDefault: boolean; selected: boolean; embedded?: boolean; vid?: string; url?: string }
 export type Detail = {
   title: string
   desc: string

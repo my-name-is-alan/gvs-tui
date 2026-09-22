@@ -266,6 +266,7 @@ describe('moviePlayables', () => {
 
 import {
   audiosFromTencent,
+  tencentAudioDownloadPlan,
   isTencentEm93,
   qualitiesFromTencentFormats,
   qualityFormatId,
@@ -394,8 +395,23 @@ describe('audiosFromTencent', () => {
     })
     expect(rows.map((a) => a.label)).toEqual(['杜比音效', '标准音轨'])
     expect(rows.map((a) => a.id)).toEqual(['7', '1'])
+    expect(rows.map((a) => a.codec)).toEqual(['E-AC-3', 'AAC'])
+    expect(rows.map((a) => a.lang)).toEqual(['原声', '原声'])
     expect(rows[0]!.isDefault).toBe(true)
-    expect(rows.every((a) => a.selected)).toBe(true)
+    expect(rows.every((a) => a.embedded)).toBe(true)
+  })
+
+  test('keeps a real playlist separate from the Chinese title', () => {
+    const rows = audiosFromTencent({
+      audio_tracks: [
+        { id: '2', name: '5.1环绕声', cname: '5.1环绕声', playlist_url: 'https://cdn.example/51.m3u8' },
+        { id: '9', name: '杜比音效', cname: '杜比音效', url: 'https://cdn.example/db.m3u8', lang: 'zh-cn' },
+      ],
+    })
+    expect(rows.map((a) => a.codec)).toEqual(['AC-3', 'E-AC-3'])
+    expect(rows.map((a) => a.lang)).toEqual(['原声', 'zh-cn'])
+    expect(rows.map((a) => a.url)).toEqual(['https://cdn.example/51.m3u8', 'https://cdn.example/db.m3u8'])
+    expect(rows.every((a) => a.selected && !a.embedded)).toBe(true)
   })
 
   test('promotes name=audio formats when audio_tracks missing', () => {
@@ -417,6 +433,26 @@ describe('audiosFromTencent', () => {
         formats: [{ id: 3, name: 'fhd', cname: '蓝光', caption: 'soft', width: 1920, height: 1080 }],
       }),
     ).toEqual([])
+  })
+})
+
+describe('tencentAudioDownloadPlan', () => {
+  test('matches selected ids to playlist urls and names the ones without', () => {
+    const plan = tencentAudioDownloadPlan(
+      {
+        audio_tracks: [
+          { id: '2', playlist_url: 'https://cdn.example/51.m3u8' },
+          { id: '9', url: 'https://cdn.example/db.m3u8' },
+        ],
+      },
+      [
+        { id: '2', label: '5.1环绕声', lang: '原声' },
+        { id: '9', label: '杜比音效', lang: '原声' },
+        { id: '1', label: '标准音轨', lang: '原声' },
+      ],
+    )
+    expect(plan.files.map((f) => f.url)).toEqual(['https://cdn.example/51.m3u8', 'https://cdn.example/db.m3u8'])
+    expect(plan.missing).toEqual(['标准音轨'])
   })
 })
 

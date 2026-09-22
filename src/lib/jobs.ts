@@ -1,5 +1,5 @@
 import { tencentPlayInput } from './tencent-qr.ts'
-import { tencentPlayQualityInput } from './quality.ts'
+import { tencentAudioDownloadPlan, tencentPlayQualityInput } from './quality.ts'
 import { resolveHongguoDownload } from './hongguo.ts'
 import { mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { extname, join } from 'node:path'
@@ -266,24 +266,50 @@ async function dlTencent(
   emit('取链', 0.05, t.vid)
   const play = () => cli.invoke('tencent', 'play', { vid: t.vid, ...tencentPlayQualityInput(t), ...tencentPlayInput(cfg) }, cli.extra(cfg, 'tencent'))
   const pick = (data: Record<string, unknown>) => pickTencentDownloadURL(data, tencentDlPickOpts(t))
-  let cdn = pick(await play())
+  let played = await play()
+  let cdn = pick(played)
   if (!cdn) throw new Error('腾讯没有可用视频地址')
   logTencentDownloadHost(cdn, t)
   const raw = join(dir, `.${t.vid}.bin`)
+  const temps = [raw]
   emit('下载', 0.1, '')
   try {
-    await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote, cfg.threads)
-  } catch (e) {
-    if (!(e instanceof CdnDenied)) throw e
-    emit('重取', 0.1, `CDN ${e.status}，重新取链后下载`)
-    cdn = pick(await play())
-    if (!cdn) throw new Error('腾讯重新取链失败')
-    logTencentDownloadHost(cdn, t)
-    await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.75), retryNote, cfg.threads)
+    try {
+      await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.55), retryNote, cfg.threads)
+    } catch (e) {
+      if (!(e instanceof CdnDenied)) throw e
+      emit('重取', 0.1, `CDN ${e.status}，重新取链后下载`)
+      played = await play()
+      cdn = pick(played)
+      if (!cdn) throw new Error('腾讯重新取链失败')
+      logTencentDownloadHost(cdn, t)
+      await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.55), retryNote, cfg.threads)
+    }
+    const plan = tencentAudioDownloadPlan(played, t.audioTracks ?? [])
+    if (plan.missing.length) throw new Error(`腾讯音轨没有下载地址：${plan.missing.join('、')}`)
+    if (!plan.files.length) {
+      emit('封装', 0.86, out)
+      await mkvmergeRemux(mkvmerge, raw, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
+      return
+    }
+    const mux: MuxAudio[] = []
+    for (let i = 0; i < plan.files.length; i++) {
+      const audio = plan.files[i]!
+      const dest = join(dir, `.${t.vid}.a${i}.bin`)
+      temps.push(dest)
+      const base = 0.55 + (0.25 * i) / plan.files.length
+      const span = 0.25 / plan.files.length
+      emit('音轨', base, audio.label)
+      await downloadProgress(audio.url, dest, referer('tencent'), speedCB(emit, '音轨', base, base + span), retryNote, cfg.threads)
+      mux.push({ path: dest, title: audio.label, lang: audio.lang })
+    }
+    emit('封装', 0.86, out)
+    await mkvmergeMux(mkvmerge, raw, mux, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
+  } finally {
+    for (const path of temps) {
+      try { unlinkSync(path) } catch { /* keep */ }
+    }
   }
-  emit('封装', 0.86, out)
-  await mkvmergeRemux(mkvmerge, raw, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
-  try { unlinkSync(raw) } catch { /* keep */ }
 }
 
 async function dlDouyin(
