@@ -2,6 +2,7 @@ import type { Audio, Episode, Quality, VipProbe } from '../types.ts'
 import type { FileConfig } from './config.ts'
 import { ReloginRequired, type GwClient } from './client.ts'
 import { anyInt, asBool, asString, isObj } from './util.ts'
+import { youkuSpokenLangKey } from './media.ts'
 import { hongguoItem, pickHongguo } from './media.ts'
 import { hongguoResolveInput } from './hongguo.ts'
 import { tencentPlayInput } from './tencent-qr.ts'
@@ -14,10 +15,16 @@ export function youkuAudiosFromPlay(data: Record<string, unknown>, sourceVid = '
   const audios: Audio[] = []
   const lang = editionLang || youkuLangForVid(data, sourceVid)
   const addAudio = (id: string, label: string, streamLang: string, codec: string, isDefault: boolean) => {
-    if (!id || audios.some((a) => a.id === id)) return
-    const keyed = sourceVid ? `${sourceVid}|${id}` : id
+    if (!id) return
+    // A concrete stream language is the rendition that will be downloaded.
+    // The edition name only fills tracks Youku left as default/原声.
+    const spoken = streamLang && streamLang !== '原声' ? streamLang : ''
+    const rowLang = spoken || lang || streamLang
+    const langKey = youkuSpokenLangKey(rowLang)
+    const base = langKey ? `${id}|${langKey}` : id
+    const keyed = sourceVid ? `${sourceVid}|${base}` : base
     if (audios.some((a) => a.id === keyed)) return
-    audios.push({ id: keyed, label, lang: lang || streamLang, codec, isDefault, selected: true, vid: sourceVid || undefined })
+    audios.push({ id: keyed, label, lang: rowLang, codec, isDefault, selected: true, vid: sourceVid || undefined })
   }
 
   const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
@@ -124,6 +131,7 @@ function youkuAudioLangLabel(lang: string, langcode: string): string {
   if (isCodecLangToken(langcode)) langcode = ''
   const s = `${langcode} ${lang}`.toLowerCase()
   if (/(英语|english|\ben\b|\beng\b)/.test(s) || langcode.toLowerCase() === 'en') return '英语'
+  if (/(粤|cantonese|\byue\b)/.test(s)) return '粤语'
   if (/(普通|国语|guoyu|\bchi\b|\bzh\b)/.test(s)) return '普通话'
   if (lang && !/^(en|eng|default)$/i.test(lang)) return lang
   return langcode || lang || '原声'

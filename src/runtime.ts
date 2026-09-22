@@ -1,4 +1,4 @@
-import { startTencentDualQR, pollTencentQR, pollTencentDualQR, tencentLabels, tencentPlayInput, type TencentMode } from './lib/tencent-qr.ts'
+import { startTencentDualQR, pollTencentQR, pollTencentDualQR, applyTencentLogin, tencentLabels, tencentPlayInput, type TencentMode } from './lib/tencent-qr.ts'
 import { fetchTencentAccount, txAccountSummary, type TxAccount } from './lib/tencent-account.ts'
 import { Discovery, discoveryRows } from './lib/discovery'
 import { Navigation, moveCursor } from './lib/navigation'
@@ -2549,9 +2549,11 @@ export class Runtime {
         mark('app', data.app)
         mark('tv', data.tv)
         if (this.qrDualDone.app && this.qrDualDone.tv) {
+          applyTencentLogin(this.cfg, 'app', data.app)
+          applyTencentLogin(this.cfg, 'tv', data.tv)
           this.cfg.tencentMode = 'tv'
           this.persistConfig()
-          this.say('App 与 TV 双扫均已登录；默认播放会话切到极光 TV', 'ok')
+          this.say('App 与 TV 双扫均已登录；会话已写入网关存储，默认播放切到极光 TV', 'ok')
           void this.refreshTencentAccount(false)
           this.scene = 'settings'
           this.qrTencentDual = false
@@ -2571,7 +2573,9 @@ export class Runtime {
         const data = await pollTencentQR(this.cli, mode)
         if (this.scene !== 'qr' || this.qrTencent !== mode) return
         if (data.logged_in === true) {
-          this.say(`${tencentLabels[mode]}成功；当前登录方式已选择该独立会话`, 'ok')
+          applyTencentLogin(this.cfg, mode, data)
+          this.persistConfig()
+          this.say(`${tencentLabels[mode]}成功；扫码结果已写入网关存储`, 'ok')
           this.scene = 'settings'; this.stopQR()
         } else if (data.status === 'expired' || data.status === 'cancelled') { this.say(data.status === 'cancelled' ? '已取消授权，请重新出码' : '二维码已过期，请重新扫码', 'warn'); this.stopQR() }
         else this.say(data.status === 'scanned' ? '已扫码，等待手机确认' : '等待扫码确认', 'info')

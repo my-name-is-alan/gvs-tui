@@ -1115,14 +1115,55 @@ export function youkuUsesSeparateAudio(data: Record<string, unknown>, quality = 
   return tracks.some((tr) => isObj(tr) && !!asString(tr.playlist_url))
 }
 
-export function youkuAudioPlaylist(data: Record<string, unknown>, want: string): string {
+const YOUKU_LANG_KEYS = new Set(['en', 'zh', 'yue'])
+
+/** Stable spoken-language key. Codec names and "default" stay empty. */
+export function youkuSpokenLangKey(lang: string, langcode = ''): string {
+  const s = `${langcode} ${lang}`.toLowerCase()
+  if (/(英语|english|\ben\b|\beng\b)/.test(s)) return 'en'
+  if (/(粤|cantonese|\byue\b)/.test(s)) return 'yue'
+  if (/(普通|国语|guoyu|mandarin|\bzh\b|\bchi\b|\bcmn\b)/.test(s)) return 'zh'
+  return ''
+}
+
+/** `vid|streamType|langKey`, `streamType|langKey`, or a bare stream type. */
+export function youkuAudioStreamType(trackId: string): string {
+  const parts = trackId.split('|').filter(Boolean)
+  if (!parts.length) return ''
+  if (parts.length === 1) return parts[0]!
+  if (YOUKU_LANG_KEYS.has(parts[parts.length - 1]!)) return parts[parts.length - 2]!
+  return parts[parts.length - 1]!
+}
+
+export function youkuAudioLangKeyFromId(trackId: string): string {
+  const parts = trackId.split('|').filter(Boolean)
+  const last = parts[parts.length - 1] ?? ''
+  return YOUKU_LANG_KEYS.has(last) ? last : ''
+}
+
+export function youkuAudioPlaylist(data: Record<string, unknown>, want: string, lang = ''): string {
   const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
-  const streamType = want.includes('|') ? want.slice(want.indexOf('|') + 1) : want
-  let chosen: Record<string, unknown> | null = null
+  const streamType = youkuAudioStreamType(want)
+  const wantKey = youkuSpokenLangKey(lang) || youkuAudioLangKeyFromId(want)
+  const candidates: Record<string, unknown>[] = []
   for (const tr of tracks) {
     if (!isObj(tr)) continue
     if (streamType && asString(tr.stream_type) !== streamType) continue
-    if (!chosen || tr.default === true) chosen = tr
+    if (!asString(tr.playlist_url)) continue
+    candidates.push(tr)
   }
-  return chosen ? asString(chosen.playlist_url) : ''
+  if (!candidates.length) return ''
+  if (wantKey) {
+    const labeled = candidates.filter((tr) => youkuSpokenLangKey(asString(tr.lang), asString(tr.langcode)))
+    const hit = labeled.find((tr) => youkuSpokenLangKey(asString(tr.lang), asString(tr.langcode)) === wantKey)
+    if (hit) return asString(hit.playlist_url)
+    // This vid has no language split. Its playlists belong to the edition itself.
+    if (!labeled.length) {
+      const def = candidates.find((tr) => tr.default === true) ?? candidates[0]!
+      return asString(def.playlist_url)
+    }
+    return ''
+  }
+  const def = candidates.find((tr) => tr.default === true) ?? candidates[0]!
+  return asString(def.playlist_url)
 }

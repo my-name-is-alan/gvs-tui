@@ -33,7 +33,7 @@ describe('youkuAudiosFromPlay', () => {
     })
     expect(rows.map((a) => a.label)).toEqual(['杜比全景声', 'DTS:X', 'AAC'])
     expect(rows.map((a) => a.lang)).toEqual(['英语', '英语', '英语'])
-    expect(rows[0].id).toBe('cmfa4hd5_atmos51')
+    expect(rows[0].id).toBe('cmfa4hd5_atmos51|en')
     expect(rows[2].isDefault).toBe(true)
     expect(rows.every(a => a.selected)).toBe(true)
     expect(rows.every((a) => a.id)).toBe(true)
@@ -117,7 +117,7 @@ test('youkuEditionLabel', () => {
   expect(youkuEditionLabel('英语', 'en')).toBe('英语版')
 })
 
-test('youkuMergeEditionAudios keeps 英语 and 普通话 cmfa1hd3 as separate rows', () => {
+test('youkuMergeEditionAudios keeps each vid stream language on the same codec', () => {
   const rows = youkuMergeEditionAudios(
     'XEN',
     {
@@ -129,8 +129,8 @@ test('youkuMergeEditionAudios keeps 英语 and 普通话 cmfa1hd3 as separate ro
     },
     [{ vid: 'XCN', data: { audio_tracks: [{ stream_type: 'cmfa1hd3', lang: 'en', langcode: 'en' }] }, lang: '普通话' }],
   )
-  expect(rows.map((a) => a.id)).toEqual(['XEN|cmfa1hd3', 'XCN|cmfa1hd3'])
-  expect(rows.map((a) => a.lang)).toEqual(['英语', '普通话'])
+  expect(rows.map((a) => a.id)).toEqual(['XEN|cmfa1hd3|en', 'XCN|cmfa1hd3|en'])
+  expect(rows.map((a) => a.lang)).toEqual(['英语', '英语'])
   expect(rows[0]!.isDefault).toBe(true)
   expect(rows[1]!.isDefault).toBe(false)
   expect(rows[1]!.vid).toBe('XCN')
@@ -172,13 +172,13 @@ test('probeYouku also plays the sibling language vid for audio', async () => {
           ],
         }
       }
-      return { audio_tracks: [{ stream_type: 'cmfa1hd3', lang: 'en', langcode: 'en' }] }
+      return { audio_tracks: [{ stream_type: 'cmfa1hd3', lang: '普通话', langcode: 'guoyu' }] }
     },
   } as unknown as GwClient
   const opts = await probeOptions(cli, {} as FileConfig, 'youku', 'XEN')
   expect(vids).toEqual(['XEN', 'XCN'])
   expect(opts.audios.map((a) => a.lang)).toEqual(['英语', '普通话'])
-  expect(opts.audios.map((a) => a.id)).toEqual(['XEN|cmfa1hd3', 'XCN|cmfa1hd3'])
+  expect(opts.audios.map((a) => a.id)).toEqual(['XEN|cmfa1hd3|en', 'XCN|cmfa1hd3|zh'])
 })
 
 test('probeYouku uses episode languages when play omits languages and UPS says en', async () => {
@@ -197,7 +197,7 @@ test('probeYouku uses episode languages when play omits languages and UPS says e
           ],
         }
       }
-      return { audio_tracks: [{ stream_type: 'cmfa1hd3', lang: 'en', langcode: 'en' }] }
+      return { audio_tracks: [{ stream_type: 'cmfa1hd3', lang: 'default' }] }
     },
   } as unknown as GwClient
   const opts = await probeOptions(cli, {} as FileConfig, 'youku', 'XEN', {
@@ -208,6 +208,12 @@ test('probeYouku uses episode languages when play omits languages and UPS says e
   })
   expect(vids).toEqual(['XEN', 'XCN'])
   expect(opts.audios.map((a) => a.lang)).toEqual(['英语', '英语', '英语', '普通话'])
+  expect(opts.audios.map((a) => a.id)).toEqual([
+    'XEN|cmfa4hd5_atmos51|en',
+    'XEN|cmfa3hd4_dtsx|en',
+    'XEN|cmfa1hd3|en',
+    'XCN|cmfa1hd3|zh',
+  ])
 })
 
 describe('moviePlayables', () => {

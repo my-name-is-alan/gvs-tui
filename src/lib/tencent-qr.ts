@@ -94,6 +94,19 @@ export async function startTencentDualQR(
   return { appPath, tvPath }
 }
 
+/** Keep a successful scan in the local config. Gateway files alone disappear on update. */
+export function applyTencentLogin(cfg: FileConfig, mode: TencentMode, data: Record<string, unknown>): boolean {
+  if (data.logged_in !== true) return false
+  const cookie = typeof data.cookie === 'string' ? data.cookie.trim() : ''
+  if (cookie) cfg.tencentCookie = cookie
+  cfg.tencentMode = mode
+  if (mode === 'tv') {
+    const tvid = typeof data.tvid === 'string' ? data.tvid.trim() : ''
+    if (tvid) cfg.tencentTVDevice = tvid
+  }
+  return true
+}
+
 export function pollTencentQR(cli: Pick<GwClient, 'invoke'>, mode: TencentMode) {
   return cli.invoke('tencent', 'login', {
     method: mode === 'web' ? 'qr' : mode,

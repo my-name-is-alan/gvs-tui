@@ -21,9 +21,23 @@ type HeaderWS = {
 
 const LIMIT_RE = /429|TUNNEL_LIMITED|CONCURRENCY_LIMITED/
 const OCCUPIED = '隧道已被同一个 Key 的另一处占用（每 Key 只允许一条），稍后自动重试'
-/** A socket that dies this fast is a kick/FIN, not an idle drop. */
-const SHORT_LIFE_MS = 2500
 const KEEPALIVE_MS = 20_000
+/** Server text-pings every 2s. Silence longer than this means the process is gone. */
+const SILENCE_MS = 8_000
+/** Private close code: a newer tunnel for this key took the slot. */
+const CLOSE_REPLACED = 4000
+
+export type TunnelStop = { opened: boolean; code: number; reason: string }
+
+export function tunnelRetryWait(stop: TunnelStop, failures: number, message: string): number {
+  if (replaced(stop) || LIMIT_RE.test(message)) return 30_000
+  if (stop.opened) return 1_000
+  return retryDelay(failures, message)
+}
+
+function replaced(stop: TunnelStop): boolean {
+  return stop.code === CLOSE_REPLACED || /replaced/i.test(stop.reason)
+}
 
 /** Backoff after a failed attempt: limits/refusals get a long pause, not 3s. */
 function retryDelay(failures: number, message: string): number {
@@ -53,11 +67,17 @@ export function runTunnel(
       let opened = false
       let transport: 'ws' | 'legacy' = 'ws'
       let lastError = ''
-      const started = Date.now()
+      let stop: TunnelStop = { opened: false, code: 0, reason: '' }
       try {
-        opened = await tunnelOnce(host, key, onStatus, signal)
+        stop = await tunnelOnce(host, key, onStatus, signal)
+        opened = stop.opened
         transport = 'ws'
-        if (opened) onStatus(false, 'closed', 'ws')
+        if (replaced(stop)) {
+          lastError = OCCUPIED
+          onStatus(false, OCCUPIED, 'ws')
+        } else if (opened) {
+          onStatus(false, 'closed', 'ws')
+        }
       } catch (e) {
         if (signal.aborted) return
         lastError = e instanceof Error ? e.message : String(e)
@@ -68,6 +88,8 @@ export function runTunnel(
             await tunnelLegacy(host, key, onStatus, signal)
             opened = true
             transport = 'legacy'
+            stop = { opened: true, code: 0, reason: '' }
+            lastError = ''
             onStatus(false, 'closed', 'legacy')
           } catch (e2) {
             if (signal.aborted) return
@@ -78,18 +100,8 @@ export function runTunnel(
           onStatus(false, lastError, 'ws')
         }
       }
-      const lived = Date.now() - started
-      const kicked = opened && lived < SHORT_LIFE_MS
-      if (kicked && !LIMIT_RE.test(lastError)) {
-        lastError = OCCUPIED
-        onStatus(false, OCCUPIED, transport)
-      }
-      failures = opened && !kicked ? 0 : failures + 1
-      const wait = kicked || LIMIT_RE.test(lastError)
-        ? 30_000
-        : opened
-          ? 1_000
-          : retryDelay(failures, lastError)
+      failures = opened && !replaced(stop) && !LIMIT_RE.test(lastError) ? 0 : failures + 1
+      const wait = tunnelRetryWait(stop, failures, lastError)
       try {
         await sleep(wait, signal)
       } catch {
@@ -105,7 +117,7 @@ async function tunnelOnce(
   key: string,
   onStatus: (ok: boolean, err: string, transport?: 'ws' | 'legacy') => void,
   signal: AbortSignal,
-): Promise<boolean> {
+): Promise<TunnelStop> {
   const u = new URL(host)
   const route = await tunnelRoute(u.hostname)
   signal.throwIfAborted()
@@ -120,13 +132,17 @@ async function tunnelOnceWS(
   key: string,
   onStatus: (ok: boolean, err: string, transport?: 'ws' | 'legacy') => void,
   signal: AbortSignal,
-): Promise<boolean> {
+): Promise<TunnelStop> {
   signal.throwIfAborted()
   const url = tunnelURL(host)
   const WS = WebSocket as unknown as HeaderWS
   const ws = new WS(url, { headers: { Authorization: `Bearer ${key}` } })
   let beat: NodeJS.Timeout | undefined
+  let watch: NodeJS.Timeout | undefined
   let opened = false
+  let code = 0
+  let reason = ''
+  let lastRx = Date.now()
 
   const { promise, resolve, reject } = Promise.withResolvers<void>()
   const fail = (e: unknown) => {
@@ -140,6 +156,7 @@ async function tunnelOnceWS(
   ws.addEventListener('open', () => {
     if (signal.aborted) { ws.close(); return }
     opened = true
+    lastRx = Date.now()
     onStatus(true, '', 'ws')
     beat = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) return
@@ -149,6 +166,10 @@ async function tunnelOnceWS(
         /* close path handles this */
       }
     }, KEEPALIVE_MS)
+    watch = setInterval(() => {
+      if (Date.now() - lastRx < SILENCE_MS) return
+      try { ws.close() } catch { /* close event ends the session */ }
+    }, 2_000)
   })
   ws.addEventListener('error', () => {
     // After OPEN the close event is the real end. Rejecting here would
@@ -156,6 +177,8 @@ async function tunnelOnceWS(
     if (!opened) fail(new Error('tunnel websocket error'))
   })
   ws.addEventListener('close', (ev) => {
+    code = ev.code
+    reason = ev.reason ?? ''
     if (!opened) {
       fail(new Error(`tunnel websocket closed ${ev.code}${ev.reason ? ` ${ev.reason}` : ''}`))
       return
@@ -163,6 +186,7 @@ async function tunnelOnceWS(
     resolve()
   })
   ws.addEventListener('message', (ev) => {
+    lastRx = Date.now()
     void (async () => {
       const text = typeof ev.data === 'string' ? ev.data : await readBlob(ev.data)
       await handleTunText(text, (s) => ws.send(s))
@@ -171,9 +195,10 @@ async function tunnelOnceWS(
 
   try {
     await promise
-    return opened
+    return { opened, code, reason }
   } finally {
     if (beat) clearInterval(beat)
+    if (watch) clearInterval(watch)
     signal.removeEventListener('abort', onAbort)
     try {
       ws.close()
@@ -190,7 +215,7 @@ async function tunnelOnceDial(
   onStatus: (ok: boolean, err: string, transport?: 'ws' | 'legacy') => void,
   signal: AbortSignal,
   tcpHost: string,
-): Promise<boolean> {
+): Promise<TunnelStop> {
   const u = new URL(host)
   const port = u.port ? Number(u.port) : (u.protocol === 'https:' ? 443 : 80)
   const sock = await dial(u.hostname, port, u.protocol === 'https:', signal, tcpHost)
@@ -199,7 +224,10 @@ async function tunnelOnceDial(
     `GET /v1/tunnel HTTP/1.1\r\nHost: ${u.host}\r\nAuthorization: Bearer ${key}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key16}\r\n\r\n`,
   )
   let buf = await readHttp101(sock, signal)
-  let opened = true
+  const opened = true
+  let code = 0
+  let reason = ''
+  let lastRx = Date.now()
   onStatus(true, '', 'ws')
 
   const { promise, resolve, reject } = Promise.withResolvers<void>()
@@ -207,6 +235,10 @@ async function tunnelOnceDial(
     if (!sock.destroyed) sock.write(wsClientFrame(0x1, Buffer.from(text)))
   }
   const beat = setInterval(() => send(JSON.stringify({ t: 'ping' })), KEEPALIVE_MS)
+  const watch = setInterval(() => {
+    if (Date.now() - lastRx < SILENCE_MS) return
+    sock.destroy()
+  }, 2_000)
   const onAbort = () => {
     sock.destroy()
     reject(new Error('aborted'))
@@ -221,7 +253,12 @@ async function tunnelOnceDial(
     buf = parsed.rest
     void (async () => {
       for (const fr of parsed.frames) {
+        lastRx = Date.now()
         if (fr.op === 0x8) {
+          if (fr.payload.length >= 2) {
+            code = fr.payload.readUInt16BE(0)
+            reason = fr.payload.subarray(2).toString('utf8')
+          }
           sock.destroy()
           return
         }
@@ -238,9 +275,10 @@ async function tunnelOnceDial(
   if (buf.length) onChunk(Buffer.alloc(0))
   try {
     await promise
-    return opened
+    return { opened, code, reason }
   } finally {
     clearInterval(beat)
+    clearInterval(watch)
     signal.removeEventListener('abort', onAbort)
     sock.destroy()
   }

@@ -14,7 +14,7 @@ import type { MediaKind, Naming } from './name.ts'
 import { writeEpisodeNFO, writeTvShowNFO } from './nfo.ts'
 import {
   CdnDenied, downloadPlaylist, downloadProgress, pickDouyinURL, pickTencentDownloadURL, playlistStatus, referer, speedCB,
-  youkuAudioPlaylist, youkuUsesSeparateAudio, youkuVideoPlaylist,
+  youkuAudioPlaylist, youkuAudioStreamType, youkuSpokenLangKey, youkuUsesSeparateAudio, youkuVideoPlaylist,
 } from './media.ts'
 import type { RetryNote } from './media.ts'
 import { retryCdnRefresh } from './cdn-retry.ts'
@@ -423,7 +423,7 @@ async function dlYouku(
       const audioPayload = await playYouku(cli, cfg, t, audioVid)
       const audioDrm = youkuDRM(audioPayload)
       if (audioDrm.audioEnc && !audioDrm.reKey) throw new Error('重新取得的音轨缺少解密密钥')
-      const audioPl = youkuAudioPlaylist(audioPayload, track.id)
+      const audioPl = youkuAudioPlaylist(audioPayload, track.id, track.lang)
       if (!audioPl) {
         // HQ 约定有独立音轨；缺 URL 时 soft-skip 该条，保留已下视频。
         emit('音轨', 0.67 + 0.18 * i / tracks.length, `跳过无播放列表音轨：${track.label}`)
@@ -547,12 +547,6 @@ export function patchJob(jobs: Job[], e: JobEvt): void {
   row.err = e.err
 }
 
-/** Stream type token after optional `vid|` prefix from quality probe rows. */
-export function youkuAudioStreamType(trackId: string): string {
-  const sep = trackId.indexOf('|')
-  return sep >= 0 ? trackId.slice(sep + 1) : trackId
-}
-
 /**
  * Quality probe runs once on the first selected episode. Audio rows therefore
  * carry that episode's `vid` / `vid|streamType` id. Batch downloads must rebind
@@ -570,8 +564,12 @@ export function bindYoukuAudioTracksToTask(
       return l.lang === track.lang || l.lang.includes(track.lang) || track.lang.includes(l.lang)
     })
     const targetVid = byLang?.vid || task.vid
+    const langKey = youkuSpokenLangKey(track.lang)
+    const id = streamType
+      ? (langKey ? `${targetVid}|${streamType}|${langKey}` : `${targetVid}|${streamType}`)
+      : targetVid
     return {
-      id: streamType ? `${targetVid}|${streamType}` : targetVid,
+      id,
       label: track.label,
       lang: track.lang,
       vid: targetVid,

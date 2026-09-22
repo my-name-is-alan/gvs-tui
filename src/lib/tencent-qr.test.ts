@@ -5,6 +5,7 @@ import {
   pollTencentDualQR,
   pollTencentQR,
   startTencentDualQR,
+  applyTencentLogin,
   tencentPlayInput,
   tencentTVLoginInput,
 } from './tencent-qr.ts'
@@ -43,6 +44,21 @@ test('Tencent profiles route independently and never send pasted cookie', async 
   cfg.tencentMode = 'cookie'
   expect(cli.extra(cfg, 'tencent')).toEqual({ 'Tx-Cookie': 'EXISTING' })
   expect(tencentPlayInput(cfg)).toEqual({})
+})
+
+test('successful Tencent scan is stored on the local config', () => {
+  const cfg = defaultConfig()
+  const ok = applyTencentLogin(cfg, 'tv', {
+    logged_in: true,
+    cookie: 'vuserid=1; vusession=abc',
+    tvid: 'TVDEV',
+  })
+  expect(ok).toBe(true)
+  expect(cfg.tencentMode).toBe('tv')
+  expect(cfg.tencentCookie).toBe('vuserid=1; vusession=abc')
+  expect(cfg.tencentTVDevice).toBe('TVDEV')
+  expect(applyTencentLogin(cfg, 'app', { logged_in: false, cookie: 'nope' })).toBe(false)
+  expect(cfg.tencentCookie).toBe('vuserid=1; vusession=abc')
 })
 
 test('TV login input defaults tv_fp_profile=virtual_ott_4k when device empty', () => {

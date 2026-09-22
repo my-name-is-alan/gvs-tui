@@ -65,6 +65,19 @@ test('youku playlists use stream playlist_url not CMAF segments', () => {
   expect(youkuAudioPlaylist(data, 'atmos')).toBe('https://atmos.m3u8')
 })
 
+test('youku audio download does not substitute the mandarin playlist for cantonese', () => {
+  const data = {
+    audio_tracks: [
+      { stream_type: 'cmfa1hd3', lang: '普通话', langcode: 'guoyu', playlist_url: 'https://zh.m3u8', default: true },
+      { stream_type: 'cmfa1hd3', lang: '粤语', langcode: 'yue', playlist_url: 'https://yue.m3u8' },
+      { stream_type: 'cmfa4hd4_51', lang: '普通话', langcode: 'guoyu', playlist_url: 'https://zh-dolby.m3u8', default: true },
+    ],
+  }
+  expect(youkuAudioPlaylist(data, 'YUE|cmfa1hd3|yue', '粤语')).toBe('https://yue.m3u8')
+  expect(youkuAudioPlaylist(data, 'ZH|cmfa1hd3|zh', '普通话')).toBe('https://zh.m3u8')
+  expect(youkuAudioPlaylist(data, 'YUE|cmfa4hd4_51|yue', '粤语')).toBe('')
+})
+
 test('youku jobs never overlap so two editions cannot mix CENC keys', async () => {
   const began: string[] = []
   const started: Record<string, () => void> = {}
@@ -207,7 +220,7 @@ test('bindYoukuAudioTracksToTask keeps codec and remaps id', () => {
     { vid: 'EP9', languages: [{ vid: 'EP9', lang: '普通话' }] },
   )
   expect(bound).toEqual([{
-    id: 'EP9|cmfa4hd5_atmos51',
+    id: 'EP9|cmfa4hd5_atmos51|zh',
     label: '杜比全景声',
     lang: '普通话',
     vid: 'EP9',
