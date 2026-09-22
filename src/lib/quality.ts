@@ -5,6 +5,7 @@ import { anyInt, asBool, asString, isObj } from './util.ts'
 import { hongguoItem, pickHongguo } from './media.ts'
 import { hongguoResolveInput } from './hongguo.ts'
 import { tencentPlayInput } from './tencent-qr.ts'
+import { runLog } from './runlog.ts'
 
 export type StreamOptions = { qualities: Quality[]; audios: Audio[]; vip?: VipProbe }
 
@@ -555,19 +556,64 @@ export function sortTencentQualities(rows: Quality[]): Quality[] {
   })
 }
 
-async function probeTencent(cli: GwClient, cfg: FileConfig, vid: string): Promise<StreamOptions> {
+/**
+ * Clear Chinese status when play returns episode entitlement lock (em=93 / 93.x / 限制播放).
+ * Gateway already classifies 93; TUI must surface it and avoid silent empty-fail.
+ */
+export const TENCENT_EM93_STATUS =
+  '该集触发权益风控(em=93)，通常需等待数小时；本次探测可能加重锁定。勿反复重试。'
+
+/** True when play payload looks like em=93 episode entitlement / 限制播放. */
+export function isTencentEm93(data: Record<string, unknown>): boolean {
+  const em = asString(data.em).trim()
+  if (/^93(\.[0-9]+)?$/.test(em) || em.startsWith('93.') || em === '93') return true
+  const code = asString(data.code).trim()
+  if (/^93(\.[0-9]+)?$/.test(code) || code.startsWith('93.')) return true
+  const msg =
+    asString(data.msg) ||
+    asString(data.error) ||
+    asString(data.exem) ||
+    em
+  if (/限制播放/.test(msg)) return true
+  // Nested tried[] entries from gateway classification.
+  const tried = Array.isArray(data.tried) ? data.tried : []
+  for (const t of tried) {
+    if (!isObj(t)) continue
+    const tem = asString(t.em).trim()
+    if (/^93/.test(tem) || /限制播放/.test(asString(t.msg) || asString(t.error))) return true
+  }
+  return false
+}
+
+/**
+ * Default quality-page catalog probe: light getvinfo spray.
+ * - caption=soft (not all) unless tencentCaptionAll
+ * - no source=1 unless tencentProbeSource
+ * - encode=all only if tencentEncodeAll (already opt-in)
+ */
+export function tencentCatalogProbeInput(cfg: FileConfig, vid: string): Record<string, string> {
   const input: Record<string, string> = {
     vid,
-    // Catalog: always ask soft+hard and include 原画 when the account can unlock it.
-    caption: 'all',
-    source: '1',
+    caption: cfg.tencentCaptionAll ? 'all' : 'soft',
     ...tencentPlayInput(cfg),
   }
-  // encode=all is STRICTLY opt-in (风控); never default on.
+  if (cfg.tencentProbeSource) input.source = '1'
   if (cfg.tencentEncodeAll) input.encode = 'all'
+  return input
+}
+
+async function probeTencent(cli: GwClient, cfg: FileConfig, vid: string): Promise<StreamOptions> {
+  const input = tencentCatalogProbeInput(cfg, vid)
   const data = await cli.invoke('tencent', 'play', input, cli.extra(cfg, 'tencent'))
+  if (isTencentEm93(data)) {
+    const em = asString(data.em) || asString(data.code) || '93'
+    const short = asString(data.msg) || asString(data.error) || '限制播放'
+    runLog(`tencent probe em93 em=${em} msg=${short.slice(0, 80)}`)
+    throw new Error(TENCENT_EM93_STATUS)
+  }
   const qualities = qualitiesFromTencentFormats(data.formats)
   const audios = audiosFromTencent(data)
+  // Empty catalog without em=93: keep static ladder fallback for old gateways.
   if (!qualities.length) return { qualities: tencentQualityList(), audios }
   return { qualities, audios }
 }

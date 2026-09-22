@@ -301,7 +301,7 @@ test('Ctrl+1/2/3 switches platform like Alt (Windows Terminal friendly)', async 
 test('settings expose dual QR + cookie + account; Youku QR-only',async()=>{
  const r=await start();const x=r as any
  x.keyInfo={all:true,scope:[]};x.emit()
- expect(x.settingFields().filter((f:string)=>f.startsWith('腾讯'))).toEqual(['腾讯双扫码','腾讯 Cookie','腾讯登录','腾讯 encode=all'])
+ expect(x.settingFields().filter((f:string)=>f.startsWith('腾讯'))).toEqual(['腾讯双扫码','腾讯 Cookie','腾讯登录','腾讯 caption=all','腾讯探测原画','腾讯 encode=all'])
  expect(x.settingValue('腾讯双扫码')).toContain('App')
  expect(x.settingValue('腾讯登录')).toMatch(/未登录|回车刷新/)
  expect(x.settingFields().filter((f:string)=>f.startsWith('优酷'))).toEqual(['优酷扫码','优酷登录'])

@@ -73,6 +73,23 @@ describe('tencentPlayProbeOk', () => {
     expect(r.ok).toBe(true)
     expect(r.via).toBe('videos')
   })
+  test('em=93 fails with Chinese entitlement lock status even if formats present', () => {
+    const r = tencentPlayProbeOk({
+      em: '93',
+      has_url: false,
+      formats: [{ name: 'fhd', caption: 'soft' }],
+    })
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('em=93')
+    expect(r.reason).toContain('勿反复重试')
+  })
+
+  test('限制播放 message maps to em=93 guidance', () => {
+    const r = tencentPlayProbeOk({ em: '限制播放', has_url: false })
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('权益风控')
+  })
+
 })
 
 describe('pickTencentDownloadURL', () => {

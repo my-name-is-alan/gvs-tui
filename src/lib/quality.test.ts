@@ -246,16 +246,19 @@ describe('moviePlayables', () => {
 
 import {
   audiosFromTencent,
+  isTencentEm93,
   qualitiesFromTencentFormats,
   qualityFormatId,
   qualityResolution,
   QUALITY_COLS,
   sortTencentQualities,
+  tencentCatalogProbeInput,
   tencentEncodeTag,
   tencentPersonaKey,
   tencentPlayQualityInput,
   tencentQualityBaseName,
   tencentQualityDisplayLabel,
+  TENCENT_EM93_STATUS,
   TENCENT_HEVC_FPS_ENCODE_TAGS,
 } from './quality.ts'
 import { displayWidth } from './text.ts'
@@ -540,18 +543,68 @@ describe('tencent quality label disambiguation', () => {
   })
 })
 
-test('probeTencent returns audios from audio_tracks', async () => {
+describe('tencentCatalogProbeInput defaults', () => {
+  test('default probe is caption=soft without source/encode', () => {
+    expect(tencentCatalogProbeInput({} as FileConfig, 'x4102kqtje5')).toEqual({
+      vid: 'x4102kqtje5',
+      caption: 'soft',
+    })
+  })
+
+  test('opt-in flags add caption=all, source=1, encode=all', () => {
+    expect(
+      tencentCatalogProbeInput(
+        { tencentCaptionAll: true, tencentProbeSource: true, tencentEncodeAll: true } as FileConfig,
+        'vid1',
+      ),
+    ).toEqual({
+      vid: 'vid1',
+      caption: 'all',
+      source: '1',
+      encode: 'all',
+    })
+  })
+})
+
+describe('isTencentEm93', () => {
+  test('detects em=93 / 93.x / 限制播放', () => {
+    expect(isTencentEm93({ em: '93', has_url: false })).toBe(true)
+    expect(isTencentEm93({ em: '93.2', msg: '限制播放' })).toBe(true)
+    expect(isTencentEm93({ code: '93.1' })).toBe(true)
+    expect(isTencentEm93({ msg: '限制播放' })).toBe(true)
+    expect(isTencentEm93({ em: '0', formats: [{ name: 'fhd' }] })).toBe(false)
+  })
+})
+
+test('probeTencent returns audios from audio_tracks and uses soft probe', async () => {
+  let seen: Record<string, string> | undefined
   const cli = {
     extra: () => ({}),
-    invoke: async () => ({
-      formats: [
-        { id: 322095, name: 'maxplus', cname: '臻彩MAX+', caption: 'soft', width: 3840, height: 2160, persona: 'l3_soft' },
-        { id: 320001, name: 'audio', cname: '音轨', caption: 'soft', persona: 'l3_soft' },
-      ],
-      audio_tracks: [{ id: '7', name: 'db', cname: '杜比音效' }],
-    }),
+    invoke: async (_p: string, _a: string, input: Record<string, string>) => {
+      seen = input
+      return {
+        formats: [
+          { id: 322095, name: 'maxplus', cname: '臻彩MAX+', caption: 'soft', width: 3840, height: 2160, persona: 'l3_soft' },
+          { id: 320001, name: 'audio', cname: '音轨', caption: 'soft', persona: 'l3_soft' },
+        ],
+        audio_tracks: [{ id: '7', name: 'db', cname: '杜比音效' }],
+      }
+    },
   } as unknown as GwClient
   const opts = await probeOptions(cli, {} as FileConfig, 'tencent', 'vid1')
+  expect(seen).toEqual({ vid: 'vid1', caption: 'soft' })
+  expect(seen?.source).toBeUndefined()
+  expect(seen?.encode).toBeUndefined()
   expect(opts.qualities.map((q) => q.stream)).toEqual(['maxplus'])
   expect(opts.audios.map((a) => a.label)).toEqual(['杜比音效'])
+})
+
+test('probeTencent surfaces em=93 Chinese status instead of empty/static ladder', async () => {
+  const cli = {
+    extra: () => ({}),
+    invoke: async () => ({ em: '93', has_url: false, msg: '限制播放' }),
+  } as unknown as GwClient
+  await expect(probeOptions(cli, {} as FileConfig, 'tencent', 'x4102kqtje5')).rejects.toThrow(
+    TENCENT_EM93_STATUS,
+  )
 })
