@@ -213,7 +213,7 @@ export class Runtime {
     this.keyInput = this.cfg.key
     this.hub = new JobHub((e) => {
       patchJob(this.jobs, e)
-      const line = [e.status, e.err || e.log].filter(Boolean).join(' · ')
+      const line = [e.status, e.err || e.log, e.done ? e.note : ''].filter(Boolean).join(' · ')
       const history = this.logs.get(e.id) ?? []
       if (line && history.at(-1) !== line) {
         history.push(line)
@@ -1449,6 +1449,7 @@ export class Runtime {
       label: a.label,
       lang: a.lang,
       vid: a.vid,
+      codec: a.codec,
     }))
     const a = this.audios[this.audioIdx]
     for (const t of this.pending) {

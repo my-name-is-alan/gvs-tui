@@ -1,4 +1,4 @@
-export type Job = { id: number; title: string; status: string; pct: number; log: string; err: string }
+export type Job = { id: number; title: string; status: string; pct: number; log: string; err: string; note?: string }
 export type Row = {
   title: string
   id: string

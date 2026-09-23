@@ -2,7 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { JobHub, bindYoukuAudioTracksToTask, cleanupOutputCaches, jobTitle, patchJob, trackVid, youkuAudioFetchPlan, youkuDRM, type DlTask } from './jobs.ts'
+import { JobHub, tencentCipher, tencentMirrors, bindYoukuAudioTracksToTask, cleanupOutputCaches, jobTitle, patchJob, trackVid, youkuAudioFetchPlan, youkuDRM, type DlTask } from './jobs.ts'
 import { youkuAudioPlaylist, youkuUsesSeparateAudio, youkuVideoPlaylist } from './media.ts'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
@@ -33,6 +33,22 @@ test('audio 0:0 is full-block CBC and must be decrypted', () => {
   expect(drm.reKey).toBe('a'.repeat(32))
   expect(youkuDRM({ drm: { actually_clear: true } }).audioEnc).toBe(false)
   expect(youkuDRM({ drm: { need_decrypt: false } }).videoEnc).toBe(false)
+})
+
+test('Tencent ChaCha20 drm becomes an RE custom HLS cipher', () => {
+  expect(tencentCipher({ drm: { need_decrypt: false, enc: 0 } })).toBeUndefined()
+  expect(tencentCipher({})).toBeUndefined()
+  expect(tencentCipher({ drm: { need_decrypt: true, enc: '1', content_key_hex: 'aa', iv_hex: 'bb' } }))
+    .toEqual({ method: 'CHACHA20', key: 'aa', iv: 'bb' })
+  expect(() => tencentCipher({ drm: { need_decrypt: true, enc: 1 } })).toThrow('没有返回可用密钥')
+  expect(() => tencentCipher({ drm: { enc: 2 } })).toThrow('Widevine')
+})
+
+test('Tencent mirrors keep the picked URL first and never cross streams', () => {
+  const data = { video: { url: 'a', urls: ['a', 'b', 'c'] } }
+  expect(tencentMirrors(data, 'b')).toEqual(['b', 'a', 'c'])
+  expect(tencentMirrors(data, 'fmt-url')).toEqual(['fmt-url'])
+  expect(tencentMirrors({}, 'x')).toEqual(['x'])
 })
 
 test('movie job title uses 英语版 not E01', () => {

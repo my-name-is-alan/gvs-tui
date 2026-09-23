@@ -273,6 +273,7 @@ describe('moviePlayables', () => {
 import {
   audiosFromTencent,
   tencentAudioDownloadPlan,
+  tencentAudioPlanNote,
   isTencentEm93,
   qualitiesFromTencentFormats,
   qualityFormatId,
@@ -459,6 +460,47 @@ describe('tencentAudioDownloadPlan', () => {
     )
     expect(plan.files.map((f) => f.url)).toEqual(['https://cdn.example/51.m3u8', 'https://cdn.example/db.m3u8'])
     expect(plan.missing).toEqual(['标准音轨'])
+  })
+
+  test('an episode without one picked track downgrades instead of failing', () => {
+    // Probe episode had DDP 2.0 + AAC 2.0; this episode only offers DDP 2.0.
+    const plan = tencentAudioDownloadPlan(
+      { audio_tracks: [{ id: 'ddp', cname: '杜比音效', codec: 'E-AC-3', playlist_url: 'https://cdn.example/ddp.m3u8' }] },
+      [
+        { id: 'ddp', label: '杜比音效', lang: '原声', codec: 'E-AC-3' },
+        { id: 'aac', label: '还原细节 HiFi质感', lang: '原声', codec: 'AAC' },
+      ],
+    )
+    expect(plan.files.map((f) => f.id)).toEqual(['ddp'])
+    expect(plan.missing).toEqual(['还原细节 HiFi质感'])
+    expect(tencentAudioPlanNote(plan)).toBe('本集无 还原细节 HiFi质感，已跳过')
+  })
+
+  test('falls back to the same name, then the same codec, when ids change', () => {
+    const plan = tencentAudioDownloadPlan(
+      {
+        audio_tracks: [
+          { id: 'x1', cname: '杜比音效', codec: 'E-AC-3', playlist_url: 'https://cdn.example/a.m3u8' },
+          { id: 'x2', cname: '高清音质', codec: 'AAC', playlist_url: 'https://cdn.example/b.m3u8' },
+        ],
+      },
+      [
+        { id: 'ddp', label: '杜比 音效', lang: '原声', codec: 'E-AC-3' },
+        { id: 'aac', label: '还原细节 HiFi质感', lang: '原声', codec: 'AAC' },
+      ],
+    )
+    expect(plan.files.map((f) => f.url)).toEqual(['https://cdn.example/a.m3u8', 'https://cdn.example/b.m3u8'])
+    expect(plan.missing).toEqual([])
+    expect(plan.substituted).toEqual(['还原细节 HiFi质感→高清音质'])
+  })
+
+  test('tracks without a playlist are never picked twice or used as stand-ins', () => {
+    const plan = tencentAudioDownloadPlan(
+      { audio_tracks: [{ id: 'a', cname: '杜比音效', codec: 'E-AC-3' }] },
+      [{ id: 'a', label: '杜比音效', lang: '原声', codec: 'E-AC-3' }],
+    )
+    expect(plan.files).toEqual([])
+    expect(plan.missing).toEqual(['杜比音效'])
   })
 })
 

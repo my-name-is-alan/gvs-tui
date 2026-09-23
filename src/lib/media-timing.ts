@@ -73,7 +73,7 @@ export async function firstPresentationMs(ffmpeg: string, path: string, stream: 
     child.once('close', (code) => {
       try {
         if (parseError) throw parseError
-        if (code !== 0 || errors.trim()) throw new Error(`读取原始时间戳失败 (${code}): ${errors.trim()}`)
+        if (code !== 0 || errors.trim()) throw new Error(`读取原始时间戳失败 (${code}) ${stream} ${path}: ${errors.trim()}`)
         const track = parser.finish()[0]
         if (!track?.packets || !Number.isFinite(track.firstMs)) throw new Error('轨道没有有效的呈现时间戳')
         resolve(track.firstMs)

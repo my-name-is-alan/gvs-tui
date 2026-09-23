@@ -1,5 +1,5 @@
 import { tencentPlayInput } from './tencent-qr.ts'
-import { tencentAudioDownloadPlan, tencentPlayQualityInput } from './quality.ts'
+import { tencentAudioDownloadPlan, tencentAudioPlanNote, tencentPlayQualityInput } from './quality.ts'
 import { resolveHongguoDownload } from './hongguo.ts'
 import { mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { extname, join } from 'node:path'
@@ -13,10 +13,10 @@ import { filename, folder, sourceTag } from './name.ts'
 import type { MediaKind, Naming } from './name.ts'
 import { writeEpisodeNFO, writeTvShowNFO } from './nfo.ts'
 import {
-  CdnDenied, downloadPlaylist, downloadProgress, pickDouyinURL, pickTencentDownloadURL, playlistStatus, referer, speedCB,
+  CdnDenied, downloadPlaylist, downloadProgress, firstLivePlaylist, hlsSegmentsEncrypted, pickDouyinURL, pickTencentDownloadURL, playlistStatus, referer, speedCB,
   youkuAudioPlaylist, youkuAudioStreamType, youkuSpokenLangKey, youkuUsesSeparateAudio, youkuVideoPlaylist,
 } from './media.ts'
-import type { RetryNote } from './media.ts'
+import type { HlsCipher, RetryNote } from './media.ts'
 import { retryCdnRefresh } from './cdn-retry.ts'
 import { asString, human, isObj } from './util.ts'
 import type { Job } from '../types.ts'
@@ -36,7 +36,7 @@ export type DlTask = {
   /** Tencent TV caption soft|hard */
   caption?: string
   /** Audio tracks to mux in (空格勾选的那些）；空 = 只封平台默认音轨。 */
-  audioTracks?: Array<{ id: string; label: string; lang: string; vid?: string }>
+  audioTracks?: Array<{ id: string; label: string; lang: string; vid?: string; codec?: string }>
   group: string
   codec: string
   tmdbId: number
@@ -48,7 +48,8 @@ export type DlTask = {
   languages?: Array<{ vid: string; lang: string }>
 }
 
-export type JobEvt = { id: number; status: string; pct: number; log: string; err: string; done?: boolean }
+/** note: non-fatal warning on a finished job, e.g. a skipped audio track. */
+export type JobEvt = { id: number; status: string; pct: number; log: string; err: string; done?: boolean; note?: string }
 
 type JobRunner = (
   emit: (e: JobEvt) => void,
@@ -67,6 +68,19 @@ export function youkuDRM(payload: Record<string, unknown>) {
   const clear = drm.actually_clear === true || drm.need_decrypt === false
   // 0:0 is full-block CBC encryption, NOT a clear audio track.
   return { reKey: key ? (/^[a-f\d]{32}$/i.test(kid) ? `${kid}:${key}` : key) : '', videoEnc: !clear, audioEnc: !clear }
+}
+
+/** Tencent segments carry no EXT-X-KEY; enc=1 ChaCha20 needs the gateway key/IV
+ * passed to RE explicitly, otherwise the "video" is ciphertext ffmpeg cannot open. */
+export function tencentCipher(payload: Record<string, unknown>): HlsCipher | undefined {
+  const drm = isObj(payload.drm) ? payload.drm : {}
+  const enc = Number(drm.enc) || 0
+  if (drm.need_decrypt !== true && !enc) return undefined
+  if (enc === 2) throw new Error('腾讯该集为 Widevine 加密，当前不支持下载')
+  const key = asString(drm.content_key_hex) || asString(drm.content_key_b64)
+  const iv = asString(drm.iv_hex) || asString(drm.iv_b64)
+  if (enc !== 1 || !key || !iv) throw new Error(`腾讯该集已加密（enc=${enc}），但网关没有返回可用密钥`)
+  return { method: 'CHACHA20', key, iv }
 }
 
 let jobSeq = 0
@@ -167,6 +181,7 @@ async function runTask(
     const dir = t.provider === 'douyin' ? cfg.outDir : folder(n, cfg.outDir)
     mkdirSync(dir, { recursive: true })
     let out = join(dir, filename(n))
+    let note = ''
     const ffmpeg = t.provider === 'hongguo' ? await ensureFFmpeg() : ''
     const mkvmerge = n.container === 'mkv' ? await ensureMkvmerge() : ''
     if (n.container === 'mkv' && !mkvmerge) throw new Error('没有 mkvmerge')
@@ -179,7 +194,7 @@ async function runTask(
         out = await dlYouku(cli, cfg, t, dir, out, mkvmerge, emit, retryNote)
         break
       case 'tencent':
-        await dlTencent(cli, cfg, t, dir, out, mkvmerge, emit, retryNote)
+        note = await dlTencent(cli, cfg, t, dir, out, mkvmerge, emit, retryNote)
         break
       case 'douyin':
         await dlDouyin(cli, t, out, emit, retryNote)
@@ -191,7 +206,7 @@ async function runTask(
       writeTvShowNFO(dir, t.series, t.plot, 0)
       writeEpisodeNFO(out, t.title, t.season, t.episode, '')
     }
-    emitEvt({ id, status: '完成', pct: 1, log: out, err: '', done: true })
+    emitEvt({ id, status: '完成', pct: 1, log: out, err: '', done: true, note })
   } catch (e) {
     emitEvt({ id, status: '失败', pct: lastPct, log: '', err: e instanceof Error ? e.message : String(e), done: true })
   }
@@ -240,6 +255,14 @@ async function dlHongguo(
   try { unlinkSync(tmp) } catch { /* keep */ }
 }
 
+/** The picked URL plus the gateway's other CDN mirrors of the same stream. */
+export function tencentMirrors(data: Record<string, unknown>, picked: string): string[] {
+  const v = isObj(data.video) ? data.video : {}
+  const urls = (Array.isArray(v.urls) ? v.urls : Array.isArray(data.urls) ? data.urls : []).map(asString)
+  // A formats[] row of another quality must not fall back to the default stream.
+  return urls.includes(picked) ? [picked, ...urls.filter(u => u && u !== picked)] : [picked]
+}
+
 function tencentDlPickOpts(t: DlTask) {
   return {
     stream: t.quality,
@@ -262,35 +285,50 @@ async function dlTencent(
   cli: GwClient, cfg: FileConfig, t: DlTask, dir: string, out: string, mkvmerge: string,
   emit: (s: string, p: number, l: string) => void,
   retryNote: RetryNote,
-): Promise<void> {
+): Promise<string> {
   emit('取链', 0.05, t.vid)
   const play = () => cli.invoke('tencent', 'play', { vid: t.vid, ...tencentPlayQualityInput(t), ...tencentPlayInput(cfg) }, cli.extra(cfg, 'tencent'))
-  const pick = (data: Record<string, unknown>) => pickTencentDownloadURL(data, tencentDlPickOpts(t))
+  // Skip CDN mirrors that refuse this network (200 + HTML "Forbidden").
+  const pick = async (data: Record<string, unknown>) => {
+    const u = pickTencentDownloadURL(data, tencentDlPickOpts(t))
+    return u && /\.m3u8/i.test(u) ? firstLivePlaylist(tencentMirrors(data, u), referer('tencent')) : u
+  }
   let played = await play()
-  let cdn = pick(played)
+  let cdn = await pick(played)
   if (!cdn) throw new Error('腾讯没有可用视频地址')
+  let cipher = tencentCipher(played)
   logTencentDownloadHost(cdn, t)
+  // Plan audio before the video download: an episode that lacks one of the
+  // picked tracks downgrades to the tracks it has instead of failing at 65%.
+  let plan = tencentAudioDownloadPlan(played, t.audioTracks ?? [])
+  const note = tencentAudioPlanNote(plan)
+  if (note) {
+    runLog(`tencent audio downgrade vid=${t.vid} ${note}`)
+    emit('取链', 0.08, note)
+  }
   const raw = join(dir, `.${t.vid}.bin`)
   const temps = [raw]
   emit('下载', 0.1, '')
   try {
     try {
-      await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.55), retryNote, cfg.threads)
+      await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.55), retryNote, cfg.threads, cipher)
     } catch (e) {
       if (!(e instanceof CdnDenied)) throw e
       emit('重取', 0.1, `CDN ${e.status}，重新取链后下载`)
       played = await play()
-      cdn = pick(played)
+      cdn = await pick(played)
       if (!cdn) throw new Error('腾讯重新取链失败')
+      cipher = tencentCipher(played)
       logTencentDownloadHost(cdn, t)
-      await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.55), retryNote, cfg.threads)
+      // Audio playlists come from the same play response; refresh them too.
+      plan = tencentAudioDownloadPlan(played, t.audioTracks ?? [])
+      await downloadProgress(cdn, raw, referer('tencent'), speedCB(emit, '下载', 0.1, 0.55), retryNote, cfg.threads, cipher)
     }
-    const plan = tencentAudioDownloadPlan(played, t.audioTracks ?? [])
-    if (plan.missing.length) throw new Error(`腾讯音轨没有下载地址：${plan.missing.join('、')}`)
     if (!plan.files.length) {
+      // The video stream carries its own default audio track.
       emit('封装', 0.86, out)
       await mkvmergeRemux(mkvmerge, raw, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
-      return
+      return note
     }
     const mux: MuxAudio[] = []
     for (let i = 0; i < plan.files.length; i++) {
@@ -300,11 +338,15 @@ async function dlTencent(
       const base = 0.55 + (0.25 * i) / plan.files.length
       const span = 0.25 / plan.files.length
       emit('音轨', base, audio.label)
-      await downloadProgress(audio.url, dest, referer('tencent'), speedCB(emit, '音轨', base, base + span), retryNote, cfg.threads)
+      // Audio playlists share the play response's key but may be clear; decide per track.
+      const audioURL = await firstLivePlaylist(audio.urls, referer('tencent'))
+      const audioCipher = cipher && await hlsSegmentsEncrypted(audioURL, referer('tencent')) ? cipher : undefined
+      await downloadProgress(audioURL, dest, referer('tencent'), speedCB(emit, '音轨', base, base + span), retryNote, cfg.threads, audioCipher)
       mux.push({ path: dest, title: audio.label, lang: audio.lang })
     }
     emit('封装', 0.86, out)
     await mkvmergeMux(mkvmerge, raw, mux, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`))
+    return note
   } finally {
     for (const path of temps) {
       try { unlinkSync(path) } catch { /* keep */ }
@@ -545,6 +587,7 @@ export function patchJob(jobs: Job[], e: JobEvt): void {
   row.pct = e.pct
   row.log = e.log
   row.err = e.err
+  if (e.done) row.note = e.note ?? ''
 }
 
 /**

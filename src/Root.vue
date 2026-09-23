@@ -1034,13 +1034,14 @@ function jobLine(job: Job): StyledText {
   const titleCells = Math.min(30, Math.max(14, Math.floor(bodyW.value * 0.34)))
   const barCells = Math.min(18, Math.max(8, Math.floor(bodyW.value * 0.16)))
   const failed = job.status === '失败'
+  const degraded = job.status === '完成' && !!job.note
   const trailing = failed
     ? job.err || '失败'
     : job.status === '完成'
-      ? job.log || '完成'
+      ? degraded ? `降级：${job.note} · ${job.log}` : job.log || '完成'
       : job.log || job.status
   const cols: Col[] = [
-    { text: `${tone.icon} `, cells: 2, color: tone.color },
+    { text: `${tone.icon} `, cells: 2, color: degraded ? c.warn : tone.color },
     { text: job.title, cells: titleCells, color: failed ? c.dim : c.text },
     { text: ' ', cells: 1 },
     {
@@ -1055,7 +1056,7 @@ function jobLine(job: Job): StyledText {
       color: pct >= 100 ? c.ok : c.dim,
     },
     { text: '  ', cells: 2 },
-    { text: trailing, grow: true, color: failed ? c.err : c.faint },
+    { text: trailing, grow: true, color: failed ? c.err : degraded ? c.warn : c.faint },
   ]
   return colsLine(cols, bodyW.value)
 }

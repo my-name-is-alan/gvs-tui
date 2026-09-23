@@ -653,11 +653,43 @@ export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: Pro
 }
 
 /** HLS/DASH via N_m3u8DL-RE. Merge fragments before decrypting the complete track. */
+/** Segment-level cipher without EXT-X-KEY in the playlist (Tencent ChaCha20). */
+export type HlsCipher = { method: string; key: string; iv: string }
+
+/** Tencent mirrors may answer with a 200 "Forbidden" HTML page from some
+ * networks; return the first candidate that actually serves a playlist. */
+export async function firstLivePlaylist(urls: string[], ref: string): Promise<string> {
+  const tried: string[] = []
+  for (const u of urls) {
+    try {
+      const res = await fetch(u, { headers: headersFor(ref), signal: AbortSignal.timeout(15_000) })
+      if ((await res.text()).trimStart().startsWith('#EXTM3U')) return u
+      tried.push(`${new URL(u).host} HTTP ${res.status}`)
+    } catch (e) {
+      tried.push(`${u.split('/')[2] ?? u} ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  throw new Error(`所有 CDN 都没有返回播放列表：${tried.join("；")}`)
+}
+
+/** True when the first media segment is not plaintext MPEG-TS. */
+export async function hlsSegmentsEncrypted(src: string, ref: string): Promise<boolean> {
+  const res = await fetch(src, { headers: headersFor(ref) })
+  const playlist = await res.text()
+  if (!playlist.trimStart().startsWith('#EXTM3U')) throw new Error(`播放列表不可用（HTTP ${res.status}）`)
+  const first = playlist.split(/\r?\n/).map(l => l.trim()).find(l => l && !l.startsWith('#'))
+  if (!first) throw new Error('播放列表没有分片')
+  const seg = await fetch(new URL(first, res.url || src), { headers: { ...headersFor(ref), Range: 'bytes=0-376' } })
+  const b = new Uint8Array(await seg.arrayBuffer())
+  return !(b[0] === 0x47 && b[188] === 0x47)
+}
+
 export async function downloadPlaylist(opts: {
   src: string
   dest: string
   ref: string
   key?: string
+  cipher?: HlsCipher
   /** Only set when the gateway explicitly says the selected track is clear. */
   clear?: boolean
   threads?: number
@@ -734,6 +766,7 @@ export async function downloadPlaylist(opts: {
     ]
     if (ffmpeg) args.push('--ffmpeg-binary-path', ffmpeg)
     if (relay) args.push('--use-system-proxy', 'false')
+    if (opts.cipher) args.push('--custom-hls-method', opts.cipher.method, '--custom-hls-key', opts.cipher.key, '--custom-hls-iv', opts.cipher.iv)
     for (const [name, value] of Object.entries(headersFor(opts.ref))) args.push('--header', `${name.toLowerCase()}: ${value}`)
     if (opts.key) {
       const packager = await ensurePackager()
@@ -813,10 +846,11 @@ export async function downloadProgress(
   cb?: (n: number, total: number) => void,
   note?: RetryNote,
   threads = 1,
+  cipher?: HlsCipher,
 ): Promise<void> {
   if (/\.(?:m3u8|mpd)/i.test(src)) {
     const tmp = /\.mkv$/i.test(dest) ? `${dest}.re.mp4` : dest
-    await downloadPlaylist({ src, dest: tmp, ref, threads, cb })
+    await downloadPlaylist({ src, dest: tmp, ref, threads, cb, cipher })
     if (tmp !== dest) {
       const mkvmerge = await ensureMkvmerge()
       await mkvmergeRemux(mkvmerge, tmp, dest, cb)
@@ -824,6 +858,7 @@ export async function downloadProgress(
     }
     return
   }
+  if (cipher) throw new Error('加密片源只支持 HLS 播放列表下载')
   if (threads > 1) {
     const probe = await probeRange(src, ref)
     if (probe.ranges && probe.total >= PARALLEL_MIN_BYTES) {

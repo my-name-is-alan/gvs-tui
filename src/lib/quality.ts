@@ -635,30 +635,72 @@ export function tencentAudioLang(tr: Record<string, unknown>, label: string): st
   return lang
 }
 
-export type TencentAudioFile = { id: string; label: string; lang: string; url: string }
+/** urls: CDN mirrors to try in order (url first). */
+export type TencentAudioFile = { id: string; label: string; lang: string; url: string; urls: string[] }
 
-/** Selected Tencent tracks that have their own playlist. Missing URLs are named. */
+export type TencentAudioPlan = {
+  files: TencentAudioFile[]
+  /** Selected tracks this episode does not offer. They are skipped, not fatal. */
+  missing: string[]
+  /** "原音轨→替代音轨" when a same-codec track stood in. */
+  substituted: string[]
+}
+
+type SelectedAudio = { id: string; label: string; lang: string; codec?: string }
+
+const sameName = (a: string, b: string) => a.replace(/\s+/g, '').toLowerCase() === b.replace(/\s+/g, '').toLowerCase()
+
+/**
+ * Map the tracks picked on the probe episode onto this episode.
+ * Episodes of one series do not always carry the same audio set (some have
+ * DDP 2.0 + AAC 2.0, some only one of them). Match by id, then by name, then
+ * by codec + language; whatever is still absent is reported and skipped so
+ * the episode still downloads with the tracks it does have.
+ */
 export function tencentAudioDownloadPlan(
   data: Record<string, unknown>,
-  selected: Array<{ id: string; label: string; lang: string }>,
-): { files: TencentAudioFile[]; missing: string[] } {
-  if (!selected.length) return { files: [], missing: [] }
-  const byId = new Map<string, Record<string, unknown>>()
+  selected: SelectedAudio[],
+): TencentAudioPlan {
+  const plan: TencentAudioPlan = { files: [], missing: [], substituted: [] }
+  if (!selected.length) return plan
+  const rows: Array<TencentAudioFile & { codec: string }> = []
   const tracks = Array.isArray(data.audio_tracks) ? data.audio_tracks : []
   for (const tr of tracks) {
     if (!isObj(tr)) continue
     const id = asString(tr.id) || asString(tr.name)
-    if (id) byId.set(id, tr)
+    const url = asString(tr.playlist_url) || asString(tr.url)
+    if (!id || !url) continue
+    const label = asString(tr.cname) || asString(tr.sname) || asString(tr.name) || id
+    const urls = [url, ...(Array.isArray(tr.urls) ? tr.urls.map(asString) : [])].filter((u, i, a) => u && a.indexOf(u) === i)
+    rows.push({ id, label, lang: tencentAudioLang(tr, label), url, urls, codec: asString(tr.codec) || tencentAudioCodecLabel(tr) })
   }
-  const files: TencentAudioFile[] = []
-  const missing: string[] = []
+  const used = new Set<string>()
+  const free = (r: { id: string }) => !used.has(r.id)
   for (const s of selected) {
-    const row = byId.get(s.id)
-    const url = row ? asString(row.playlist_url) || asString(row.url) : ''
-    if (!url) missing.push(s.label || s.id)
-    else files.push({ id: s.id, label: s.label, lang: s.lang, url })
+    let row = rows.find((r) => free(r) && r.id === s.id)
+      ?? rows.find((r) => free(r) && sameName(r.label, s.label))
+    let substitute = false
+    if (!row && s.codec) {
+      row = rows.find((r) => free(r) && r.codec === s.codec && r.lang === s.lang)
+      substitute = !!row
+      if (row) plan.substituted.push(`${s.label}→${row.label}`)
+    }
+    if (!row) {
+      plan.missing.push(s.label || s.id)
+      continue
+    }
+    used.add(row.id)
+    plan.files.push({ id: row.id, label: substitute ? row.label : s.label || row.label, lang: substitute ? row.lang : s.lang || row.lang, url: row.url, urls: row.urls })
   }
-  return { files, missing }
+  return plan
+}
+
+/** One-line note for a downgraded episode, or '' when nothing changed. */
+export function tencentAudioPlanNote(plan: TencentAudioPlan): string {
+  const parts: string[] = []
+  if (plan.missing.length) parts.push(`本集无 ${plan.missing.join('、')}，已跳过`)
+  if (plan.substituted.length) parts.push(`已替换 ${plan.substituted.join('、')}`)
+  return parts.join('；')
 }
 
 /** 画质列表按文件体积从大到小。体积相同再比分辨率、帧率。 */
