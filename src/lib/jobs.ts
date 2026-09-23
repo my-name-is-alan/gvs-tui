@@ -79,7 +79,11 @@ export function tencentCipher(payload: Record<string, unknown>): HlsCipher | und
   if (enc === 2) throw new Error('腾讯该集为 Widevine 加密，当前不支持下载')
   const key = asString(drm.content_key_hex) || asString(drm.content_key_b64)
   const iv = asString(drm.iv_hex) || asString(drm.iv_b64)
-  if (enc !== 1 || !key || !iv) throw new Error(`腾讯该集已加密（enc=${enc}），但网关没有返回可用密钥`)
+  if (enc !== 1 || !key || !iv) {
+    // The gateway's reason, e.g. "chacha20.js not found: ..." on a fresh deploy.
+    const why = asString(drm.note)
+    throw new Error(`腾讯该集已加密（enc=${enc}），但网关没有返回可用密钥${why ? `：${why}` : ''}`)
+  }
   return { method: 'CHACHA20', key, iv }
 }
 

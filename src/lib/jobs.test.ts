@@ -41,6 +41,7 @@ test('Tencent ChaCha20 drm becomes an RE custom HLS cipher', () => {
   expect(tencentCipher({ drm: { need_decrypt: true, enc: '1', content_key_hex: 'aa', iv_hex: 'bb' } }))
     .toEqual({ method: 'CHACHA20', key: 'aa', iv: 'bb' })
   expect(() => tencentCipher({ drm: { need_decrypt: true, enc: 1 } })).toThrow('没有返回可用密钥')
+  expect(() => tencentCipher({ drm: { enc: '1', note: 'chacha20.js not found' } })).toThrow('chacha20.js not found')
   expect(() => tencentCipher({ drm: { enc: 2 } })).toThrow('Widevine')
 })
 
