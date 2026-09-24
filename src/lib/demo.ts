@@ -187,11 +187,11 @@ export function demoSnapshot(scene: string, cursor = 0): Snapshot {
         vipProbe: { canPlay: true, isVip: true, hasTrial: false, download: '["allowed"]', note: '' },
       }
     case 'tmdb':
-      return { ...s, scene, detailTitle: '斗破苍穹年番', tmdbHits: TMDB, cursor, pendingCount: 12, status: '3 个候选 · Enter 采用，S 跳过，Esc 返回', statusKind: 'info' }
+      return { ...s, scene, detailTitle: '斗破苍穹年番', tmdbHits: TMDB, cursor, pendingCount: 12, status: '找到 3 个候选', statusKind: 'info' }
     case 'jobs':
       return { ...s, scene, jobs: JOBS, status: '已加入 2 个任务', statusKind: 'ok' }
     case 'settings':
-      return { ...s, scene, cursor, status: '设置改完按 Esc 保存', statusKind: 'info' }
+      return { ...s, scene, cursor, status: '', statusKind: 'info' }
     case 'edit':
       return { ...s, scene, editField: '下载目录', editValue: 'D:\\downloads' }
     case 'qr':
@@ -208,7 +208,7 @@ export function demoSnapshot(scene: string, cursor = 0): Snapshot {
     case 'job-detail':
     case 'home':
     default:
-      return { ...s, scene: scene.startsWith('workspace')||scene==='home'?'workspace':scene, cursor, status:'演示数据 · F1 帮助 / F2 搜索 / F3 任务 / F4 设置', providers:scene==='workspace-no-access'?[]:s.providers,
+      return { ...s, scene: scene.startsWith('workspace')||scene==='home'?'workspace':scene, cursor, status:'', providers:scene==='workspace-no-access'?[]:s.providers,
  workspace:{provider:'hongguo',mode:'rank',sections:[{id:'hot',title:'热播榜',mode:'rank',contentType:'rank',available:true,filters:[{key:'genre',title:'体裁',options:[{value:'all',label:'全部'},{value:'human',label:'真人'},{value:'comic',label:'漫剧'}]}]},{id:'new',title:'新剧榜',mode:'rank',contentType:'rank',available:true}],sectionIndex:0,focus:'list',rows:['workspace-empty','workspace-loading','workspace-error','workspace-no-access'].includes(scene)?[]:ROWS.map((r,i)=>({...r,title:scene==='workspace-long-title'?'很长的中文节目标题与特别篇说明'.repeat(8):r.title,rank:i+1})),cursor,more:false,loading:scene==='workspace-loading',error:scene==='workspace-error'?'连接失败，请检查网关后按 R 重试':'',notice:scene==='workspace-no-access'?'当前 Key 没有可浏览的平台':'',source:'离线演示 · 非真实榜单',category:'热播榜',compatibility:false,filters:{}},
  confirmation:{title:'长安夜雨（演示）',episodes:'1, 2, 3',quality:'1080P',audio:'国语 AAC',directory:'D:/downloads',name:'长安夜雨.S01E01.1080p.WEB-DL'},jobDetailLines:['演示任务','失败：连接超时',...Array.from({length:60},(_,i)=>`诊断日志 ${i+1} · 不含敏感 URL`)], logOffset:cursor }
   }

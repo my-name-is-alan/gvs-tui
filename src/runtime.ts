@@ -1155,7 +1155,11 @@ export class Runtime {
         this.say('这个栏目没有筛选', 'warn')
         return
       }
-      this.filterIndex = 0
+      const options = this.discovery.section.filters.flatMap((f) =>
+        f.options.map((o) => ({ key: f.key, value: o.value })),
+      )
+      const active = options.findIndex((o) => v.filters[o.key] === o.value)
+      this.filterIndex = Math.max(0, active)
       this.scene = 'filters'
       return
     }

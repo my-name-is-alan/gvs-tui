@@ -13,6 +13,7 @@ import {
   Input,
   StyledText,
   Text,
+  bg,
   bold,
   fg,
   onKeyDown,
@@ -22,11 +23,11 @@ import {
   useTitle,
 } from 'vue-termui'
 import { Bridge, type Snapshot } from './bridge'
+import type { TextChunk } from 'vue-termui'
 import EpisodeGrid from './components/EpisodeGrid.vue'
 import KeyHints from './components/KeyHints.vue'
 import Spinner from './components/Spinner.vue'
 import {
-  MARK,
   barChunks,
   colsLine,
   descLine,
@@ -34,9 +35,11 @@ import {
   kvLine,
   markCol,
   pickLine,
+  tabChunks,
+  tabsWidth,
 } from './lib/rows'
 import type { Col } from './lib/rows'
-import { clip, column, displayWidth, padStart } from './lib/text'
+import { clip, column, displayWidth, padStart, wrapLines } from './lib/text'
 import { qualityCaptionText, qualityFpsText, qualityHdrText, qualityResolution } from './lib/quality'
 import { human } from './lib/util'
 import {
@@ -212,29 +215,32 @@ watch(
 const SCENE_TITLES: Record<string, string> = {
   workspace: '发现',
   filters: '筛选',
-  confirm: '确认 4/4',
+  confirm: '确认',
   help: '快捷键',
   'job-detail': '任务详情',
   setup: '连接网关',
   home: '首页',
   search: '搜索',
   results: '搜索结果',
-  detail: '选集 1/4',
-  quality: '画质 2/4',
-  tmdb: '匹配 3/4',
+  detail: '选集',
+  quality: '画质',
+  tmdb: '匹配',
   jobs: '下载任务',
   settings: '设置',
   qr: '扫码登录',
   edit: '编辑',
 }
 
-const HOME_DESC: Record<string, string> = {
-  粘贴链接: '优酷 / 腾讯 HTML 页链接 / 抖音分享口令，直接解析',
-  搜索: '按标题在所选平台搜索',
-  榜单: '平台热榜，找片最快',
-  任务: '下载队列与进度',
-  设置: '网关、画质、命名与 Cookie',
-}
+/** The download wizard, shown as a stepper in the header. */
+const FLOW = ['detail', 'quality', 'tmdb', 'confirm']
+
+/** Always-available keys, right-aligned in the footer when there is room. */
+const GLOBAL_HINTS: Array<[string, string]> = [
+  ['F1', '帮助'],
+  ['F2', '搜索'],
+  ['F3', '任务'],
+  ['F4', '设置'],
+]
 
 const HINTS: Record<string, Array<[string, string]>> = {
   workspace: [
@@ -428,7 +434,7 @@ const qualityAction = computed(() => {
     : picked.length
       ? picked.slice(0, 2).join('+')
       : '默认音轨'
-  return ['回车继续', `${n} ${isMovie.value ? '部' : '集'}`, q?.label, audio]
+  return [`下载 ${n} ${isMovie.value ? '部' : '集'}`, q?.label, audio]
     .filter(Boolean)
     .join(' · ')
 })
@@ -456,9 +462,29 @@ const qualityView = computed(() =>
 const audioView = computed(() =>
   sliceList(audios.value, state.value.audioIndex, bodyH.value - 6),
 )
-const settingView = computed(() =>
-  sliceList(settings.value, state.value.cursor, bodyH.value - 1),
-)
+/** Settings grouped by platform prefix; `index` is the setting's cursor index. */
+const SETTING_GROUPS = ['优酷', '腾讯', '红果'] as const
+const settingRows = computed(() => {
+  const out: Array<{ header: string } | { label: string; value: string; index: number }> = []
+  let group = ''
+  settings.value.forEach((item, index) => {
+    const prefix = SETTING_GROUPS.find((g) => item.label.startsWith(g)) ?? ''
+    const name = prefix ? prefix : '常规'
+    if (name !== group) {
+      if (group) out.push({ header: '' })
+      out.push({ header: name })
+      group = name
+    }
+    const label = prefix ? item.label.slice(prefix.length).trim() || item.label : item.label
+    out.push({ label, value: item.value, index })
+  })
+  return out
+})
+const settingView = computed(() => {
+  const rows = settingRows.value
+  const at = rows.findIndex((row) => 'index' in row && row.index === state.value.cursor)
+  return sliceList(rows, Math.max(0, at), bodyH.value)
+})
 const selectedCount = computed(
   () => episodes.value.filter((ep) => ep.selected).length,
 )
@@ -498,16 +524,33 @@ const headerProvider = computed(() => {
   )
 })
 
+/** `› 红果 › 选集 › 画质 › 匹配 › 确认`, or `› 红果 › 发现` outside the wizard. */
+function crumbChunks(cells: number): TextChunk[] {
+  const scene = state.value.scene
+  const step = FLOW.indexOf(scene)
+  const provider = providerName(headerProvider.value)
+  const chunks: TextChunk[] = [fg(c.faint)('› '), fg(c.dim)(provider), fg(c.faint)(' › ')]
+  let used = displayWidth(`› ${provider} › `)
+  const parts =
+    step < 0
+      ? [[SCENE_TITLES[scene] ?? 'GVS', c.text, true] as const]
+      : FLOW.map((id, i) => [SCENE_TITLES[id]!, i === step ? c.accent : i < step ? c.dim : c.faint, i === step] as const)
+  parts.forEach(([title, color, strong], i) => {
+    const text = `${i ? ' › ' : ''}${title}`
+    if (used + displayWidth(text) > cells) return
+    chunks.push(strong ? fg(color)(bold(text)) : fg(color)(text))
+    used += displayWidth(text)
+  })
+  chunks.push({ __isChunk: true, text: ' '.repeat(Math.max(0, cells - used)) })
+  return chunks
+}
+
 const headerLine = computed(() => {
   const right = `${hostLabel(state.value.host)}  ${state.value.tunnelOk ? '● 隧道' : '○ 隧道'}`
   const cols: Col[] = [
     { text: '▌ ', cells: 2, color: c.accent, bold: true },
-    { text: 'GVS', cells: 4, color: c.accent, bold: true },
-    {
-      text: `› ${providerName(headerProvider.value)} / ${SCENE_TITLES[state.value.scene] ?? 'GVS'}`,
-      grow: true,
-      color: c.dim,
-    },
+    { text: 'GVS ', cells: 4, color: c.accent, bold: true },
+    { chunks: crumbChunks, grow: true },
   ]
   if (bridge.preview || state.value.simulated)
     cols.push({ text: 'PREVIEW  ', cells: 9, align: 'right', color: c.warn })
@@ -550,14 +593,16 @@ const metaText = computed(() => {
       return isMovie.value
         ? `已选 ${selectedCount.value} / ${episodes.value.length} 个版本`
         : `已选 ${selectedCount.value} / ${episodes.value.length}`
-    case 'quality': {
-      const q = qualities.value[state.value.qualityIndex]
-      const a = audios.value[state.value.audioIndex]
-      const n = state.value.pendingCount || 1
-      return [`${n} ${isMovie.value ? '部' : '集'}`, q?.label, a?.label]
-        .filter(Boolean)
-        .join(' · ')
-    }
+    case 'quality':
+      return onAudioTab.value
+        ? `音轨 ${state.value.audioIndex + 1} / ${audios.value.length}`
+        : qualities.value.length
+          ? `档位 ${state.value.qualityIndex + 1} / ${qualities.value.length}`
+          : ''
+    case 'job-detail':
+      return logView.value.total
+        ? `${logView.value.first}-${logView.value.last} / ${logView.value.total} 行`
+        : ''
     case 'jobs': {
       const s = jobStats.value
       return `${s.done} 完成 · ${s.active} 进行 · ${s.queued} 排队${s.failed ? ` · ${s.failed} 失败` : ''}`
@@ -605,83 +650,87 @@ const hints = computed(() => {
       ['a/c', '全选/清'],
       ['esc', '返回'],
     ]
+  if (state.value.scene === 'workspace' && wsSections.value[ws.value?.sectionIndex ?? 0]?.filters?.length)
+    return [...HINTS.workspace!.slice(0, -1), ['f', '筛选'], HINTS.workspace!.at(-1)!]
   return HINTS[state.value.scene] ?? []
 })
+const globalHints = computed(() =>
+  state.value.scene === 'setup' ? GLOBAL_HINTS.slice(0, 1) : GLOBAL_HINTS,
+)
 
 const ws = computed(() => state.value.workspace)
 const wsSections = computed(
   () => ws.value?.sections.filter((s) => s.mode === ws.value?.mode) ?? [],
 )
 const PLATFORM_ORDER = ['youku', 'tencent', 'hongguo', 'douyin'] as const
-function platformBar(current: string, right: string) {
+function platformBar(current: string, modes?: 'rec' | 'rank') {
   const allowed = new Set(providers.value)
   const cols: Col[] = []
   PLATFORM_ORDER.forEach((id, i) => {
-    const on = id === current
-    const text = `${i ? '  ' : ''}${on ? `[${i + 1} ${providerName(id)}]` : `${i + 1} ${providerName(id)}`}`
+    const label = `${i + 1} ${providerName(id)}`
     cols.push({
-      text,
-      cells: displayWidth(text),
-      color: !allowed.has(id) ? c.faint : on ? c.accent : c.dim,
-      bold: on,
+      chunks: () => tabChunks(label, id === current, allowed.has(id)),
+      cells: tabsWidth([label]),
     })
   })
-  cols.push({ text: right, grow: true, align: 'right', color: c.dim })
+  cols.push({ text: '', grow: true })
+  if (modes)
+    cols.push({
+      chunks: () => [...tabChunks('推荐', modes === 'rec'), ...tabChunks('榜单', modes === 'rank')],
+      cells: tabsWidth(['推荐', '榜单']),
+    })
   return colsLine(cols, bodyW.value)
 }
-function sectionStrip(titles: string[], index: number, width: number): string {
-  if (!titles.length || width <= 0) return '没有栏目'
-  const marked = titles.map((title, i) => (i === index ? `[${title}]` : title))
-  const gap = '  '
-  let lo = Math.max(0, Math.min(index, marked.length - 1))
+/** Visible slice of the section tabs around `index`, with `‹ ›` when clipped. */
+function sectionStrip(titles: string[], index: number, width: number): TextChunk[] {
+  if (!titles.length || width <= 0) return [fg(c.faint)(' 没有栏目')]
+  const cells = (from: number, to: number) =>
+    tabsWidth(titles.slice(from, to + 1)) + (from > 0 ? 2 : 0) + (to < titles.length - 1 ? 2 : 0)
+  let lo = Math.max(0, Math.min(index, titles.length - 1))
   let hi = lo
-  let text = marked[lo] ?? ''
-  const fit = (value: string) => displayWidth(value) <= width
-  while (lo > 0 || hi < marked.length - 1) {
-    const withPrev = lo > 0 ? `${marked[lo - 1]}${gap}${text}` : ''
-    const withNext = hi < marked.length - 1 ? `${text}${gap}${marked[hi + 1]}` : ''
-    const canPrev = !!withPrev && fit(withPrev)
-    const canNext = !!withNext && fit(withNext)
-    if (!canPrev && !canNext) break
-    if (canNext && (hi - index <= index - lo || !canPrev)) {
-      hi += 1
-      text = withNext
-    } else if (canPrev) {
-      lo -= 1
-      text = withPrev
-    } else break
+  while (lo > 0 || hi < titles.length - 1) {
+    const canNext = hi < titles.length - 1 && cells(lo, hi + 1) <= width
+    const canPrev = lo > 0 && cells(lo - 1, hi) <= width
+    if (canNext && (hi - index <= index - lo || !canPrev)) hi += 1
+    else if (canPrev) lo -= 1
+    else break
   }
-  const wrapped = `${lo > 0 ? '‹ ' : ''}${text}${hi < marked.length - 1 ? ' ›' : ''}`
-  return fit(wrapped) ? wrapped : clip(text, width)
+  return [
+    ...(lo > 0 ? [fg(c.faint)('‹ ')] : []),
+    ...titles.slice(lo, hi + 1).flatMap((title, i) => tabChunks(title, lo + i === index)),
+    ...(hi < titles.length - 1 ? [fg(c.faint)(' ›')] : []),
+  ]
 }
 const platformLine = computed(() =>
-  platformBar(
-    ws.value?.provider || '',
-    ws.value?.mode === 'rank' ? '推荐  [榜单]' : '[推荐]  榜单',
-  ),
+  platformBar(ws.value?.provider || '', ws.value?.mode === 'rank' ? 'rank' : 'rec'),
 )
 const searchPlatformLine = computed(() =>
-  platformBar(providers.value[state.value.providerIndex] || '', 'Tab 切换'),
+  platformBar(providers.value[state.value.providerIndex] || ''),
 )
+/** Active filter labels (the view stores option values). */
+const filterLabels = computed(() => {
+  const active = ws.value?.filters ?? {}
+  const defs = wsSections.value[ws.value?.sectionIndex ?? 0]?.filters ?? []
+  return Object.entries(active).map(
+    ([key, value]) => defs.find((f) => f.key === key)?.options.find((o) => o.value === value)?.label ?? value,
+  )
+})
 const sectionLine = computed(() => {
   const right = [
     ws.value?.loading ? '加载中' : `${ws.value?.rows.length ?? 0} 条`,
-    Object.values(ws.value?.filters ?? {}).join('/'),
+    filterLabels.value.join('/'),
   ]
     .filter(Boolean)
     .join(' · ')
   const room = Math.max(8, bodyW.value - displayWidth(right) - 1)
+  const strip = sectionStrip(
+    wsSections.value.map((s) => s.title),
+    ws.value?.sectionIndex ?? 0,
+    room,
+  )
   return colsLine(
     [
-      {
-        text: sectionStrip(
-          wsSections.value.map((s) => s.title),
-          ws.value?.sectionIndex ?? 0,
-          room,
-        ),
-        grow: true,
-        color: c.text,
-      },
+      { chunks: (cells) => [...strip, { __isChunk: true, text: ' '.repeat(Math.max(0, cells - strip.reduce((n, ch) => n + displayWidth(ch.text), 0))) }], grow: true },
       { text: right, cells: displayWidth(right), align: 'right', color: c.faint },
     ],
     bodyW.value,
@@ -698,7 +747,7 @@ const wsRows = computed(() => {
   return sliceList(
     rows,
     ws.value?.cursor ?? 0,
-    bodyH.value - 3 - (ws.value?.error ? 3 : ws.value?.notice ? 2 : 0),
+    bodyH.value - 3 - (ws.value?.error || ws.value?.notice ? 3 : 0),
   )
 })
 const wsSelected = computed(() => ws.value?.rows[ws.value.cursor])
@@ -711,71 +760,122 @@ const filterRows = computed(
 const filterView = computed(() =>
   sliceList(filterRows.value, state.value.cursor, bodyH.value - 2),
 )
-const jobView = computed(() =>
-  sliceList(jobs.value, state.value.cursor, bodyH.value - 2),
-)
-const selectedSummary = computed(() =>
-  [
-    wsSelected.value?.title,
-    wsSelected.value?.desc,
-    wsSelected.value?.score ? `评分 ${wsSelected.value.score}` : '',
-    wsSelected.value?.target?.type === 'search'
-      ? '回车搜索同名候选'
-      : '回车进入详情',
-  ]
-    .filter(Boolean)
-    .join('\n\n'),
-)
-function wsRow(row: Row, index: number) {
-  const on = index === ws.value?.cursor
+/** `▌ 体裁    ● 全部` — the group title only on its first option. */
+function filterLine(item: (typeof filterRows.value)[number], index: number): StyledText {
+  const on = index === state.value.cursor
+  const first = filterRows.value[index - 1]?.key !== item.key
+  const current = ws.value?.filters?.[item.key]
+  const active = current ? current === item.value : first
   return colsLine(
     [
-      { text: on ? '› ' : '  ', cells: 2, color: on ? c.accent : c.faint },
-      {
-        text: row.rank ? String(row.rank).padStart(2, ' ') + ' ' : '   ',
-        cells: 3,
-        color: c.faint,
-      },
-      { text: row.title, grow: true, color: on ? c.text : c.dim },
-      {
-        text:
-          row.target?.type === 'search'
-            ? '搜索 →'
-            : row.target?.type === 'channel'
-              ? '频道 →'
-              : '',
-        cells: 7,
-        color: c.faint,
-      },
+      markCol(on),
+      { text: first ? item.title : '', cells: 10, color: c.faint, bold: false },
+      { text: active ? '● ' : '○ ', cells: 2, color: active ? c.accent : c.faint, bold: false },
+      { text: item.label, grow: true, color: on || active ? c.text : c.dim },
     ],
-    wsListWidth.value,
+    bodyW.value,
     on,
   )
 }
-const helpLines = [
-  '怎么用',
-  '',
-  '发现页',
-  '  1-4     切平台：1 优酷  2 腾讯  3 红果  4 抖音',
-  '  ← →    换栏目；只有一个栏目时，左右切推荐/榜单',
-  '  Tab     推荐 / 榜单',
-  '  回车    打开    / 搜索    F 筛选    R 刷新',
-  '',
-  '下载（确认页回车才入队，Esc 不会入队）',
-  '  空格勾选   Shift+方向从当前集连选   A 全选   C 清空',
-  '  回车：选集 → 画质 → 匹配 → 确认',
-  '  画质页 ←→ 切到音轨，空格勾选要封装的音轨',
-  '  TMDB：回车采用，S 跳过，R 重试',
-  '',
-  'F1 帮助   F2 搜索   F3 任务   F4 设置',
-  'Esc 返回    Ctrl+C 退出',
-  'Windows Terminal 会吃掉 Alt+数字，用 Ctrl+1/2/3/4',
+const jobView = computed(() =>
+  sliceList(jobs.value, state.value.cursor, bodyH.value - 2),
+)
+/** Job log below the fixed title/status block. */
+const logView = computed(() => {
+  const logs = (state.value.jobDetailLines ?? []).slice(2)
+  const room = Math.max(1, bodyH.value - 3)
+  const start = Math.min(state.value.logOffset ?? 0, Math.max(0, logs.length - room))
+  return {
+    total: logs.length,
+    first: logs.length ? start + 1 : 0,
+    last: Math.min(logs.length, start + room),
+    lines: logs.slice(start, start + room),
+  }
+})
+const jobDetailTone = computed(() => {
+  const line = state.value.jobDetailLines?.[1] ?? ''
+  return jobTone(/^(?:状态 )?([^\s·：:]+)/.exec(line)?.[1] ?? '')
+})
+function wsRow(row: Row, index: number) {
+  const on = index === ws.value?.cursor
+  const width = wsListWidth.value
+  const target =
+    row.target?.type === 'search' ? '搜索 →' : row.target?.type === 'channel' ? '频道 →' : ''
+  const all = ws.value?.rows ?? []
+  const desc = row.desc || (row.tags ?? []).join('·')
+  const descW = blurbCells(all, width)
+  const cols: Col[] = [
+    markCol(on),
+    {
+      text: row.rank ? String(row.rank).padStart(3, ' ') + '  ' : '',
+      cells: all.some((r) => r.rank) ? 5 : 0,
+      color: row.rank && row.rank <= 3 ? c.accent : c.faint,
+      bold: false,
+    },
+    { text: row.title, grow: true, color: on ? c.text : c.dim },
+  ]
+  if (descW) cols.push({ text: '', cells: 2 }, { text: desc, cells: descW, color: c.faint, bold: false })
+  if (all.some((r) => r.score))
+    cols.push({ text: row.score ? `★${row.score}` : '', cells: 7, align: 'right', color: c.warn, bold: false })
+  if (all.some((r) => r.target?.type === 'search' || r.target?.type === 'channel'))
+    cols.push({ text: target, cells: 8, align: 'right', color: c.faint, bold: false })
+  return colsLine(packTitle(cols, 2, ws.value?.rows, width), width, on)
+}
+const HELP: Array<[string, Array<[string, string]>]> = [
+  [
+    '发现页',
+    [
+      ['1-4', '切平台：1 优酷  2 腾讯  3 红果  4 抖音'],
+      ['← →', '换栏目；只有一个栏目时切推荐/榜单'],
+      ['tab', '推荐 / 榜单'],
+      ['⏎', '打开选中的节目'],
+      ['/  f  r', '搜索 · 筛选 · 刷新'],
+    ],
+  ],
+  [
+    '下载：选集 › 画质 › 匹配 › 确认（确认页回车才入队）',
+    [
+      ['空格', '勾选当前集；⇧方向 从当前集连选'],
+      ['a  c', '全选 · 清空'],
+      ['← →', '画质页切到音轨，空格勾选要封装的音轨'],
+      ['⏎  s  r', '匹配页：采用 · 跳过 · 重试'],
+    ],
+  ],
+  [
+    '随处可用',
+    [
+      ['F1-F4', '帮助 · 搜索 · 任务 · 设置'],
+      ['esc', '返回上一步（不会入队）'],
+      ['^C', '退出'],
+      ['^1-4', 'Windows Terminal 会吃掉 Alt+数字，用 Ctrl+数字切平台'],
+    ],
+  ],
 ]
+const helpLines = computed(() => {
+  const out: StyledText[] = []
+  HELP.forEach(([title, rows], i) => {
+    if (i) out.push(new StyledText([]))
+    out.push(ink(c.accent, title, true))
+    for (const [keys, desc] of rows)
+      out.push(new StyledText([fg(c.text)(`  ${column(keys, 10)}`), fg(c.dim)(desc)]))
+  })
+  return out
+})
 
 // --- detail screen --------------------------------------------------------
 const gridRows = computed(() =>
   Math.max(1, bodyH.value - (state.value.detail?.desc ? 6 : 4)),
 )
+
+/** Synopsis as at most two indented lines; the second one ends in `..` when cut. */
+const descLines = computed(() => {
+  const desc = (state.value.detail?.desc ?? '').replace(/\s+/g, ' ').trim()
+  if (!desc) return []
+  const room = Math.max(10, bodyW.value - 2)
+  const lines = wrapLines(desc, room)
+  if (lines.length > 2) lines[1] = clip(`${lines[1]}${lines[2]}`, room)
+  return lines.slice(0, 2).map((line) => `  ${line}`)
+})
 
 function clock(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return ''
@@ -799,7 +899,7 @@ const detailFacts = computed(() => {
   if (d.episodes <= 1 && d.duration > 0) parts.push(`时长 ${clock(d.duration)}`)
   else if (firstLen > 0) parts.push(`每集约 ${clock(firstLen)}`)
   if (d.drm) parts.push(d.drm)
-  return parts.length ? `  ${parts.join('  ·  ')}` : ''
+  return parts.length ? clip(`  ${parts.join('  ·  ')}`, bodyW.value) : ''
 })
 
 const episodeLine = computed(() => {
@@ -910,11 +1010,17 @@ function qualityTable(header: boolean, row?: Quality, selected = false): StyledT
           ? `⚡${row.label || (row.stream || row.title || '').split('|')[0] || '转码'}`
           : row.label || row.title || '视频流'
   const drm = !row?.drm ? '—' : 'DRM'
+  // Size the name column to the longest label, and let a trailing spacer take
+  // the slack, so short tables do not stretch across a wide terminal.
+  const nameCells = Math.min(
+    Math.max(10, Math.floor(width * 0.4)),
+    qualities.value.reduce((n, q) => Math.max(n, displayWidth(q.label || q.title || '') + 3), 8),
+  )
   const cols: Col[] = [
     header ? { text: '  ', cells: 2 } : markCol(selected),
     {
       text: header ? '档位' : name,
-      grow: true,
+      cells: nameCells,
       color: header ? c.dim : c.text,
       bold: selected,
     },
@@ -939,6 +1045,7 @@ function qualityTable(header: boolean, row?: Quality, selected = false): StyledT
   field('编码', row ? row.encodeTag || row.codec || '—' : '', width >= 100 ? 10 : 8)
   field('体积', row ? (row.size > 0 ? human(row.size) : '—') : '', 10, 'right')
   if (showDrm) field('DRM', row ? drm : '', 4)
+  cols.push({ text: '', grow: true })
   return colsLine(cols, width, selected && !header)
 }
 
@@ -1002,37 +1109,66 @@ function audioLine(row: Audio, selected: boolean): StyledText {
   )
 }
 
-/** `▌ 斗破苍穹年番   萧炎智斗蛇人族 ★9.1        优酷 · 336578` */
-function resultLine(row: Row, selected: boolean, width: number): StyledText {
-  const right = `${providerName(row.sub)}${row.id ? ` · ${row.id}` : ''}`
-  const rightW = displayWidth(right)
-  const meta = [
-    row.desc,
-    row.score ? `★${row.score}` : '',
-    row.desc || row.score ? '' : (row.tags ?? []).join('·'),
-  ]
-    .filter(Boolean)
-    .join('  ')
-  const metaW = meta
-    ? Math.min(displayWidth(meta), Math.max(0, Math.floor(width * 0.32)))
-    : 0
-  const titleW = Math.max(6, width - 2 - rightW - (metaW ? metaW + 2 : 0) - 1)
-  const title = selected
-    ? fg(c.text)(bold(column(row.title, titleW)))
-    : fg(c.dim)(column(row.title, titleW))
-  return new StyledText([
-    selected ? fg(c.accent)(bold(MARK)) : fg(c.dim)('  '),
-    title,
-    metaW ? fg(c.faint)(`  ${column(meta, metaW)}`) : fg(c.dim)(''),
-    fg(c.faint)(` ${right}`),
-  ])
+/**
+ * Pack a list row to the left: the title column is only as wide as the widest
+ * title in the list, so the blurb sits next to the titles instead of floating
+ * at the far edge; a trailing spacer takes the slack.
+ */
+function packTitle(cols: Col[], titleAt: number, rows: Row[] | undefined, width: number): Col[] {
+  const widest = (rows ?? []).reduce((n, r) => Math.max(n, displayWidth(r.title)), 0)
+  const rest = cols.reduce((n, col, i) => n + (i === titleAt ? 0 : (col.cells ?? 0)), 0)
+  cols[titleAt] = { ...cols[titleAt]!, grow: false, cells: Math.max(6, Math.min(widest + 2, width - rest)) }
+  return [...cols, { text: '', grow: true }]
 }
 
-function jobLine(job: Job): StyledText {
+/** One blurb column width per list, so the blurbs line up across rows. */
+function blurbCells(rows: Row[] | undefined, width: number): number {
+  const widest = (rows ?? []).reduce((n, r) => Math.max(n, displayWidth(r.desc || (r.tags ?? []).join('·'))), 0)
+  return Math.min(widest, Math.floor(width * 0.4))
+}
+
+/** `▌ 斗破苍穹年番              萧炎智斗蛇人族   ★9.1  优酷` */
+function resultLine(row: Row, selected: boolean, width: number): StyledText {
+  const meta = row.desc || (row.tags ?? []).join('·')
+  const metaW = blurbCells(state.value.rows, width)
+  // Platform ids are long and only matter when two titles collide; show them
+  // when there is room to spare.
+  const id = width >= 118 && row.id ? `  ${row.id}` : ''
+  const cols: Col[] = [
+    markCol(selected),
+    { text: row.title, grow: true, color: selected ? c.text : c.dim },
+  ]
+  if (metaW) cols.push({ text: '', cells: 2 }, { text: meta, cells: metaW, color: c.faint, bold: false })
+  cols.push({ text: row.score ? `★${row.score}` : '', cells: 7, align: 'right', color: c.warn, bold: false })
+  cols.push({ text: `  ${providerName(row.sub)}`, cells: 6, color: c.faint, bold: false })
+  if (id) cols.push({ text: id, cells: displayWidth(id), color: c.line, bold: false })
+  return colsLine(packTitle(cols, 1, state.value.rows, width), width, selected)
+}
+
+const jobCells = computed(() => ({
+  title: Math.min(34, Math.max(14, Math.floor(bodyW.value * 0.34))),
+  bar: Math.min(18, Math.max(8, Math.floor(bodyW.value * 0.16))),
+}))
+
+function jobHeader(): StyledText {
+  const { title, bar } = jobCells.value
+  return colsLine(
+    [
+      { text: '', cells: 4 },
+      { text: '任务', cells: title, color: c.faint },
+      { text: '', cells: 1 },
+      { text: '进度', cells: bar + 5, color: c.faint },
+      { text: '', cells: 2 },
+      { text: '状态', grow: true, color: c.faint },
+    ],
+    bodyW.value,
+  )
+}
+
+function jobLine(job: Job, selected: boolean): StyledText {
   const tone = jobTone(job.status)
   const pct = Math.max(0, Math.min(100, Math.round((job.pct ?? 0) * 100)))
-  const titleCells = Math.min(30, Math.max(14, Math.floor(bodyW.value * 0.34)))
-  const barCells = Math.min(18, Math.max(8, Math.floor(bodyW.value * 0.16)))
+  const { title: titleCells, bar: barCells } = jobCells.value
   const failed = job.status === '失败'
   const degraded = job.status === '完成' && !!job.note
   const trailing = failed
@@ -1041,7 +1177,8 @@ function jobLine(job: Job): StyledText {
       ? degraded ? `降级：${job.note} · ${job.log}` : job.log || '完成'
       : job.log || job.status
   const cols: Col[] = [
-    { text: `${tone.icon} `, cells: 2, color: degraded ? c.warn : tone.color },
+    markCol(selected),
+    { text: `${tone.icon} `, cells: 2, color: degraded ? c.warn : tone.color, bold: false },
     { text: job.title, cells: titleCells, color: failed ? c.dim : c.text },
     { text: ' ', cells: 1 },
     {
@@ -1054,11 +1191,12 @@ function jobLine(job: Job): StyledText {
       cells: 4,
       align: 'right',
       color: pct >= 100 ? c.ok : c.dim,
+      bold: false,
     },
     { text: '  ', cells: 2 },
-    { text: trailing, grow: true, color: failed ? c.err : degraded ? c.warn : c.faint },
+    { text: trailing, grow: true, color: failed ? c.err : degraded ? c.warn : c.faint, bold: false },
   ]
-  return colsLine(cols, bodyW.value)
+  return colsLine(cols, bodyW.value, selected)
 }
 </script>
 
@@ -1212,15 +1350,23 @@ function jobLine(job: Job): StyledText {
           <Box flexDirection="column" :width="wsListWidth">
             <Text
               v-if="ws?.error"
-              :content="ink(c.err, ws.error + ' · R 重试')"
+              :content="
+                new StyledText([
+                  fg(c.err)(bold('✖ ')),
+                  fg(c.err)(ws.error),
+                  fg(c.faint)(/重试/.test(ws.error) ? '' : '  ·  按 r 重试'),
+                ])
+              "
               :width="wsListWidth"
-              :height="3"
+              :height="2"
+              :marginTop="1"
             />
             <Text
               v-else-if="ws?.notice"
-              :content="ink(c.warn, ws.notice)"
+              :content="ink(c.warn, '! ' + ws.notice)"
               :width="wsListWidth"
               :height="2"
+              :marginTop="1"
             />
             <Text
               v-if="!wsRows.total && !ws?.loading && !ws?.notice && !ws?.error"
@@ -1228,17 +1374,19 @@ function jobLine(job: Job): StyledText {
                 ink(
                   c.dim,
                   providers.length
-                    ? '暂无内容 · / 搜索 · R 刷新'
-                    : '当前 Key 没有可浏览的平台 · F4 设置',
+                    ? '这个栏目暂无内容  ·  按 / 搜索，或 r 刷新'
+                    : '当前 Key 没有可浏览的平台  ·  按 F4 检查设置',
                 )
               "
               :width="wsListWidth"
               :height="2"
+              :marginTop="1"
             />
             <Text
               v-if="ws?.loading && !wsRows.total"
               :content="ink(c.faint, '正在读取平台栏目与内容…')"
               :height="1"
+              :marginTop="1"
             />
             <Text
               v-for="entry in wsRows.rows"
@@ -1254,19 +1402,35 @@ function jobLine(job: Job): StyledText {
           <Box
             v-if="wide"
             :width="wsSummaryWidth + 2"
-            :paddingLeft="2"
+            :paddingLeft="1"
+            :border="['left']"
+            :borderColor="c.line"
             flexDirection="column"
-            ><Text :content="ink(c.faint, '选中内容')" :height="2" /><Text
-              :content="ink(c.dim, selectedSummary)"
+            ><Text
+              :content="ink(c.text, wsSelected?.title || '未选中', true)"
               :width="wsSummaryWidth"
-              :height="Math.max(1, bodyH - 6)"
+              :height="displayWidth(wsSelected?.title || '') > wsSummaryWidth ? 2 : 1"
+              wrapMode="char" /><Text
+              v-if="wsSelected?.score"
+              :content="ink(c.warn, `★ ${wsSelected.score}`)"
+              :height="1"
+              :marginTop="1" /><Text
+              v-if="wsSelected?.desc || wsSelected?.tags?.length"
+              :content="ink(c.dim, [wsSelected?.desc, (wsSelected?.tags ?? []).join(' · ')].filter(Boolean).join('\n\n'))"
+              :width="wsSummaryWidth"
+              :marginTop="1"
+              wrapMode="char" /><Text
+              v-if="wsSelected"
+              :content="ink(c.faint, wsSelected.target?.type === 'search' ? '⏎ 搜索同名候选' : '⏎ 进入详情')"
+              :height="1"
+              :marginTop="1"
           /></Box>
         </Box>
         <Text
           :content="
             ink(
               c.faint,
-              `${ws?.compatibility ? '旧网关兼容 · ' : ''}${ws?.source || '公开内容'}${!wide && wsSelected?.desc ? ` · ${wsSelected.desc}` : ''}`,
+              `${ws?.compatibility ? '旧网关兼容 · ' : ''}${ws?.source || '公开内容'}`,
             )
           "
           :height="1"
@@ -1276,18 +1440,18 @@ function jobLine(job: Job): StyledText {
       </Box>
       <Box v-else-if="state.scene === 'filters'" flexDirection="column"
         ><Text
-          :content="ink(c.accent, '筛选 · 回车应用 / Esc 取消')"
-          :height="2" /><Text
+          :content="
+            new StyledText([
+              fg(c.text)(bold('筛选 ')),
+              fg(c.dim)(wsSections[ws?.sectionIndex ?? 0]?.title ?? ''),
+            ])
+          "
+          :height="1"
+          :marginBottom="1" /><Text
           v-for="entry in filterView.rows"
           :key="entry.item.key + entry.item.value"
-          :content="
-            pickLine(
-              `${entry.item.title} / ${entry.item.label}`,
-              '',
-              bodyW,
-              entry.index === state.cursor,
-            )
-          "
+          :content="filterLine(entry.item, entry.index)"
+          :bg="entry.index === state.cursor ? c.sel : undefined"
           :height="1"
           :width="bodyW"
           :truncate="true"
@@ -1300,7 +1464,7 @@ function jobLine(job: Job): StyledText {
               bodyH,
           )"
           :key="index"
-          :content="ink(index === 0 ? c.accent : c.dim, line)"
+          :content="line"
           :height="1"
           :width="bodyW"
           :truncate="true"
@@ -1310,37 +1474,66 @@ function jobLine(job: Job): StyledText {
         flexDirection="column"
         :width="bodyW"
         ><Text
-          :content="ink(c.accent, '确认下载 · 此前尚未创建任务', true)"
-          :height="H < 24 ? 1 : 2" /><Text
-          :content="ink(c.text, state.confirmation?.title || '')"
-          :height="H < 24 ? 1 : 2"
+          :content="
+            new StyledText([
+              fg(c.accent)(bold('确认下载  ')),
+              fg(c.text)(bold(state.confirmation?.title || '')),
+              fg(c.faint)('   回车后才会创建任务'),
+            ])
+          "
+          :height="1"
           :width="bodyW"
           :truncate="true" /><Text
+          :content="ink(c.line, '─'.repeat(bodyW))"
+          :height="1"
+          :marginTop="H < 24 ? 0 : 1"
+          :width="bodyW" /><Text
           v-for="(value, label) in {
             集数: state.confirmation?.episodes,
             画质: state.confirmation?.quality,
             音轨: state.confirmation?.audio,
             目录: state.confirmation?.directory,
-            命名示例: state.confirmation?.name,
+            文件名: state.confirmation?.name,
           }"
           :key="label"
-          :content="kvLine(String(label), value || '', bodyW, false, c.dim)"
-          :height="H < 24 ? 1 : 2"
+          :content="kvLine(String(label), value || '—', bodyW, false, label === '目录' || label === '文件名' ? c.text : c.dim, 10)"
+          :height="1"
+          :marginTop="H < 24 ? 0 : 1"
           :width="bodyW"
           :truncate="true" /><Text
+          :content="ink(c.line, '─'.repeat(bodyW))"
+          :height="1"
+          :marginTop="H < 24 ? 0 : 1"
+          :width="bodyW" /><Text
           :content="
-            ink(c.accent, '[ Enter 确认加入队列 ]   O 修改目录   Esc 返回')
+            new StyledText([
+              bg(c.accent)(fg(c.bg)(bold(' ⏎ 加入下载队列 '))),
+            ])
           "
           :height="1"
+          :marginTop="1"
           :width="bodyW"
           :truncate="true"
       /></Box>
       <Box v-else-if="state.scene === 'job-detail'" flexDirection="column"
         ><Text
-          v-for="(line, index) in (state.jobDetailLines ?? []).slice(
-            state.logOffset ?? 0,
-            (state.logOffset ?? 0) + bodyH,
-          )"
+          :content="ink(c.text, state.jobDetailLines?.[0] ?? '', true)"
+          :height="1"
+          :width="bodyW"
+          :truncate="true" /><Text
+          :content="
+            new StyledText([
+              fg(jobDetailTone.color)(`${jobDetailTone.icon} `),
+              fg(jobDetailTone.color)(state.jobDetailLines?.[1] ?? ''),
+            ])
+          "
+          :height="1"
+          :width="bodyW"
+          :truncate="true" /><Text
+          :content="ink(c.line, '─'.repeat(bodyW))"
+          :height="1"
+          :width="bodyW" /><Text
+          v-for="(line, index) in logView.lines"
           :key="index"
           :content="ink(c.dim, line)"
           :height="1"
@@ -1362,7 +1555,12 @@ function jobLine(job: Job): StyledText {
           :truncate="true"
         />
         <Text
-          :content="ink(c.faint, '搜标题，或粘贴链接。Tab 切平台，回车开始。')"
+          :content="
+            new StyledText([
+              fg(c.text)(bold('搜索片名')),
+              fg(c.faint)(`，在 ${providerName(providers[state.providerIndex] || '')} 中查找；也可以直接粘贴链接`),
+            ])
+          "
           :height="1"
           :marginTop="1"
           :width="bodyW"
@@ -1375,7 +1573,7 @@ function jobLine(job: Job): StyledText {
           :marginTop="1"
           :border="true"
           borderStyle="rounded"
-          :borderColor="c.line"
+          :borderColor="c.accent"
           :backgroundColor="c.sunken"
           :paddingLeft="1"
           :paddingRight="1"
@@ -1393,20 +1591,26 @@ function jobLine(job: Job): StyledText {
           />
         </Box>
         <Text
-          :content="ink(c.faint, '例  https://v.youku.com/v_show/id_xxx.html')"
+          :content="ink(c.faint, '支持的链接')"
           :height="1"
           :marginTop="1"
           :width="bodyW"
           :truncate="true"
         />
         <Text
-          :content="ink(c.faint, '    https://v.qq.com/x/cover/xxx.html')"
+          :content="ink(c.dim, '  优酷  https://v.youku.com/v_show/id_xxx.html')"
           :height="1"
           :width="bodyW"
           :truncate="true"
         />
         <Text
-          :content="ink(c.faint, '    抖音分享口令也可以直接粘贴')"
+          :content="ink(c.dim, '  腾讯  https://v.qq.com/x/cover/xxx.html')"
+          :height="1"
+          :width="bodyW"
+          :truncate="true"
+        />
+        <Text
+          :content="ink(c.dim, '  抖音  分享口令整段粘贴即可')"
           :height="1"
           :width="bodyW"
           :truncate="true"
@@ -1421,20 +1625,19 @@ function jobLine(job: Job): StyledText {
       >
         <Text
           :content="
-            ink(
-              c.faint,
-              state.query
-                ? `「${clip(state.query, 20)}」  回车打开  / 改搜索`
-                : '回车打开  / 改搜索',
-            )
+            new StyledText([
+              fg(c.text)(bold(state.query ? `「${clip(state.query, 30)}」` : '搜索结果')),
+              fg(c.faint)(`  ${providerName(providers[state.providerIndex] || '')} · ${resultView.total} 条${state.listMore ? '+' : ''}`),
+            ])
           "
           :height="1"
           :width="bodyW"
           :truncate="true"
+          :marginBottom="1"
         />
         <Text
           v-if="!resultView.total"
-          :content="ink(c.faint, '没有结果。换个关键词或平台再试，esc 返回')"
+          :content="ink(c.dim, '没有结果  ·  按 / 换个关键词，或在搜索页用 tab 换平台')"
           :height="1"
         />
         <Text
@@ -1509,11 +1712,12 @@ function jobLine(job: Job): StyledText {
           :truncate="true"
         />
         <Text
-          v-if="state.detail?.desc"
-          :content="ink(c.faint, '  ' + state.detail.desc)"
+          v-for="(line, i) in descLines"
+          :key="`desc-${i}`"
+          :content="ink(c.faint, line)"
           :width="bodyW"
-          :height="2"
-          wrapMode="char"
+          :height="1"
+          wrapMode="none"
         />
         <Text
           v-if="selectedEpisode && !isMovie"
@@ -1586,32 +1790,25 @@ function jobLine(job: Job): StyledText {
           "
           :height="1"
         />
-        <Box flexDirection="row" :height="1" :marginTop="1">
-          <Text
-            :height="1"
-            :bg="onAudioTab ? undefined : c.sel"
-            :content="
-              ink(
-                onAudioTab ? c.faint : c.accent,
-                ` 画质 ${qualities.length} 档 `,
-                !onAudioTab,
-              )
-            "
-          />
-          <Text
-            v-if="audios.length"
-            :height="1"
-            :bg="onAudioTab ? c.sel : undefined"
-            :content="
-              ink(
-                onAudioTab ? c.accent : c.faint,
-                audios.every(a => a.embedded) ? ' 内嵌音轨 · 随画质切换 ' : ` 音轨 ${audios.length} 条 · 已选 ${audioPicked} `,
-                onAudioTab,
-              )
-            "
-          />
-          <Text :height="1" :content="ink(c.line, '  ←→ 切换')" />
-        </Box>
+        <Text
+          :height="1"
+          :marginTop="1"
+          :width="bodyW"
+          :content="
+            new StyledText([
+              ...tabChunks(`画质 ${qualities.length} 档`, !onAudioTab),
+              ...(audios.length
+                ? tabChunks(
+                    audios.every((a) => a.embedded)
+                      ? '内嵌音轨 · 随画质切换'
+                      : `音轨 ${audios.length} 条 · 已选 ${audioPicked}`,
+                    onAudioTab,
+                  )
+                : []),
+              fg(c.faint)(audios.length ? '   ←→ 切换' : ''),
+            ])
+          "
+        />
         <Text
           :height="1"
           :content="onAudioTab ? audioHeader() : qualityHeader()"
@@ -1655,13 +1852,20 @@ function jobLine(job: Job): StyledText {
         :width="bodyW"
       >
         <Text
-          :content="ink(c.faint, '回车采用 · S 跳过匹配 · Esc 返回画质')"
+          :content="
+            new StyledText([
+              fg(c.text)(bold(`「${clip(state.detail?.title || state.detailTitle || '', 30)}」`)),
+              fg(c.faint)('  选一个 TMDB 条目，用于文件命名和刮削'),
+            ])
+          "
           :height="1"
+          :width="bodyW"
+          :truncate="true"
           :marginBottom="1"
         />
         <Text
           v-if="!tmdbView.total"
-          :content="ink(c.dim, '暂无匹配候选 · S 跳过 / R 重试 / Esc 返回')"
+          :content="ink(c.dim, '没有匹配的候选  ·  s 跳过匹配，r 重试')"
           :height="2"
           :width="bodyW"
         />
@@ -1690,10 +1894,11 @@ function jobLine(job: Job): StyledText {
             v-if="entry.item.overview"
             :content="
               ink(
-                c.faint,
-                `  ${clip(entry.item.overview, Math.max(8, bodyW - 4))}`,
+                entry.index === state.cursor ? c.dim : c.faint,
+                `  ${column(entry.item.overview, Math.max(8, bodyW - 2))}`,
               )
             "
+            :bg="entry.index === state.cursor ? c.sel : undefined"
             :width="bodyW"
             :height="1"
             wrapMode="none"
@@ -1710,15 +1915,18 @@ function jobLine(job: Job): StyledText {
       >
         <Text
           v-if="!jobs.length"
-          :content="
-            ink(c.faint, '还没有任务。F2 搜索，或回发现页选片。Esc 返回')
-          "
+          :content="ink(c.dim, '还没有下载任务  ·  按 F2 搜索，或 esc 回发现页选片')"
           :height="1"
+          :marginTop="1"
         />
+        <template v-else>
+          <Text :content="jobHeader()" :width="bodyW" :height="1" wrapMode="none" />
+          <Text :content="ink(c.line, '─'.repeat(bodyW))" :width="bodyW" :height="1" />
+        </template>
         <Text
           v-for="entry in jobView.rows"
           :key="entry.item.id"
-          :content="jobLine(entry.item)"
+          :content="jobLine(entry.item, entry.index === state.cursor)"
           :bg="entry.index === state.cursor ? c.sel : undefined"
           :width="bodyW"
           :height="1"
@@ -1734,26 +1942,23 @@ function jobLine(job: Job): StyledText {
         :width="bodyW"
       >
         <Text
-          :content="ink(c.faint, '⏎ 修改 / 切换，esc 保存并返回')"
-          :height="1"
-          :marginBottom="1"
-        />
-        <Text
           v-for="entry in settingView.rows"
-          :key="entry.item.label"
+          :key="'header' in entry.item ? `h-${entry.index}` : `s-${entry.item.index}`"
           :width="bodyW"
           :height="1"
           wrapMode="none"
           :truncate="true"
-          :bg="entry.index === state.cursor ? c.sel : undefined"
+          :bg="'index' in entry.item && entry.item.index === state.cursor ? c.sel : undefined"
           :content="
-            kvLine(
-              entry.item.label,
-              entry.item.value,
-              bodyW,
-              entry.index === state.cursor,
-              valueColor(entry.item.value),
-            )
+            'header' in entry.item
+              ? ink(c.accent, entry.item.header, true)
+              : kvLine(
+                  entry.item.label,
+                  entry.item.value,
+                  bodyW,
+                  entry.item.index === state.cursor,
+                  valueColor(entry.item.value),
+                )
           "
         />
       </Box>
@@ -1790,11 +1995,6 @@ function jobLine(job: Job): StyledText {
             :width="editW"
           />
         </Box>
-        <Text
-          :content="ink(c.faint, '⏎ 保存 · esc 取消')"
-          :height="1"
-          :marginTop="1"
-        />
       </Box>
 
       <!-- qr -->
@@ -1877,7 +2077,7 @@ function jobLine(job: Job): StyledText {
       :paddingLeft="1"
       :paddingRight="1"
     >
-      <KeyHints :hints="hints" :width="bodyW" />
+      <KeyHints :hints="hints" :extra="globalHints" :width="bodyW" />
     </Box>
   </Box>
 </template>

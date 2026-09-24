@@ -2,7 +2,7 @@
 // `colsLine`, which keeps rows exactly `width` cells wide — that is what makes
 // columns line up, what makes the selected-row background span the full row,
 // and what stops a long Chinese title from wrapping into the next line.
-import { StyledText, bold, fg } from 'vue-termui'
+import { StyledText, bg, bold, fg } from 'vue-termui'
 import type { TextChunk } from 'vue-termui'
 import { c } from './theme.ts'
 import { column, displayWidth } from './text.ts'
@@ -57,6 +57,18 @@ export function colsLine(cols: Col[], width: number, selected = false): StyledTe
 export function barChunks(pct: number, cells: number, color = c.accent): TextChunk[] {
   const filled = Math.round(Math.max(0, Math.min(1, pct)) * cells)
   return [fg(color)('█'.repeat(filled)), fg(c.line)('░'.repeat(Math.max(0, cells - filled)))]
+}
+
+/** ` 红果 ` tab. The active one sits on the selection slate in the accent color. */
+export function tabChunks(label: string, on: boolean, enabled = true): TextChunk[] {
+  const text = ` ${label} `
+  if (on) return [bg(c.sel)(fg(c.accent)(bold(text)))]
+  return [fg(enabled ? c.dim : c.faint)(text)]
+}
+
+/** Cells taken by `tabChunks` for these labels. */
+export function tabsWidth(labels: string[]): number {
+  return labels.reduce((n, label) => n + displayWidth(label) + 2, 0)
 }
 
 /** Cursor column shared by every pickable list. */

@@ -2,7 +2,7 @@
 // Episode picker: a dense grid of `✓ 012` cells that wraps to the terminal
 // width and scrolls by whole rows, so the cursor cell is always on screen.
 import { computed } from 'vue-termui'
-import { Box, StyledText, Text, bg, fg } from 'vue-termui'
+import { Box, StyledText, Text, bg, bold, fg } from 'vue-termui'
 import type { TextChunk } from 'vue-termui'
 import { c } from '../lib/theme.ts'
 import { gridWindow } from '../lib/grid.ts'
@@ -31,11 +31,13 @@ const lines = computed(() => {
       if (!ep) break
       const number = padStart(String(ep.number || index + 1), numWidth)
       const here = index === props.cursor
-      const label = here
-        ? column(`[${ep.selected ? '✓' : ' '}${number}]`, cellWidth)
-        : column(`${ep.selected ? '✓' : '□'} ${number}`, cellWidth)
-      const chunk = fg(here ? c.text : ep.selected ? c.ok : c.faint)(label)
-      chunks.push(here ? bg(c.sel)(chunk) : chunk)
+      // ` ✓  12 ` — the cursor swaps the padding for brackets, so the number
+      // never shifts and the cell stays readable without color.
+      const mark = ep.selected ? '✓' : '·'
+      const [open, close] = here ? ['[', ']'] : [' ', ' ']
+      const label = column(`${open}${mark} ${number}${close}`, cellWidth)
+      const chunk = fg(here ? c.accent : ep.selected ? c.ok : c.faint)(label)
+      chunks.push(here ? bg(c.sel)(bold(chunk)) : chunk)
     }
     out.push({ key: `row-${row}`, content: new StyledText(chunks) })
   }
