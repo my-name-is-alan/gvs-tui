@@ -199,6 +199,7 @@ export class Runtime {
           tmdbLang: 'zh-CN',
           youkuSign: '',
           tencentCookie: '',
+          douyinCookie: '',
           hongguoMerge: true,
           hongguoNfo: true,
           hongguoFmt: 'mkv',
@@ -226,11 +227,11 @@ export class Runtime {
     if (!this.cfg.key.trim()) {
       this.scene = 'setup'
     } else {
-      this.cli = new GwClient(this.cfg.host, this.cfg.key)
+      this.cli = new GwClient(this.cfg.host, this.cfg.key, () => this.cfg)
       this.scene = 'home'
     }
     if (this.simulated) {
-      this.cli = new GwClient(this.cfg.host, this.cfg.key)
+      this.cli = new GwClient(this.cfg.host, this.cfg.key, () => this.cfg)
       this.cli.invoke = demoInvoke
       this.keyInfo = {
         id: 'demo',
@@ -515,6 +516,7 @@ export class Runtime {
     }
     if (this.has('hongguo')) f.push('红果合并', '红果 NFO', '红果封装')
     if (this.has('huangguo')) f.push('黄果 NFO', '黄果封装')
+    if (this.has('douyin')) f.push('抖音 Cookie')
     f.push('运行日志')
     return f
   }
@@ -565,6 +567,8 @@ export class Runtime {
             : '检查中…（回车刷新）'
       case '腾讯 Cookie':
         return this.cfg.tencentCookie ? '已保存' : '空 · 回车粘贴'
+      case '抖音 Cookie':
+        return this.cfg.douyinCookie ? '已保存 · 搜索可用' : '空 · 回车粘贴（搜索需要 sessionid）'
       case '腾讯 caption=all':
         return this.cfg.tencentCaptionAll ? '开（软+硬字幕）' : '关（默认 soft）'
       case '腾讯探测原画':
@@ -608,6 +612,8 @@ export class Runtime {
         return this.cfg.tmdbKey
       case '腾讯 Cookie':
         return this.cfg.tencentCookie
+      case '抖音 Cookie':
+        return this.cfg.douyinCookie ?? ''
       default:
         return ''
     }
@@ -911,7 +917,7 @@ export class Runtime {
       return
     }
     this.persistConfig()
-    this.cli = new GwClient(this.cfg.host, this.cfg.key)
+    this.cli = new GwClient(this.cfg.host, this.cfg.key, () => this.cfg)
     this.scene = 'home'
     void this.refreshKey().then(() => {
       if (this.scene === 'home') {
@@ -1557,6 +1563,7 @@ export class Runtime {
         '优酷登录',
         '优酷扫码',
         '腾讯 Cookie', '腾讯双扫码', '腾讯登录',
+        '抖音 Cookie',
       ].includes(f)
     ) {
       this.say('离线演示不连接账号服务；可测试目录、命名和封装设置')
@@ -1765,7 +1772,7 @@ export class Runtime {
         this.discovery.clear()
         this.keyInfo = null
         this.cfg.host = v.replace(/\/+$/, '')
-        if (this.cfg.key) this.cli = new GwClient(this.cfg.host, this.cfg.key)
+        if (this.cfg.key) this.cli = new GwClient(this.cfg.host, this.cfg.key, () => this.cfg)
         this.persistConfig()
         this.scene = 'settings'
         await this.refreshKey()
@@ -1774,7 +1781,7 @@ export class Runtime {
         this.discovery.clear()
         this.keyInfo = null
         this.cfg.key = v
-        this.cli = new GwClient(this.cfg.host, this.cfg.key)
+        this.cli = new GwClient(this.cfg.host, this.cfg.key, () => this.cfg)
         this.persistConfig()
         this.scene = 'settings'
         await this.refreshKey()
@@ -1797,6 +1804,9 @@ export class Runtime {
       case '腾讯 Cookie':
         this.cfg.tencentCookie = v
         this.cfg.tencentMode = 'cookie'
+        break
+      case '抖音 Cookie':
+        this.cfg.douyinCookie = v.trim()
         break
     }
     this.persistConfig()

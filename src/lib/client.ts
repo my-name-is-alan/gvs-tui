@@ -35,10 +35,13 @@ const TENCENT_PLAY_TIMEOUT_MS = 120_000
 export class GwClient {
   host: string
   key: string
+  /** 读当前配置；给抖音请求自动带上 Dy-Cookie（调用方不用逐处传 extra）。 */
+  private cfgOf?: () => FileConfig
 
-  constructor(host: string, key: string) {
+  constructor(host: string, key: string, cfgOf?: () => FileConfig) {
     this.host = host.replace(/\/+$/, '')
     this.key = key
+    this.cfgOf = cfgOf
   }
 
   allows(scope: string[] | undefined, all: boolean, name: string): boolean {
@@ -52,6 +55,7 @@ export class GwClient {
     const h: Record<string, string> = {}
     if (provider === 'youku' && cfg.youkuSign && !skipSign) h['Yk-Sign'] = cfg.youkuSign
     if (provider === 'tencent' && (!cfg.tencentMode || cfg.tencentMode === 'cookie') && cfg.tencentCookie) h['Tx-Cookie'] = cfg.tencentCookie
+    if (provider === 'douyin' && cfg.douyinCookie) h['Dy-Cookie'] = cfg.douyinCookie
     return h
   }
 
@@ -65,6 +69,10 @@ export class GwClient {
     const timeoutMs =
       opts?.timeoutMs ??
       (provider === 'tencent' && action === 'play' ? TENCENT_PLAY_TIMEOUT_MS : DEFAULT_TIMEOUT_MS)
+    if (provider === 'douyin' && !extra?.['Dy-Cookie']) {
+      const ck = this.cfgOf?.().douyinCookie
+      if (ck) extra = { ...extra, 'Dy-Cookie': ck }
+    }
     const t0 = Date.now()
     const headerNote = extra
       ? Object.keys(extra)

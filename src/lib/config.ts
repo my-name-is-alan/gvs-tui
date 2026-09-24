@@ -15,6 +15,8 @@ export type FileConfig = {
   tencentTVQUA?: string
   tencentTVVersion?: string
   tencentCookie: string
+  /** 抖音网页登录 Cookie（含 sessionid），搜索需要；随请求以 Dy-Cookie 头发给网关 */
+  douyinCookie?: string
   /** Opt-in: probe play with encode=all (风控敏感，默认关) */
   tencentEncodeAll?: boolean
   /** Opt-in: catalog probe with source=1 / 原画 (默认关，易触发权益锁) */
