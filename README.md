@@ -21,6 +21,8 @@ bun run start
 
 平台按 Key 权限显示：优酷 `1`、腾讯 `2`、红果 `3`、黄果 `4`、抖音 `5`（黄果是聚合源：AI 站 / 视频站 / 旧 API）。
 
+红果 / 黄果按 `{下载目录}/{剧名}/season 1/{分集文件}` 保存，季目录使用小写、不补零；未提供季号时默认第 1 季。开启 NFO 后，`tvshow.nfo` 位于剧名目录，分集 NFO 与视频同目录。
+
 ```powershell
 git pull
 bun install --frozen-lockfile

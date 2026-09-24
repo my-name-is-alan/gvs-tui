@@ -60,6 +60,9 @@ export function sanitizePath(s: string): string {
 }
 
 export function folder(n: Naming, outDir: string): string {
+  if (n.source === 'HG' || n.source === 'HGO') {
+    return join(outDir, sanitizePath(n.title), `season ${Math.max(n.season, 1)}`)
+  }
   if (n.kind === 'short') return join(outDir, sanitizePath(n.title))
   let base = n.nameDots || dots(n.title)
   if (n.year > 0) base = `${base}.${n.year}`

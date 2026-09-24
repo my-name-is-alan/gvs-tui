@@ -3,7 +3,7 @@ import { tencentAudioDownloadPlan, tencentAudioPlanNote, tencentPlayQualityInput
 import { resolveHongguoDownload } from './hongguo.ts'
 import { resolveHuangguoDownload } from './huangguo.ts'
 import { mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
-import { extname, join } from 'node:path'
+import { dirname, extname, join } from 'node:path'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
 import { audioTrackLabel, ffmpegDecryptCopy, ffmpegRemux, validateAudio } from './ffmpeg.ts'
@@ -211,13 +211,9 @@ async function runTask(
       default:
         throw new Error(`demo 尚未接 ${t.provider} 下载管线`)
     }
-    if (t.provider === 'hongguo' && cfg.hongguoNfo) {
-      writeTvShowNFO(dir, t.series, t.plot, 0)
-      writeEpisodeNFO(out, t.title, t.season, t.episode, '')
-    }
-    if (t.provider === 'huangguo' && cfg.huangguoNfo) {
-      writeTvShowNFO(dir, t.series, t.plot, 0)
-      writeEpisodeNFO(out, t.title, t.season, t.episode, '')
+    if ((t.provider === 'hongguo' && cfg.hongguoNfo) || (t.provider === 'huangguo' && cfg.huangguoNfo)) {
+      writeTvShowNFO(dirname(dir), n.title, t.plot, 0)
+      writeEpisodeNFO(out, t.title, Math.max(t.season, 1), t.episode, '')
     }
     emitEvt({ id, status: '完成', pct: 1, log: out, err: '', done: true, note })
   } catch (e) {
