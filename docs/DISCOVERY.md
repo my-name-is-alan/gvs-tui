@@ -50,6 +50,8 @@ TUI 只依赖 HTTP 契约。先部署提供本接口的网关，再升级客户�
 
 红果 `theatre:0` 是公开剧场；频道条目继续打开 theatre 栏目。榜单为 `rank:recommend|hot|real|new|zhenguo|subscribe`，支持 genre=all/human/comic/ai。seenIds 去重不重新编号；重复页面或游标不前进时停止。
 
+黄果是聚合源，栏目 ID 自带来源前缀：`huangguo:home`（首页推荐）、`huangguo:channel:<slug>`（`recommend`/`newest`/`ai-duanju`/`ai-manju`/`ai-huanlian`/`ai-mogai`）、`huangguo:rank:hot|recommend|potential`（JSON-LD 榜单，带名次）、`huangguo:video`（视频站）、`huangguo:cloudfront`（旧 API）。频道与旧 API 支持 `cursor` 翻页；榜单不分页。上游没有搜索接口，`search` 是目录扫描 + 标题匹配，响应里带 `notice`，客户端照原样显示，不要当成全站搜索。
+
 ## 客户端缓存和状态
 
 栏目和列表按平台、栏目、筛选隔离缓存 5 分钟。R 强制重新获取栏目与当前内容，传 refresh=1；网关发现适配器直接请求上游，无额外本地列表缓存。切换页面丢弃旧响应；同一活动游标只发一次。列表位置在详情返回、切平台、切栏目和任务/设置返回时恢复。
@@ -59,5 +61,7 @@ TUI 只依赖 HTTP 契约。先部署提供本接口的网关，再升级客户�
 ## 下载确认
 
 内容详情只选集；下一步画质/音轨，再可选 TMDB 匹配，最后确认节目、集数、目录及命名示例。Esc 不入队，只有最终确认页的 Enter 才调用现有队列。腾讯沿用已有画质档位选项，但在最终确认前调用已有 play 接口验证所选画质；失败停在设置页，可重试。此实现不改变腾讯凭据或播放协议。
+
+黄果的画质页来自 `resolve` 返回的 `variants[]`（单档时显示「默认流」并注明音轨随视频流），选档后下载会带 `quality` 再取一次链，保证直链与 AES-128 key 属于同一档位、同一集。
 
 任务日志在 TUI 内保留最近 1000 条状态记录，按终端宽度折行、支持滚动；不增加任务取消、暂停或重试能力。

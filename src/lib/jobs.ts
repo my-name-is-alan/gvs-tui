@@ -1,6 +1,7 @@
 import { tencentPlayInput } from './tencent-qr.ts'
 import { tencentAudioDownloadPlan, tencentAudioPlanNote, tencentPlayQualityInput } from './quality.ts'
 import { resolveHongguoDownload } from './hongguo.ts'
+import { resolveHuangguoDownload } from './huangguo.ts'
 import { mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import type { FileConfig } from './config.ts'
@@ -165,7 +166,7 @@ async function runTask(
     emitEvt({ id, status: '重试', pct: lastPct, log: `第 ${attempt}/${total} 次 · ${why}`, err: '' })
   }
   try {
-    const kind: MediaKind = t.kind ?? (t.provider === 'hongguo' || t.provider === 'douyin' ? 'short' : 'show')
+    const kind: MediaKind = t.kind ?? (t.provider === 'hongguo' || t.provider === 'huangguo' || t.provider === 'douyin' ? 'short' : 'show')
     const n: Naming = {
       kind,
       title: t.series || t.title,
@@ -180,19 +181,23 @@ async function runTask(
       group: t.provider === 'douyin' ? '' : (t.group.trim() || cfg.releaseGroup),
       tmdbId: t.tmdbId,
       container: t.provider === 'douyin' || (t.provider === 'youku' && t.audioTracks?.some(isDtsAudio))
-        ? 'mp4' : t.provider === 'hongguo' && cfg.hongguoFmt ? cfg.hongguoFmt : 'mkv',
+        ? 'mp4' : t.provider === 'hongguo' && cfg.hongguoFmt ? cfg.hongguoFmt
+          : t.provider === 'huangguo' && cfg.huangguoFmt ? cfg.huangguoFmt : 'mkv',
     }
     const dir = t.provider === 'douyin' ? cfg.outDir : folder(n, cfg.outDir)
     mkdirSync(dir, { recursive: true })
     let out = join(dir, filename(n))
     let note = ''
-    const ffmpeg = t.provider === 'hongguo' ? await ensureFFmpeg() : ''
+    const ffmpeg = t.provider === 'hongguo' || t.provider === 'huangguo' ? await ensureFFmpeg() : ''
     const mkvmerge = n.container === 'mkv' ? await ensureMkvmerge() : ''
     if (n.container === 'mkv' && !mkvmerge) throw new Error('没有 mkvmerge')
     emit('取链', 0.01, out.split(/[/\\]/).pop() ?? out)
     switch (t.provider) {
       case 'hongguo':
         await dlHongguo(cli, t, dir, out, ffmpeg, mkvmerge, emit, retryNote, cfg.threads)
+        break
+      case 'huangguo':
+        await dlHuangguo(cli, t, dir, out, ffmpeg, mkvmerge, emit, retryNote, cfg.threads)
         break
       case 'youku':
         out = await dlYouku(cli, cfg, t, dir, out, mkvmerge, emit, retryNote)
@@ -207,6 +212,10 @@ async function runTask(
         throw new Error(`demo 尚未接 ${t.provider} 下载管线`)
     }
     if (t.provider === 'hongguo' && cfg.hongguoNfo) {
+      writeTvShowNFO(dir, t.series, t.plot, 0)
+      writeEpisodeNFO(out, t.title, t.season, t.episode, '')
+    }
+    if (t.provider === 'huangguo' && cfg.huangguoNfo) {
       writeTvShowNFO(dir, t.series, t.plot, 0)
       writeEpisodeNFO(out, t.title, t.season, t.episode, '')
     }
@@ -257,6 +266,77 @@ async function dlHongguo(
     throw new Error('封装失败')
   }
   try { unlinkSync(tmp) } catch { /* keep */ }
+}
+
+/**
+ * 黄果：网关只给「一条直链 + AES-128 key + headers」。
+ * - HLS：N_m3u8DL-RE 直连 CDN，用 `--custom-hls-key` 解密（key 由网关取好，
+ *   所以不需要 CDN 上的 key URI，也不需要本地转发）。
+ * - 直链 mp4：按普通文件下载；带 key 时先 ffmpeg 解一次。
+ * 下载到临时名（分集 ID 里有冒号，不能直接当文件名）。
+ */
+async function dlHuangguo(
+  cli: GwClient, t: DlTask, dir: string, out: string, ffmpeg: string, mkvmerge: string,
+  emit: (s: string, p: number, l: string) => void,
+  retryNote: RetryNote,
+  threads: number,
+): Promise<void> {
+  emit('取链', 0.02, t.vid)
+  const safe = t.vid.replace(/[^\w.-]+/g, '_')
+  let picked = await resolveHuangguoDownload(cli, t.vid, t.quality)
+  let hls = /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(picked.url)
+  const raw = join(dir, `.${safe}.src${hls ? '.ts' : '.mp4'}`)
+  const dec = join(dir, `.${safe}.dec.mp4`)
+  const pull = async () => {
+    hls = /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(picked.url)
+    const ref = picked.headers.Referer || picked.headers.referer || referer(t.provider)
+    emit('下载', 0.08, '')
+    if (!hls) {
+      await downloadProgress(picked.url, raw, ref, speedCB(emit, '下载', 0.08, 0.72), retryNote, threads, undefined, picked.headers)
+      return
+    }
+    await downloadPlaylist({
+      src: picked.url,
+      dest: raw,
+      ref,
+      headers: picked.headers,
+      key: picked.key || undefined,
+      keyMethod: 'AES_128',
+      clear: !picked.key,
+      threads,
+      select: 'muxed',
+      transport: 're',
+      cb: (n, total, info) => {
+        const pct = total > 1 ? n / total : n
+        const status = playlistStatus('下载', info?.phase ?? 'download')
+        emit(status, 0.08 + 0.72 * pct, info?.log || status)
+      },
+    })
+  }
+  try {
+    await pull()
+  } catch (e) {
+    // CDN 拒绝旧链接时重新取链，链接与 key 必须成对刷新。
+    if (!(e instanceof CdnDenied)) throw e
+    emit('重取', 0.08, `CDN ${e.status}，重新取链后下载`)
+    picked = await resolveHuangguoDownload(cli, t.vid, t.quality)
+    try { unlinkSync(raw) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    await pull()
+  }
+  let muxSource = raw
+  if (!hls && picked.key && ffmpeg) {
+    emit('解密', 0.78, '')
+    await ffmpegDecryptCopy(ffmpeg, picked.key, raw, dec, (n, total) => emit('解密', 0.78 + 0.07 * Math.min(1, n / total), `解密 ${human(n)}/${human(total)}`))
+    muxSource = dec
+  }
+  emit('封装', 0.86, out)
+  const remux = (n: number, total: number) =>
+    emit('封装', 0.86 + 0.13 * (n / Math.max(1, total)), `封装 ${human(n)}/${human(total)}`)
+  if (mkvmerge && extname(out).toLowerCase() === '.mkv') await mkvmergeRemux(mkvmerge, muxSource, out, remux)
+  else await ffmpegRemux(ffmpeg, muxSource, out, remux)
+  for (const leftover of [raw, dec]) {
+    try { unlinkSync(leftover) } catch { /* keep */ }
+  }
 }
 
 /** The picked URL plus the gateway's other CDN mirrors of the same stream. */

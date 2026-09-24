@@ -5,6 +5,7 @@ import { anyInt, asBool, asString, isObj } from './util.ts'
 import { youkuSpokenLangKey } from './media.ts'
 import { hongguoItem, pickHongguo } from './media.ts'
 import { hongguoResolveInput } from './hongguo.ts'
+import { huangguoResolveInput, huangguoStreamOptions } from './huangguo.ts'
 import { tencentPlayInput } from './tencent-qr.ts'
 import { runLog } from './runlog.ts'
 
@@ -261,6 +262,7 @@ export async function probeOptions(
 ): Promise<StreamOptions> {
   switch (provider) {
     case 'hongguo': return probeHongguo(cli, vid)
+    case 'huangguo': return probeHuangguo(cli, vid)
     case 'youku': return probeYouku(cli, cfg, vid, opts)
     case 'tencent': return probeTencent(cli, cfg, vid)
     case 'douyin': return { qualities: await probeDouyin(cli, vid), audios: [] }
@@ -829,6 +831,11 @@ export function hongguoStreamOptions(data: Record<string, unknown>, vid: string)
 
 async function probeHongguo(cli: GwClient, vid: string): Promise<StreamOptions> {
  return hongguoStreamOptions(await cli.invoke('hongguo', 'resolve', hongguoResolveInput(vid)), vid)
+}
+
+/** 黄果：一次 resolve 就带回档位、直链与 AES-128 key。 */
+async function probeHuangguo(cli: GwClient, vid: string): Promise<StreamOptions> {
+ return huangguoStreamOptions(await cli.invoke('huangguo', 'resolve', huangguoResolveInput(vid)))
 }
 
 async function probeDouyin(cli: GwClient, vid: string): Promise<Quality[]> {

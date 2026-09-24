@@ -72,7 +72,7 @@ import type {
   VipProbe,
 } from './types.ts'
 
-const ALL_PROVIDERS = ['youku', 'tencent', 'hongguo', 'douyin']
+const ALL_PROVIDERS = ['youku', 'tencent', 'hongguo', 'huangguo', 'douyin']
 
 /** 网关说「这个签名我不认识」的几种说法。 */
 const SIGN_DEAD_RE = /not found|revoked|invalid Yk-Sign|yk_sign not found/i
@@ -202,6 +202,8 @@ export class Runtime {
           hongguoMerge: true,
           hongguoNfo: true,
           hongguoFmt: 'mkv',
+          huangguoNfo: true,
+          huangguoFmt: 'mkv',
           threads: 4,
         }
       : loadConfig()
@@ -314,8 +316,8 @@ export class Runtime {
       return
     }
     const k = normKey(name, mods.shift)
-    // Alt/⌥ or Ctrl+1..4. Bare 1-4 is workspace-only (see updateWorkspace).
-    if ((mods.alt || mods.ctrl) && ['1', '2', '3', '4'].includes(k)) {
+    // Alt/⌥ or Ctrl+1..5. Bare 1-5 is workspace-only (see updateWorkspace).
+    if ((mods.alt || mods.ctrl) && ['1', '2', '3', '4', '5'].includes(k)) {
       this.switchPlatform(Number(k) - 1)
       this.emit()
       return
@@ -495,7 +497,7 @@ export class Runtime {
     const items: string[] = []
     if (this.has('douyin') || this.has('youku') || this.has('tencent')) items.push('粘贴链接')
     items.push('搜索')
-    if (this.has('hongguo') || this.has('youku') || this.has('tencent'))
+    if (this.has('hongguo') || this.has('huangguo') || this.has('youku') || this.has('tencent'))
       items.push('榜单')
     items.push('任务', '设置')
     return items
@@ -503,7 +505,7 @@ export class Runtime {
 
   private settingFields(): string[] {
     const f = ['隧道', '网关', 'Key', '下载目录', '下载线程']
-    if (this.has('youku') || this.has('tencent') || this.has('hongguo'))
+    if (this.has('youku') || this.has('tencent') || this.has('hongguo') || this.has('huangguo'))
       f.push('发布组')
     if (this.has('youku') || this.has('tencent')) f.push('TMDB Key')
     if (this.has('youku')) f.push('优酷扫码', '优酷登录')
@@ -512,6 +514,7 @@ export class Runtime {
       f.push('腾讯 caption=all', '腾讯探测原画', '腾讯 encode=all')
     }
     if (this.has('hongguo')) f.push('红果合并', '红果 NFO', '红果封装')
+    if (this.has('huangguo')) f.push('黄果 NFO', '黄果封装')
     f.push('运行日志')
     return f
   }
@@ -531,7 +534,7 @@ export class Runtime {
             this.tunnelTransport === 'legacy'
               ? '旧协议 · 走 CDN 会被掐'
               : 'WebSocket'
-          return `已连接 · 优酷/腾讯走本机 IP · ${via}`
+          return `已连接 · 优酷/腾讯/黄果走本机 IP · ${via}`
         }
         if (this.tunnelErr) return `断开  ${this.tunnelErr}`
         return '未连接'
@@ -574,6 +577,10 @@ export class Runtime {
         return this.cfg.hongguoNfo ? '开' : '关'
       case '红果封装':
         return this.cfg.hongguoFmt
+      case '黄果 NFO':
+        return this.cfg.huangguoNfo ? '开' : '关'
+      case '黄果封装':
+        return this.cfg.huangguoFmt
       case '运行日志':
         return runLogPath()
       default:
@@ -857,7 +864,7 @@ export class Runtime {
               if (transport) this.tunnelTransport = transport
               if (ok) {
                 if (downSince && Date.now() - downSince > 8000)
-                  this.say('隧道已恢复：优酷/腾讯走本机 IP', 'ok')
+                  this.say('隧道已恢复：优酷/腾讯/黄果走本机 IP', 'ok')
                 downSince = 0
                 announcedDrop = false
                 // account/profile 必须走当前 Key 自己的隧道；等 OPEN 后再查。
@@ -868,7 +875,7 @@ export class Runtime {
                   announcedDrop = true
                   this.say(
                     err === 'closed'
-                      ? '隧道断开，自动重连中（优酷/腾讯暂时走本机 IP）'
+                      ? '隧道断开，自动重连中（优酷/腾讯/黄果暂时无法取链）'
                       : `隧道断开 ${err}`,
                     'warn',
                   )
@@ -1060,7 +1067,9 @@ export class Runtime {
         ? filename({
             kind:
               first.kind ||
-              (first.provider === 'hongguo' || first.provider === 'douyin'
+              (first.provider === 'hongguo' ||
+              first.provider === 'huangguo' ||
+              first.provider === 'douyin'
                 ? 'short'
                 : 'show'),
             title: first.series || first.title,
@@ -1084,13 +1093,15 @@ export class Runtime {
                 ? 'mp4'
                 : first.provider === 'hongguo'
                   ? this.cfg.hongguoFmt
-                  : 'mkv',
+                  : first.provider === 'huangguo'
+                    ? this.cfg.huangguoFmt
+                    : 'mkv',
           })
         : '',
     }
   }
   private switchPlatform(slot: number): void {
-    const p = ['youku', 'tencent', 'hongguo', 'douyin'][slot]
+    const p = ['youku', 'tencent', 'hongguo', 'huangguo', 'douyin'][slot]
     if (!p) return
     if (!this.has(p)) {
       this.say('当前 Key 没有这个平台权限', 'warn')
@@ -1127,7 +1138,7 @@ export class Runtime {
       this.say('当前 Key 无此平台权限', 'warn')
       return
     }
-    if (['1', '2', '3', '4'].includes(k)) {
+    if (['1', '2', '3', '4', '5'].includes(k)) {
       this.switchPlatform(Number(k) - 1)
       return
     }
@@ -1461,7 +1472,7 @@ export class Runtime {
         t.quality = q.stream || q.id
         t.caption = q.caption
         t.group = this.cfg.releaseGroup
-        if (q.height > 0) t.height = q.tier || (t.provider === 'hongguo' && q.width > 0 && q.height > q.width
+        if (q.height > 0) t.height = q.tier || ((t.provider === 'hongguo' || t.provider === 'huangguo') && q.width > 0 && q.height > q.width
           ? tierHeight(q.height, q.width) : tierHeight(q.width, q.height))
         if (q.codec) t.codec = q.codec
       }
@@ -1716,6 +1727,18 @@ export class Runtime {
     }
     if (f === '红果封装') {
       this.cfg.hongguoFmt = this.cfg.hongguoFmt === 'mp4' ? 'mkv' : 'mp4'
+      this.persistConfig()
+      this.emit()
+      return
+    }
+    if (f === '黄果 NFO') {
+      this.cfg.huangguoNfo = !this.cfg.huangguoNfo
+      this.persistConfig()
+      this.emit()
+      return
+    }
+    if (f === '黄果封装') {
+      this.cfg.huangguoFmt = this.cfg.huangguoFmt === 'mp4' ? 'mkv' : 'mp4'
       this.persistConfig()
       this.emit()
       return

@@ -26,6 +26,7 @@ export function sourceTag(provider: string): string {
     case 'youku': return 'YK'
     case 'tencent': return 'TX'
     case 'hongguo': return 'HG'
+    case 'huangguo': return 'HGO'
     case 'douyin': return 'DY'
     default: return provider ? provider.slice(0, 3).toUpperCase() : 'WEB'
   }

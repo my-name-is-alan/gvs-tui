@@ -25,7 +25,7 @@ const MAX_ATTEMPTS = 5
 
 export type RetryNote = (attempt: number, total: number, why: string) => void
 
-function headersFor(ref: string, from = 0): Record<string, string> {
+export function headersFor(ref: string, from = 0, extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = {
     // 有些 CDN 只认完整的浏览器头，缺 Accept 也会给 403。
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
@@ -33,6 +33,12 @@ function headersFor(ref: string, from = 0): Record<string, string> {
     'Accept-Language': 'zh-CN,zh;q=0.9',
   }
   if (ref) headers.Referer = ref
+  if (extra) {
+    const merged = new Headers(headers)
+    for (const [name, value] of Object.entries(extra)) merged.set(name, value)
+    if (from > 0) merged.set('Range', `bytes=${from}-`)
+    return Object.fromEntries(merged.entries())
+  }
   if (from > 0) headers.Range = `bytes=${from}-`
   return headers
 }
@@ -47,11 +53,12 @@ async function openStream(
   ref: string,
   from: number,
   note?: RetryNote,
+  headers?: Record<string, string>,
 ): Promise<{ res: Response; body: ReadableStream<Uint8Array> | null }> {
   let lastErr: unknown = null
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const res = await fetch(src, { headers: headersFor(ref, from) })
+      const res = await fetch(src, { headers: headersFor(ref, from, headers) })
       if (res.ok || res.status === 206) return { res, body: res.body }
       if (RESPECT_AFTER.has(res.status)) {
         const wait = Number(res.headers.get('retry-after') ?? 0) * 1000
@@ -77,6 +84,7 @@ export function referer(p: string): string {
     case 'tencent': return 'https://v.qq.com/'
     case 'youku': return 'https://www.youku.com/'
     case 'douyin': return 'https://www.douyin.com/'
+    case 'huangguo': return 'https://huangguoai.com/'
     default: return ''
   }
 }
@@ -289,8 +297,8 @@ export function speedCB(
   }
 }
 
-async function cdnResponse(src: string, ref: string): Promise<Response> {
-  const { res } = await openStream(src, ref, 0)
+async function cdnResponse(src: string, ref: string, headers?: Record<string, string>): Promise<Response> {
+  const { res } = await openStream(src, ref, 0, undefined, headers)
   return res
 }
 
@@ -302,9 +310,11 @@ const SEGMENT_BUFFER_BYTES = 64 << 20
 type RangeProbe = { total: number; ranges: boolean }
 
 /** Ask for one byte to learn the size and whether the CDN honours `Range`. */
-async function probeRange(src: string, ref: string): Promise<RangeProbe> {
+async function probeRange(src: string, ref: string, headers?: Record<string, string>): Promise<RangeProbe> {
   try {
-    const res = await fetch(src, { headers: { ...headersFor(ref, 0), Range: 'bytes=0-0' } })
+    const requestHeaders = new Headers(headersFor(ref, 0, headers))
+    requestHeaders.set('Range', 'bytes=0-0')
+    const res = await fetch(src, { headers: requestHeaders })
     const cr = res.headers.get('content-range') ?? ''
     const total = Number(cr.split('/')[1] ?? 0)
     await res.body?.cancel().catch(() => {})
@@ -349,6 +359,7 @@ async function downloadParallel(
   threads: number,
   cb?: (n: number, total: number) => void,
   note?: RetryNote,
+  headers?: Record<string, string>,
 ): Promise<void> {
   const parts = Math.max(2, threads)
   const span = Math.ceil(total / parts)
@@ -373,9 +384,9 @@ async function downloadParallel(
         for (;;) {
           attempt++
           try {
-            const res = await fetch(src, {
-              headers: { ...headersFor(ref, from), Range: `bytes=${from}-${end}` },
-            })
+            const requestHeaders = new Headers(headersFor(ref, from, headers))
+            requestHeaders.set('Range', `bytes=${from}-${end}`)
+            const res = await fetch(src, { headers: requestHeaders })
             if (res.status !== 206) {
               await res.body?.cancel().catch(() => {})
               throw new Error('cdn ignored range')
@@ -539,10 +550,17 @@ export function playlistOverall(phase: PlaylistPhase, fraction: number, decrypts
 }
 
 
-export function hlsKeyArgs(key?: string): string[] {
+/** HLS 解密参数。CENC 走 Shaka；AES_128 由 RE 自己解，不需要解密引擎。 */
+export type HlsKeyMethod = 'AES_128' | 'CENC'
+
+export function hlsKeyArgs(key?: string, method: HlsKeyMethod = 'CENC'): string[] {
   if (!key) return []
   if (!/^(?:[a-f\d]{32}:)?[a-f\d]{32}$/i.test(key)) throw new Error('解密密钥格式无效，应为 16 字节十六进制 KEY 或 KID:KEY')
-  return ['--key', key, '--custom-hls-key', key.split(':').at(-1)!, '--custom-hls-method', 'CENC']
+  const hex = key.split(':').at(-1)!
+  // RE 的 HLS 加密方式用下划线拼写（AES_128 / CENC，见 --morehelp custom-hls-method）。
+  // AES-128 只需要 KEY：`--key` 是给 CENC 的 KID:KEY 用的。
+  if (method === 'AES_128') return ['--custom-hls-key', hex, '--custom-hls-method', 'AES_128']
+  return ['--key', key, '--custom-hls-key', hex, '--custom-hls-method', 'CENC']
 }
 
 /** Recognize status messages without treating a recoverable retry as failure. */
@@ -688,7 +706,10 @@ export async function downloadPlaylist(opts: {
   src: string
   dest: string
   ref: string
+  headers?: Record<string, string>
   key?: string
+  /** HLS 密钥算法。默认 CENC（优酷）；黄果是 AES_128。 */
+  keyMethod?: HlsKeyMethod
   cipher?: HlsCipher
   /** Only set when the gateway explicitly says the selected track is clear. */
   clear?: boolean
@@ -712,11 +733,11 @@ export async function downloadPlaylist(opts: {
   try {
     const threads = Number.isFinite(opts.threads) ? Math.max(1, Math.floor(opts.threads!)) : 1
     const ffmpeg = await ensureFFmpeg()
-    const keyArgs = hlsKeyArgs(opts.key)
+    const keyArgs = hlsKeyArgs(opts.key, opts.keyMethod)
     let source = opts.src
     if (opts.transport === 'node') {
       // The supplied CENC key replaces remote/skd key discovery entirely.
-      relay = await createHlsRelay(opts.src, headersFor(opts.ref), opts.clear || !!opts.key, {
+      relay = await createHlsRelay(opts.src, headersFor(opts.ref, 0, opts.headers), opts.clear || !!opts.key, {
         // 403/410 refreshes the authenticated source in-place, not the old URL.
         maxAttempts: 1,
         refreshSource: opts.refreshSource ? async () => {
@@ -729,7 +750,7 @@ export async function downloadPlaylist(opts: {
       })
       source = relay.url
     } else if (opts.clear) {
-      const response = await cdnResponse(source, opts.ref)
+      const response = await cdnResponse(source, opts.ref, opts.headers)
       const playlist = await response.text()
       if (!playlist.trimStart().startsWith('#EXTM3U') || playlist.includes('#EXT-X-STREAM-INF')) {
         throw new Error('明文轨道需要独立 HLS 媒体播放列表')
@@ -767,16 +788,21 @@ export async function downloadPlaylist(opts: {
     if (ffmpeg) args.push('--ffmpeg-binary-path', ffmpeg)
     if (relay) args.push('--use-system-proxy', 'false')
     if (opts.cipher) args.push('--custom-hls-method', opts.cipher.method, '--custom-hls-key', opts.cipher.key, '--custom-hls-iv', opts.cipher.iv)
-    for (const [name, value] of Object.entries(headersFor(opts.ref))) args.push('--header', `${name.toLowerCase()}: ${value}`)
+    for (const [name, value] of Object.entries(headersFor(opts.ref, 0, opts.headers))) args.push('--header', `${name.toLowerCase()}: ${value}`)
     if (opts.key) {
-      const packager = await ensurePackager()
-      args.push(
-        ...keyArgs,
-        '--decryption-engine', 'SHAKA_PACKAGER',
-        '--decryption-binary-path', packager,
-        // Decrypt the whole track once. Per-segment Shaka output consists of
-        // standalone MP4 movies; byte-concatenating those repeats moov/edit lists.
-      )
+      // CENC 由 Shaka 整轨解密；AES-128 由 RE 内置解密，给 --custom-hls-key 就够。
+      if ((opts.keyMethod ?? 'CENC') === 'CENC') {
+        const packager = await ensurePackager()
+        args.push(
+          ...keyArgs,
+          '--decryption-engine', 'SHAKA_PACKAGER',
+          '--decryption-binary-path', packager,
+          // Decrypt the whole track once. Per-segment Shaka output consists of
+          // standalone MP4 movies; byte-concatenating those repeats moov/edit lists.
+        )
+      } else {
+        args.push(...keyArgs)
+      }
     }
     opts.cb?.(0, 1, { phase: 'download' })
     let progress = 0
@@ -847,10 +873,11 @@ export async function downloadProgress(
   note?: RetryNote,
   threads = 1,
   cipher?: HlsCipher,
+  headers?: Record<string, string>,
 ): Promise<void> {
   if (/\.(?:m3u8|mpd)/i.test(src)) {
     const tmp = /\.mkv$/i.test(dest) ? `${dest}.re.mp4` : dest
-    await downloadPlaylist({ src, dest: tmp, ref, threads, cb, cipher })
+    await downloadPlaylist({ src, dest: tmp, ref, threads, cb, cipher, headers })
     if (tmp !== dest) {
       const mkvmerge = await ensureMkvmerge()
       await mkvmergeRemux(mkvmerge, tmp, dest, cb)
@@ -860,10 +887,10 @@ export async function downloadProgress(
   }
   if (cipher) throw new Error('加密片源只支持 HLS 播放列表下载')
   if (threads > 1) {
-    const probe = await probeRange(src, ref)
+    const probe = await probeRange(src, ref, headers)
     if (probe.ranges && probe.total >= PARALLEL_MIN_BYTES) {
       try {
-        return await downloadParallel(src, dest, ref, probe.total, threads, cb, note)
+        return await downloadParallel(src, dest, ref, probe.total, threads, cb, note, headers)
       } catch (e) {
         if (e instanceof Error && /cdn ignored range/.test(e.message)) {
           note?.(1, MAX_ATTEMPTS, 'CDN 不支持分段，改用单连接')
@@ -873,7 +900,7 @@ export async function downloadProgress(
       }
     }
   }
-  return downloadSingle(src, dest, ref, cb, note)
+  return downloadSingle(src, dest, ref, cb, note, headers)
 }
 
 async function downloadSingle(
@@ -882,6 +909,7 @@ async function downloadSingle(
   ref: string,
   cb?: (n: number, total: number) => void,
   note?: RetryNote,
+  headers?: Record<string, string>,
 ): Promise<void> {
   let have = 0
   try {
@@ -890,7 +918,7 @@ async function downloadSingle(
     have = 0
   }
   for (let round = 1; round <= MAX_ATTEMPTS; round++) {
-    const { res, body } = await openStream(src, ref, have, note)
+    const { res, body } = await openStream(src, ref, have, note, headers)
     if (!body) throw new Error('cdn empty body')
     const len = Number(res.headers.get('content-length') ?? 0)
     const total = have + len

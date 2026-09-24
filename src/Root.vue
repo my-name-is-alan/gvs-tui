@@ -662,7 +662,7 @@ const ws = computed(() => state.value.workspace)
 const wsSections = computed(
   () => ws.value?.sections.filter((s) => s.mode === ws.value?.mode) ?? [],
 )
-const PLATFORM_ORDER = ['youku', 'tencent', 'hongguo', 'douyin'] as const
+const PLATFORM_ORDER = ['youku', 'tencent', 'hongguo', 'huangguo', 'douyin'] as const
 function platformBar(current: string, modes?: 'rec' | 'rank') {
   const allowed = new Set(providers.value)
   const cols: Col[] = []

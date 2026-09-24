@@ -45,6 +45,7 @@ export function toneIcon(tone: Tone): string {
 
 const PROVIDER_NAMES: Record<string, string> = {
   hongguo: '红果',
+  huangguo: '黄果',
   youku: '优酷',
   tencent: '腾讯',
   douyin: '抖音',

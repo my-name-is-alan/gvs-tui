@@ -136,7 +136,7 @@ export class GwClient {
 }
 
 function limitError(msg: string): string {
-  if (/tui tunnel offline/i.test(msg)) return '隧道未连接（优酷/腾讯需要家宽出口）'
+  if (/tui tunnel offline/i.test(msg)) return '隧道未连接（优酷/腾讯/黄果需要家宽出口）'
   switch (msg) {
     case 'IP_LIMITED':
       return '这把 Key 10 分钟内已在 2 个 IP 用过'

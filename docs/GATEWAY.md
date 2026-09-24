@@ -123,7 +123,7 @@ Content-Type: application/json
 }
 ```
 
-`scope` 空且 `all: true` = 全部平台。TUI 搜索 tab 只展示 Key 允许的：`youku` `tencent` `hongguo` `douyin`。
+`scope` 空且 `all: true` = 全部平台。TUI 搜索 tab 与工作台只展示 Key 允许的：`youku` `tencent` `hongguo` `huangguo` `douyin`。
 
 也有 `GET /v1/key/expires`、`GET /v1/key/scope`。
 
@@ -246,11 +246,31 @@ DRM：`drm.content_key_hex`。本机 ffmpeg `-decryption_key`。IV 由网关解�
 
 TUI 搜索框粘贴分享口令/短链会直接 `resolve` 并下载，不走选集和画质。短链必须把原始 `url` 交给网关（网关跟跳 `v.douyin`），不要先拆成 `video/{vid}`。
 
+### 7.5 黄果 `huangguo`
+
+匿名，只要平台 Key。黄果是聚合源：`huangguoai`（AI 站）/ `huangguovideo`（视频站）/ `cloudfront`（旧 API），
+`browse_catalog` 的 section ID 已经区分来源（`huangguo:rank:hot`、`huangguo:channel:<slug>`、`huangguo:video`、`huangguo:cloudfront`）。
+
+| action | input | 说明 |
+|---|---|---|
+| `search` | `q`，可选 `source`/`pages` | 上游没有搜索接口：目录扫描 + 标题匹配，响应里带 `notice` |
+| `browse` | `sectionId`（推荐入口）/ `mode=rank` | 黄果首页、榜单、频道、视频站、旧 API |
+| `detail` | `id`（`huangguoai:117`） | `episodes[].vid` 就是可直接 `resolve` 的分集 ID |
+| `resolve` | `id`（分集 ID），可选 `quality` | 出参 `media[0].url`（HLS 或 mp4）+ `media[0].headers` + `variants[]` + `key.hex`（AES-128） |
+
+下载管线：`probeOptions('huangguo', vid)` 用 `variants[]` 做画质页，选档后 `resolve` 带 `quality` 再取一次
+（网关保证链接与 key 属于同一档位/同一集）；HLS 交给 N_m3u8DL-RE，用
+`--custom-hls-key <hex> --custom-hls-method AES_128` 解密（key 由网关取好，所以不需要 CDN 上的 key URI），
+再 `mkvmerge` 封装（或按设置封 mp4）。CDN 403/410 时重新取链再下，临时文件按分集 ID 消毒后命名。
+
+`media[0].headers` 里有拉流需要的 Referer/UA，直接透传给下载器；`referer('huangguo')` 只是兜底。
+旧 API 的直链带访客会话 `token`，别写进日志或二次分发。
+
 ---
 
 ## 8. 家宽隧道 `GET /v1/tunnel`
 
-优酷/腾讯的**平台上游请求**必须从用户家宽 IP 出网。Key 校验通过后，客户端用 **WebSocket** 升级：
+优酷/腾讯/黄果的**平台上游请求**必须从用户家宽 IP 出网。Key 校验通过后，客户端用 **WebSocket** 升级：
 
 ```http
 GET /v1/tunnel HTTP/1.1
@@ -282,6 +302,19 @@ Sec-WebSocket-Key: ...
 `body` 上限按实现约 6MiB。断开后每 3s 重连。隧道握手**不计**日配额。
 
 视频 CDN **不走**隧道。
+
+网关侧优酷（`*.youku.com` / `*.ykimg.com` / `*.atianqi.com` / `*.taobao.com`）和腾讯
+（`*.qq.com` / `*.gtimg.com`）沿用域名路由。黄果按 provider 绑定全部上游请求，
+包括动态发现的 CloudFront 域名；不会把其他服务的 CloudFront 域名归到黄果。
+客户端没连隧道时这些请求**失败关闭**
+（`tui tunnel offline`），不会回落机房 IP；调用方 Key 的 scope 也必须允许对应平台。
+网关上每条隧道请求会记一行 `tunnel egress provider=… host=… key=…`（只记主机名，不记签名 URL），
+用来确认「这条请求到底走了哪条出口」。
+
+**本地网关注意**：网关和 TUI 在同一台机器时，隧道与直连是同一个出口 IP，隧道不提供 IP 多样性，
+失败关闭还会让「隧道没连」时黄果不可用。这种本地部署把网关配置的 `huangguo.viaTunnel` 设为
+`false` 直连即可（`configs/app.local.json` 已经这样配），健康详情会显示 `egress=direct`；
+机房网关保持默认 `true`。
 
 ### Cloudflare / 1Panel
 
@@ -349,7 +382,7 @@ bun run scripts/serve-tunnel.ts          # 期望 "tunnel UP"，不再回退
 bun run scripts/flow-check.ts            # 榜单 → 详情 → 取画质
 
 # 3. 界面自检：设置 → 隧道
-#    应显示 "已连接 · 优酷/腾讯走本机 IP · WebSocket"
+#    应显示 "已连接 · 优酷/腾讯/黄果走本机 IP · WebSocket"
 #    显示"旧协议"就说明线上还是老构建，或 WS 握手被反代挡了
 ```
 

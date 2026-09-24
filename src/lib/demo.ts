@@ -87,7 +87,7 @@ const JOBS: Job[] = [
 ]
 
 const SETTINGS = [
-  { label: '隧道', value: '已连接 · 优酷/腾讯走本机 IP · WebSocket' },
+  { label: '隧道', value: '已连接 · 优酷/腾讯/黄果走本机 IP · WebSocket' },
   { label: '网关', value: HOST },
   { label: 'Key', value: '演示模式，无需 Key' },
   { label: '下载目录', value: 'D:\\downloads' },
@@ -145,7 +145,7 @@ const BASE: Omit<Snapshot, 'scene'> = {
   audioIndex: 0,
   optionTab: 'quality',
   probeFailed: false,
-  providers: ['hongguo', 'youku', 'tencent', 'douyin'],
+  providers: ['hongguo', 'youku', 'tencent', 'huangguo', 'douyin'],
   homeItems: ['粘贴链接', '搜索', '榜单', '任务', '设置'],
   rows: [],
   episodes: [],
