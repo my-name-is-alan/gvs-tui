@@ -185,27 +185,42 @@ export function isYoukuExtraKind(kind: string): boolean {
  * 正片分组里若有一条很短的排在前面，改选够长的那条。
  * 完全没有分集时才用 data.vid（只有一个标题 vid 的电影）。
  */
+const NOTICE_TITLE = /须知|预告|花絮|特辑|片花|彩蛋|幕后/
+
+function episodeDuration(it: Record<string, unknown>): number {
+  return anyInt(it.duration) || anyInt(it.seconds)
+}
+
+/** 几分钟以内的周边、预告、观影须知。够长的节目即使分组标错也保留。 */
+export function isYoukuNotice(it: Record<string, unknown>): boolean {
+  const duration = episodeDuration(it)
+  if (duration >= 600) return false
+  const kind = `${asString(it.kind)} ${asString(it.group)}`
+  const title = asString(it.title) || asString(it.name)
+  if (it.is_trailer === true || isYoukuExtraKind(kind)) return true
+  return duration > 0 && duration < 180 && NOTICE_TITLE.test(title)
+}
+
 export function youkuMoviePick(data: Record<string, unknown>): { vid: string; duration: number } | undefined {
-  const raw = Array.isArray(data.episodes) ? data.episodes.filter(isObj) : []
-  const features = raw.flatMap((it) => {
-    const kind = `${asString(it.kind)} ${asString(it.group)}`
-    if (it.is_trailer === true || isYoukuExtraKind(kind)) return []
+  const raw = [data.episodes, data.episodes_all].flatMap((list) =>
+    Array.isArray(list) ? list.filter(isObj) : [],
+  )
+  const rows = raw.flatMap((it) => {
     const vid = asString(it.vid) || asString(it.id)
-    if (!vid) return []
-    return [{ vid, duration: anyInt(it.duration) || anyInt(it.seconds) }]
+    if (!vid || isYoukuNotice(it)) return []
+    return [{ vid, duration: episodeDuration(it) }]
   })
-  if (raw.length && !features.length) return undefined
-  if (!features.length) {
-    const vid = asString(data.vid)
-    if (!vid) return undefined
-    return { vid, duration: anyInt(data.duration) }
+  const long = rows.filter((row) => row.duration >= 600)
+  if (long.length) {
+    const best = long.reduce((a, b) => (b.duration > a.duration ? b : a))
+    return best
   }
-  const longest = features.reduce((a, b) => (b.duration > a.duration ? b : a))
-  const first = features[0]!
-  const chosen = longest.duration >= 600 && first.duration > 0 && first.duration < 180 && longest.vid !== first.vid
-    ? longest
-    : first
-  return { vid: chosen.vid, duration: chosen.duration || anyInt(data.duration) }
+  if (rows.length) return rows[0]
+  if (raw.length) return undefined
+  const vid = asString(data.vid)
+  const duration = anyInt(data.duration)
+  if (!vid || (duration > 0 && duration < 180)) return undefined
+  return { vid, duration }
 }
 
 /** Movies are not episode lists. Dual-language dvds collapse to one 正片. */

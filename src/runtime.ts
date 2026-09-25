@@ -2828,8 +2828,15 @@ function parseEps(data: Record<string, unknown>): Episode[] {
       if (Number.isFinite(x)) n = x
     }
     const kind = firstStr(it, 'kind', 'group')
-    if (/周边|花絮|彩蛋|预告|预约|trailer|advert|extra|clip/i.test(kind) || it.is_trailer === true)
-      continue
+    const title = firstStr(it, 'title', 'name')
+    const dur =
+      anyInt(it.duration) ||
+      anyInt(it.duration_ms ? Number(it.duration_ms) / 1000 : 0)
+    const extra =
+      /周边|花絮|彩蛋|预告|预约|trailer|advert|extra|clip/i.test(`${kind} ${title}`) ||
+      it.is_trailer === true
+    // 分组标错时，够长的节目仍然是正片。短须知、预告继续隐藏。
+    if (extra && dur < 600) continue
     eps.push({
       title: firstStr(it, 'title', 'name'),
       vid: firstStr(it, 'vid', 'id'),

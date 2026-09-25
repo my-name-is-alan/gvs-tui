@@ -293,6 +293,18 @@ describe('moviePlayables', () => {
     expect(youkuMoviePick(data)).toBeUndefined()
     expect(moviePlayables(data)).toEqual([])
   })
+
+  test('a long program keeps showing when its group is not 正片', () => {
+    const data = {
+      vid: 'XNjQ5Nzg2MzQ2MA==',
+      duration: 100,
+      episodes: [
+        { vid: 'XNjQ5Nzg2MzQ2MA==', title: 'IMAX安全观影须知', kind: '周边', duration: 100 },
+        { vid: 'XNjQ5MjE2MzI3Mg==', title: '死神来了：血脉诅咒', kind: '其他', duration: 6557 },
+      ],
+    }
+    expect(moviePlayables(data)[0]).toMatchObject({ vid: 'XNjQ5MjE2MzI3Mg==', duration: 6557 })
+  })
 })
 
 import {
