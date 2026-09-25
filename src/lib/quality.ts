@@ -172,6 +172,42 @@ export function youkuEditionsFromDetail(data: Record<string, unknown>): Episode[
   return out
 }
 
+const EXTRA_KIND = /周边|花絮|预告|预约|彩蛋|trailer|advert|extra|clip/i
+
+/** 周边、花絮、预告不是可播正片。 */
+export function isYoukuExtraKind(kind: string): boolean {
+  return EXTRA_KIND.test(kind)
+}
+
+/**
+ * 电影要播的 vid。
+ * 详情里若只有周边，返回空，避免把最长的一条须知当成正片。
+ * 正片分组里若有一条很短的排在前面，改选够长的那条。
+ * 完全没有分集时才用 data.vid（只有一个标题 vid 的电影）。
+ */
+export function youkuMoviePick(data: Record<string, unknown>): { vid: string; duration: number } | undefined {
+  const raw = Array.isArray(data.episodes) ? data.episodes.filter(isObj) : []
+  const features = raw.flatMap((it) => {
+    const kind = `${asString(it.kind)} ${asString(it.group)}`
+    if (it.is_trailer === true || isYoukuExtraKind(kind)) return []
+    const vid = asString(it.vid) || asString(it.id)
+    if (!vid) return []
+    return [{ vid, duration: anyInt(it.duration) || anyInt(it.seconds) }]
+  })
+  if (raw.length && !features.length) return undefined
+  if (!features.length) {
+    const vid = asString(data.vid)
+    if (!vid) return undefined
+    return { vid, duration: anyInt(data.duration) }
+  }
+  const longest = features.reduce((a, b) => (b.duration > a.duration ? b : a))
+  const first = features[0]!
+  const chosen = longest.duration >= 600 && first.duration > 0 && first.duration < 180 && longest.vid !== first.vid
+    ? longest
+    : first
+  return { vid: chosen.vid, duration: chosen.duration || anyInt(data.duration) }
+}
+
 /** Movies are not episode lists. Dual-language dvds collapse to one 正片. */
 export function moviePlayables(
   data: Record<string, unknown>,
@@ -201,16 +237,15 @@ export function moviePlayables(
     }]
   }
   if (editions.length === 1) return editions.map((e) => ({ ...e, languages }))
-  const vid = asString(data.vid)
-  if (!vid) return []
-  const duration = anyInt(data.duration)
+  const picked = youkuMoviePick(data)
+  if (!picked) return []
   return [
     {
       title: '正片',
-      vid,
+      vid: picked.vid,
       number: 1,
       selected: false,
-      duration: duration > 0 ? duration : undefined,
+      duration: picked.duration > 0 ? picked.duration : undefined,
       group: 'edition',
       languages: languages.length ? languages : undefined,
     },

@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 import { truncate } from './util.ts'
 import { ensureFFmpeg } from './tools.ts'
 import { firstPresentationMs, relativePresentationStarts } from './media-timing.ts'
 import { moveFileSync } from './file-move.ts'
+import { removeScratch, scratchDir } from './scratch.ts'
 
 type Phase = { out: string; inputs?: string[]; cb?: (n: number, total: number) => void }
 
@@ -109,7 +109,7 @@ export async function mkvmergeMux(
     for (const a of audios) sourceAudioMs.push(await firstPresentationMs(ffmpeg, a.path, 'a:0'))
     const expected = relativePresentationStarts(sourceVideoMs, sourceAudioMs, audios.map(a => a.delayMs ?? 0))
     Object.assign(report, { sourceVideoMs, sourceAudioMs, expectedStartsMs: expected })
-    work = mkdtempSync(join(tmpdir(), 'gvs-mux-'))
+    work = scratchDir(outPath, 'gvs-mux-')
     const initial = join(work, 'initial.mkv')
     // Do not apply negative adjustments before measuring: that could discard
     // early packets. Correction is done on a single shared Matroska timeline.
@@ -146,7 +146,7 @@ export async function mkvmergeMux(
     report.verified = true
     writeFileSync(`${outPath}.timing.json`, JSON.stringify(report, null, 2) + '\n')
     moveFileSync(result, outPath)
-    rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
+    removeScratch(work)
   } catch (e) {
     Object.assign(report, { verified: false, intermediateDirectory: work, error: e instanceof Error ? e.message : String(e) })
     try { writeFileSync(`${outPath}.timing.json`, JSON.stringify(report, null, 2) + '\n') } catch { /* preserve original error */ }

@@ -5,14 +5,14 @@ import { app } from 'electron'
 import { existsSync } from 'node:fs'
 import QRCode from 'qrcode'
 import { GwClient, ReloginRequired, type KeyInfo } from '@tui/client.ts'
-import { clampThreads, loadConfig, saveConfig, type FileConfig } from '@tui/config.ts'
+import { clampThreads, loadConfig, normalizeOutDir, saveConfig, type FileConfig } from '@tui/config.ts'
 import { fallbackSections } from '@tui/discovery.ts'
 import { JobHub, bindYoukuAudioTracksToTask, nextJobID, type DlTask, type JobEvt } from '@tui/jobs.ts'
 import { extractTencentLinks, extractYoukuVideoId } from '@tui/link.ts'
 import { youkuSpokenLangKey } from '@tui/media.ts'
 import { filename, folder, sourceTag, tierHeight, dots, type Naming } from '@tui/name.ts'
 import { isDtsAudio } from '@tui/mp4box.ts'
-import { moviePlayables, probeOptions, qualityChoiceLabel, youkuEditionsFromDetail } from '@tui/quality.ts'
+import { moviePlayables, probeOptions, qualityChoiceLabel, youkuEditionsFromDetail, youkuMoviePick } from '@tui/quality.ts'
 import { runLog } from '@tui/runlog.ts'
 import { applyTencentLogin, pollTencentDualQR, tencentTVLoginInput } from '@tui/tencent-qr.ts'
 import { fetchTencentAccount, txAccountSummary, type TxAccount } from '@tui/tencent-account.ts'
@@ -154,7 +154,7 @@ function parseEps(data: Record<string, unknown>): Episode[] {
       if (Number.isFinite(x)) n = x
     }
     const kind = firstStr(it, 'kind', 'group')
-    if (/预告|预约|trailer|advert/i.test(kind) || it.is_trailer === true) continue
+    if (/周边|花絮|彩蛋|预告|预约|trailer|advert|extra|clip/i.test(kind) || it.is_trailer === true) continue
     eps.push({
       title: firstStr(it, 'title', 'name'),
       vid: firstStr(it, 'vid', 'id'),
@@ -470,7 +470,7 @@ export class Core {
       (patch.host !== undefined && patch.host.trim().replace(/\/+$/, '') !== c.host) ||
       (patch.key !== undefined && patch.key.trim() !== '' && patch.key.trim() !== c.key)
     if (reconnect) return this.setup(patch.host ?? c.host, patch.key?.trim() || c.key)
-    if (patch.outDir !== undefined) c.outDir = patch.outDir.trim() || c.outDir
+    if (patch.outDir !== undefined) c.outDir = normalizeOutDir(patch.outDir) || c.outDir
     if (patch.releaseGroup !== undefined) c.releaseGroup = patch.releaseGroup.trim()
     if (patch.tmdbKey !== undefined) c.tmdbKey = patch.tmdbKey.trim()
     if (patch.tmdbLang !== undefined) c.tmdbLang = patch.tmdbLang.trim() || 'zh-CN'
@@ -763,7 +763,7 @@ export class Core {
     if (view.kind !== 'movie') return
     let play: Record<string, unknown> | undefined
     if (view.provider === 'youku' && !youkuEditionsFromDetail(data).length) {
-      const vid = view.episodes[0]?.vid || asString(data.vid)
+      const vid = youkuMoviePick(data)?.vid || ''
       if (vid) {
         try {
           play = await this.invoke('youku', 'play', { vid, tier: 'single', expand: '0' })

@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process'
-import { createReadStream, createWriteStream, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createReadStream, createWriteStream, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { once } from 'node:events'
-import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { Readable } from 'node:stream'
@@ -11,6 +10,7 @@ import { mkvmergeRemux } from './mkvmerge.ts'
 import { ensureFFmpeg, ensureM3u8dl, ensureMkvmerge, ensurePackager } from './tools.ts'
 import { createHlsRelay, type RelayEvent } from './hls-relay.ts'
 import { moveFileSync } from './file-move.ts'
+import { removeScratch, scratchDir } from './scratch.ts'
 
 /** A CDN refused us (403/410 …) — usually the signed URL expired mid-flight. */
 export class CdnDenied extends Error {
@@ -723,7 +723,7 @@ export async function downloadPlaylist(opts: {
 }): Promise<void> {
   const executable = await ensureM3u8dl()
   mkdirSync(dirname(opts.dest), { recursive: true })
-  const workDir = mkdtempSync(join(tmpdir(), 'gvs-re-'))
+  const workDir = scratchDir(opts.dest, 'gvs-re-')
   const logFile = join(workDir, 're.log')
   const errorLog = `${opts.dest}.download-error.log`
   let diagnostics = ''
@@ -852,10 +852,8 @@ export async function downloadPlaylist(opts: {
   } finally {
     await relay?.close()
     try {
-      if (succeeded || !readdirSync(workDir).length) {
-        rmSync(workDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-      }
-    } catch { /* dest already written; leftovers stay in tmp, not the library folder */ }
+      if (succeeded || !readdirSync(workDir).length) removeScratch(workDir)
+    } catch { /* dest already written; a failed download keeps its scratch folder beside the episode */ }
   }
 }
 

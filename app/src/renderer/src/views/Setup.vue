@@ -7,13 +7,28 @@ import { errText, gvs, store } from '../store'
 
 const host = ref(store.state?.settings.host || 'https://')
 const key = ref('')
+const outDir = ref(store.state?.settings.outDir || '')
 const busy = ref(false)
 const error = ref(store.state?.keyError ?? '')
+
+async function pickDir() {
+  const dir = await gvs('chooseDir')
+  if (!dir) return
+  outDir.value = dir
+  try {
+    store.state = await gvs('saveSettings', { outDir: dir })
+  } catch (e) {
+    error.value = errText(e)
+  }
+}
 
 async function connect() {
   busy.value = true
   error.value = ''
   try {
+    if (outDir.value && outDir.value !== store.state?.settings.outDir) {
+      store.state = await gvs('saveSettings', { outDir: outDir.value })
+    }
     store.state = await gvs('setup', host.value, key.value)
   } catch (e) {
     error.value = errText(e)
@@ -58,6 +73,13 @@ const plats = [
         <label class="field strong-label">API Key
           <input v-model="key" class="input strong mono" placeholder="sk_live_…" autocomplete="off" required />
         </label>
+        <label class="field strong-label">下载目录
+          <span class="dim">文件保存在这台电脑上。默认避开系统盘，也可以改到别的文件夹。</span>
+          <div class="dir">
+            <input :value="outDir" class="input strong mono" readonly title="选择保存视频的文件夹" @click="pickDir" />
+            <button type="button" class="btn" @click="pickDir">更改</button>
+          </div>
+        </label>
         <div v-if="error" class="error-box">{{ error }}</div>
         <button type="submit" class="btn primary big" :disabled="busy">
           <span v-if="busy" class="spin" />
@@ -95,4 +117,6 @@ const plats = [
 .title h2 { font-size: 28px; font-weight: 900; }
 .strong-label { font-size: 14px; font-weight: 500; color: var(--ink); gap: 8px; }
 .note { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-3); }
+.dir { display: flex; gap: 8px; align-items: center; }
+.dir .input { min-width: 0; text-overflow: ellipsis; }
 </style>

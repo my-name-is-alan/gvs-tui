@@ -428,7 +428,7 @@ bun run scripts/check-detect.ts     # TUI 会怎么说（账号行 + 画质页�
 {
   "host": "https://你的网关",
   "key": "sk_live_...",
-  "outDir": "./downloads",
+  "outDir": "D:\\GVS",
   "releaseGroup": "ADWeb",
   "tmdbKey": "",
   "tmdbLang": "zh-CN",
@@ -440,6 +440,8 @@ bun run scripts/check-detect.ts     # TUI 会怎么说（账号行 + 画质页�
   "ffmpeg": "ffmpeg"
 }
 ```
+
+`outDir` 是本机视频目录。留空或仍是旧的 `./downloads` 时，Windows 会改成空间最大的非系统盘下的 `盘符:\GVS`（只有系统盘时用用户「视频」目录）。已经写成绝对路径的不会改。终端在设置里编辑「下载目录」，桌面端在设置里点「更改」，或在第一次连接网关时选文件夹。
 
 TMDB 是客户端直连 `api.themoviedb.org`，不经过网关。优酷/腾讯在填了 `tmdbKey` 时，下载前会刮削。
 

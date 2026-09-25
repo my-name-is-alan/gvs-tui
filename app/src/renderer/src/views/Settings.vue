@@ -89,6 +89,7 @@ async function checkUpdate() {
 
 const account = (p: string) => store.state?.accounts.find((a) => a.provider === p)
 const tone: Record<string, string> = { ok: 'ok', warn: 'warn', err: 'err', muted: '' }
+const onSystemDrive = computed(() => store.state?.platform === 'win32' && /^c:[\\/]/i.test(form.outDir))
 const tunnelText = computed(() => {
   const t = store.state!.tunnel
   if (!t.enabled) return { cls: '', text: '无需隧道' }
@@ -207,6 +208,8 @@ const tunnelText = computed(() => {
             <label class="field grow">保存到<input :value="form.outDir" class="input mono" readonly @click="pickDir" /></label>
             <button type="button" class="btn" @click="pickDir">更改…</button>
           </div>
+          <span class="muted small">没配过时，Windows 会选空间最大的非系统盘，目录是该盘下的 GVS。点「更改」可以换成任意文件夹。</span>
+          <span v-if="onSystemDrive" class="muted small" style="color: var(--orange-text)">当前在系统盘，大文件容易把系统盘占满。</span>
           <div class="row bottom">
             <div class="field grow">
               <span>分片并发</span>

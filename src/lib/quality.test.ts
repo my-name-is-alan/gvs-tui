@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { moviePlayables, probeOptions, youkuAudiosFromPlay, youkuEditionLabel, youkuEditionsFromDetail, youkuMergeEditionAudios } from './quality.ts'
+import { moviePlayables, probeOptions, youkuAudiosFromPlay, youkuEditionLabel, youkuEditionsFromDetail, youkuMergeEditionAudios, youkuMoviePick } from './quality.ts'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
 describe('youkuAudiosFromPlay', () => {
@@ -267,6 +267,31 @@ describe('moviePlayables', () => {
 
   test('no vid and no languages → empty, not a fake episode', () => {
     expect(moviePlayables({ title: '第九区', episodes: [] })).toEqual([])
+  })
+
+  test('a short notice ahead of the feature is not the movie', () => {
+    const data = {
+      vid: 'XNjQ5Nzg2MzQ2MA==',
+      duration: 100,
+      episodes: [
+        { vid: 'XNjQ5Nzg2MzQ2MA==', title: 'IMAX安全观影须知', kind: '正片', duration: 100 },
+        { vid: 'XNjQ5MjE2MzI3Mg==', title: '死神来了：血脉诅咒', kind: '正片', duration: 6557 },
+      ],
+    }
+    expect(youkuMoviePick(data)?.vid).toBe('XNjQ5MjE2MzI3Mg==')
+    expect(moviePlayables(data)[0]).toMatchObject({ vid: 'XNjQ5MjE2MzI3Mg==', duration: 6557 })
+  })
+
+  test('extras only do not become a fake 正片', () => {
+    const data = {
+      vid: 'XNjQ5Nzg2MzQ2MA==',
+      duration: 100,
+      episodes: [
+        { vid: 'XNjQ5Nzg2MzQ2MA==', title: 'IMAX安全观影须知', kind: '周边', duration: 100 },
+      ],
+    }
+    expect(youkuMoviePick(data)).toBeUndefined()
+    expect(moviePlayables(data)).toEqual([])
   })
 })
 

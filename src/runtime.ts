@@ -13,6 +13,7 @@ import { join as pathJoin } from 'node:path'
 import {
   clampThreads,
   loadConfig,
+  normalizeOutDir,
   saveConfig,
   type FileConfig,
 } from './lib/config.ts'
@@ -25,7 +26,7 @@ import {
   patchJob,
   type DlTask,
 } from './lib/jobs.ts'
-import { moviePlayables, probeOptions, qualityChoiceLabel, youkuEditionsFromDetail, tencentPlayQualityInput} from './lib/quality.ts'
+import { moviePlayables, probeOptions, qualityChoiceLabel, youkuEditionsFromDetail, youkuMoviePick, tencentPlayQualityInput} from './lib/quality.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import {
   hostIsLocal,
@@ -1758,11 +1759,14 @@ export class Runtime {
 
   private async commitEdit(v: string): Promise<void> {
     if (this.editField === '确认下载目录') {
-      if (!v) {
+      const next = normalizeOutDir(v)
+      if (!next) {
         this.say('下载目录不能为空', 'warn')
         return
       }
-      this.cfg.outDir = v
+      this.cfg.outDir = next
+      this.persistConfig()
+      this.say('下载目录已保存', 'ok')
       this.scene = 'confirm'
       this.emit()
       return
@@ -1786,9 +1790,17 @@ export class Runtime {
         this.scene = 'settings'
         await this.refreshKey()
         return
-      case '下载目录':
-        this.cfg.outDir = v
+      case '下载目录': {
+        const next = normalizeOutDir(v)
+        if (!next) {
+          this.say('下载目录不能为空', 'warn')
+          this.scene = 'settings'
+          this.emit()
+          return
+        }
+        this.cfg.outDir = next
         break
+      }
       case '下载线程':
         this.cfg.threads = clampThreads(v)
         break
@@ -2507,7 +2519,7 @@ export class Runtime {
     const generation = this.requestGeneration
     let play: Record<string, unknown> | undefined
     if (provider === 'youku' && !youkuEditionsFromDetail(data).length) {
-      const vid = this.eps[0]?.vid || asString(data.vid)
+      const vid = youkuMoviePick(data)?.vid || ''
       if (vid && this.cli) {
         try {
           play = await this.work(() =>
@@ -2816,7 +2828,7 @@ function parseEps(data: Record<string, unknown>): Episode[] {
       if (Number.isFinite(x)) n = x
     }
     const kind = firstStr(it, 'kind', 'group')
-    if (/预告|预约|trailer|advert/i.test(kind) || it.is_trailer === true)
+    if (/周边|花絮|彩蛋|预告|预约|trailer|advert|extra|clip/i.test(kind) || it.is_trailer === true)
       continue
     eps.push({
       title: firstStr(it, 'title', 'name'),
