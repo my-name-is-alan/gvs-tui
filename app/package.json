@@ -1,0 +1,39 @@
+{
+  "name": "gvs-desktop",
+  "productName": "GVS",
+  "private": true,
+  "version": "0.1.0",
+  "description": "GVS 桌面端：多平台搜索与本机下载",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "start": "electron-vite preview",
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:mac": "electron-vite build && electron-builder --mac"
+  },
+  "dependencies": {
+    "electron-updater": "^6",
+    "https-proxy-agent": "^7",
+    "qrcode": "^1.5",
+    "ws": "^8"
+  },
+  "devDependencies": {
+    "@fontsource-variable/bricolage-grotesque": "^5",
+    "@fontsource/jetbrains-mono": "^5",
+    "@fontsource/noto-sans-sc": "^5",
+    "@types/node": "^24",
+    "@types/qrcode": "^1.5",
+    "@types/ws": "^8",
+    "@vitejs/plugin-vue": "^6",
+    "electron": "^44",
+    "electron-builder": "^26",
+    "electron-vite": "^5",
+    "typescript": "^5.9",
+    "vite": "^7",
+    "vue": "^3.5",
+    "vue-tsc": "^3"
+  },
+  "author": "GVS"
+}

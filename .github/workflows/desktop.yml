@@ -1,0 +1,79 @@
+name: desktop
+
+# 桌面端发布：推 desktop-v* 标签（如 desktop-v0.1.1）即构建 Windows / macOS 安装包并发 Release。
+# 与 TUI 的 v* 标签互不干扰；Release 不标为 Latest，TUI 的发布页不受影响。
+# 桌面端自动更新（app/src/main/updater.ts）按 desktop-v* 取最新发布里的 latest.yml。
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+          - os: macos-latest
+            target: --mac
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # app 复用 ../src/lib，类型检查需要仓库根的依赖
+      - run: bun install --frozen-lockfile
+        working-directory: .
+      - run: bun install --frozen-lockfile
+      - name: 版本号取自标签
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
+        run: npm pkg set version="${GITHUB_REF_NAME#desktop-v}"
+      - run: node node_modules/electron/install.js
+      - run: bun run typecheck
+      - run: bun x electron-vite build
+      - run: bun x electron-builder ${{ matrix.target }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            app/release/*.exe
+            app/release/*.exe.blockmap
+            app/release/*.dmg
+            app/release/latest*.yml
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: GVS 桌面端 ${{ github.ref_name }}
+          make_latest: "false"
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            **Windows**：下载 `GVS-Setup-*-x64.exe` 安装；已安装的会在后台自动更新。
+            **macOS**：按芯片下载 `arm64`（M 系列）或 `x64`（Intel）的 dmg。未签名，首次打开请右键 → 打开；
+            需先 `brew install ffmpeg gpac mkvtoolnix`。

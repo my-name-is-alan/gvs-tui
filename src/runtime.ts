@@ -2462,6 +2462,9 @@ export class Runtime {
     else if (provider === 'youku') {
       input.showId = trimmed
       input.all = '1'
+      // 详情只用到 is_vip/drm/languages；完整多档画质在进入画质页的 play 里取。
+      // 单档 UPS 省掉 detail 里 5 档 + 0280 的隧道往返。
+      input.tier = 'single'
     } else if (provider === 'tencent') input.cid = trimmed
     try {
       const data = await this.work(() =>

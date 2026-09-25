@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" role="img"><title>优酷</title><defs>
+<linearGradient id="paint0_linear_3_3" x1="1454.89" y1="2118.1" x2="3571.47" y2="554.739" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FF8000"/>
+<stop offset="1" stop-color="#FF6400"/>
+</linearGradient>
+<linearGradient id="paint1_linear_3_3" x1="1113.55" y1="1683.32" x2="5556.74" y2="4316.43" gradientUnits="userSpaceOnUse">
+<stop stop-color="#00C1FF"/>
+<stop offset="0.39753" stop-color="#09B2FF"/>
+<stop offset="1" stop-color="#2C78FF"/>
+</linearGradient>
+<clipPath id="clip0_3_3">
+<rect width="213" height="72" fill="white"/>
+</clipPath>
+</defs>
+<g transform="translate(8.66667 4.00000) scale(0.7777778)"><path d="M21.0937 34.6649L23.392 35.9999L51.6 52.3911L21.1541 70.0953C14.4083 74.0156 5.78419 71.6909 1.89135 64.8976C-2.0015 58.1043 0.306984 49.4194 7.05277 45.4991L21.0545 37.359C21.517 37.0853 21.8275 36.5792 21.8275 36C21.8275 35.4374 21.5345 34.9436 21.0937 34.6649Z" fill="url(#paint0_linear_3_3)"/>
+<path d="M51.6 19.6034L21.1541 1.90467C14.4083 -2.0156 5.78419 0.309146 1.89135 7.10244C-2.0015 13.8957 0.306984 22.5806 7.05277 26.5009L23.3973 36.0027L51.6 52.3966C64.1333 45.1098 64.1333 26.8902 51.6 19.6034Z" fill="url(#paint1_linear_3_3)"/>
+</g></svg>

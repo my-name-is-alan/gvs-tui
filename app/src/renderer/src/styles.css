@@ -1,0 +1,147 @@
+/* GVS 品牌令牌：与网关 Web 端 gateway/web/src/index.css 同源 */
+:root {
+  --paper: #f4f2ec;
+  --paper-2: #ece9e1;
+  --card: #ffffff;
+  --ink: #17181c;
+  --ink-2: #45474f;
+  --ink-3: #6a6c74;
+  --line: #dedad0;
+  --grid: #e6e2d8;
+  --orange: #ff5a1f;
+  --orange-text: #b93a0b;
+  --orange-soft: #fff3ec;
+  --ok: #13733a;
+  --ok-bg: #ddf3e4;
+  --err: #b42318;
+  --err-bg: #fde7e4;
+  --side: #17181c;
+  --side-2: #2a2c33;
+  --side-fg: #f4f2ec;
+  --side-muted: #9a9ca4;
+  --side-ok: #5cc98a;
+  --side-warn: #f0a35e;
+
+  --font-body: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-display: 'Bricolage Grotesque Variable', 'Noto Sans SC', 'PingFang SC', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+
+  --shadow-ink: 4px 4px 0 var(--ink);
+  --shadow-orange: 4px 4px 0 var(--orange);
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: inherit; text-decoration: none; }
+h1, h2, h3, p { margin: 0; }
+:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+::selection { background: var(--orange); color: var(--ink); }
+.mono { font-family: var(--font-mono); }
+.muted { color: var(--ink-3); }
+.dim { color: var(--ink-2); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #cfcabe; border-radius: 10px; border: 2px solid var(--paper); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 标题 ---------- */
+.h1 { font-family: var(--font-display); font-size: 36px; font-weight: 800; letter-spacing: -0.5px; line-height: 1; }
+.h1-row { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.h2 { font-size: 19px; font-weight: 700; }
+
+/* ---------- 按钮 ---------- */
+.btn {
+  height: 42px; padding: 0 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--card);
+  font-size: 14px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  cursor: pointer; flex-shrink: 0; white-space: nowrap; transition: border-color .12s, background .12s;
+}
+.btn:hover:not(:disabled) { border-color: var(--ink); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.sm { height: 36px; padding: 0 12px; font-size: 13px; }
+.btn.icon { padding: 0; width: 36px; }
+.btn.outline { border: 1.5px solid var(--ink); font-weight: 700; }
+.btn.primary {
+  height: 46px; padding: 0 22px; border: 1.5px solid var(--ink); background: var(--orange); color: var(--ink);
+  font-size: 16px; font-weight: 700; box-shadow: var(--shadow-ink); transition: transform .08s, box-shadow .08s;
+}
+.btn.primary.big { height: 52px; }
+.btn.primary:hover:not(:disabled) { transform: translate(-1px, -1px); box-shadow: 5px 5px 0 var(--ink); }
+.btn.primary:active:not(:disabled) { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--ink); }
+.linkish { background: none; border: 0; padding: 0; cursor: pointer; color: var(--ink-2); text-decoration: underline; font-size: 13px; }
+.back { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink-2); background: none; border: 0; padding: 0; cursor: pointer; }
+.back:hover { color: var(--orange-text); }
+
+/* ---------- 胶囊 / 标签 ---------- */
+.pill {
+  height: 36px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--card);
+  font-size: 14px; font-weight: 500; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; white-space: nowrap;
+}
+.pill:hover:not(:disabled) { border-color: var(--ink); }
+.pill.on { background: var(--ink); color: var(--paper); border-color: var(--ink); font-weight: 700; }
+.pill:disabled { color: var(--ink-3); cursor: default; }
+.pill .count { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); }
+.pill.on .count { color: var(--side-muted); }
+.chip {
+  height: 24px; padding: 0 9px; border-radius: 6px; background: var(--paper-2); color: var(--ink-2);
+  font-size: 12px; font-weight: 500; display: inline-flex; align-items: center; white-space: nowrap;
+}
+.chip.ok { background: var(--ok-bg); color: var(--ok); }
+.chip.warn { background: var(--orange-soft); color: var(--orange-text); }
+.chip.err { background: var(--err-bg); color: var(--err); }
+.chip.dv { background: #e9e4ff; color: var(--ink); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* ---------- 卡片 / 表单 ---------- */
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.card.pad { padding: 20px; }
+.card.hard { border: 1.5px solid var(--ink); box-shadow: 6px 6px 0 var(--ink); }
+.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--ink-2); }
+.input {
+  height: 40px; width: 100%; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper);
+  font-size: 14px; color: var(--ink); outline: none;
+}
+.input:focus { border-color: var(--ink); background: var(--card); }
+.input.mono { font-family: var(--font-mono); }
+.input.strong { height: 48px; border: 1.5px solid var(--ink); background: var(--card); font-size: 15px; }
+textarea.input { height: 84px; padding: 10px 12px; resize: vertical; font-family: var(--font-mono); font-size: 12px; }
+
+.toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; cursor: pointer; }
+.toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.toggle .track { width: 40px; height: 24px; border-radius: 999px; background: var(--line); padding: 3px; display: flex; transition: background .12s; flex-shrink: 0; }
+.toggle .knob { width: 18px; height: 18px; border-radius: 50%; background: var(--card); transition: transform .12s; }
+.toggle input:checked + .track { background: var(--ink); }
+.toggle input:checked + .track .knob { background: var(--orange); transform: translateX(16px); }
+.toggle input:focus-visible + .track { outline: 2px solid var(--orange); outline-offset: 2px; }
+
+.seg { padding: 3px; background: var(--paper-2); border-radius: 8px; display: flex; gap: 3px; }
+.seg button { flex: 1 1 0; height: 34px; border: 0; border-radius: 6px; background: transparent; font-size: 14px; cursor: pointer; }
+.seg button.on { background: var(--ink); color: var(--paper); font-weight: 700; }
+
+.progress { height: 6px; border-radius: 999px; background: var(--paper-2); overflow: hidden; flex-grow: 1; }
+.progress > div { height: 100%; background: var(--orange); transition: width .3s; }
+.progress.done > div { background: var(--ok); }
+.progress.fail > div { background: var(--err); }
+.progress.mux > div { background: var(--ink); }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--orange); animation: spin .8s linear infinite; flex-shrink: 0; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.empty { padding: 48px 20px; text-align: center; color: var(--ink-3); display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.notice { padding: 14px 16px; border: 1px dashed var(--ink-3); border-radius: 10px; display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--ink-2); }
+.error-box { padding: 12px 14px; border-radius: 8px; background: var(--err-bg); color: var(--err); font-size: 13px; line-height: 1.6; word-break: break-word; }
+.warn-box { padding: 12px 14px; border-radius: 8px; background: var(--orange-soft); color: var(--orange-text); font-size: 13px; line-height: 1.6; }
+
+.page { height: 100%; overflow-y: auto; padding: 28px 32px 40px; display: flex; flex-direction: column; gap: 24px; }
+.page > * { flex-shrink: 0; }

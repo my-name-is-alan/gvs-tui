@@ -1,0 +1,44 @@
+appId: shop.videohack.gvs
+productName: GVS
+copyright: GVS
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+npmRebuild: false
+# 只用来生成 latest.yml（electron-updater 的更新清单）；实际检查地址在 updater.ts 里按 desktop-v* 发布算出来
+publish:
+  provider: generic
+  url: https://github.com/my-name-is-alan/gvs-tui/releases/download/desktop-v${version}
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.png
+  # Windows 包自带媒体工具（与 TUI 仓库 bin/ 同一套）
+  extraResources:
+    - from: ../bin
+      to: bin
+      filter:
+        - "*.exe"
+        - "!packager.exe"
+        - "!gvs-tui-bridge.exe"
+        - licenses/**
+        - manifest.json
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: ${productName}-Setup-${version}-x64.${ext}
+  shortcutName: GVS
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  icon: build/icon.png
+  category: public.app-category.video
+  # 没有 Apple 证书：不签名（首次打开需右键 → 打开；也无法自动更新，只提示新版本）
+  identity: null
+  artifactName: ${productName}-${version}-${arch}.${ext}

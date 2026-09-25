@@ -316,7 +316,29 @@ export function isClashFakeIP(ip: string): boolean {
   return a === 198 && (b === 18 || b === 19)
 }
 
-async function tunnelRoute(hostname: string): Promise<{ tcp: string, fakeIp: boolean }> {
+type TunnelRoute = { tcp: string, fakeIp: boolean, ttl?: number }
+
+const ROUTE_TTL_MS = 10 * 60_000
+/** DoH failed under fake-ip: retry soon instead of pinning Clash egress for 10 min. */
+const ROUTE_RETRY_MS = 30_000
+const routeCache = new Map<string, { at: number, ttl: number, route: Promise<TunnelRoute> }>()
+
+/**
+ * Every tunneled request used to re-resolve its host; under Clash fake-ip that
+ * meant a DoH round trip (4s timeout each) per upstream call. Cache per host,
+ * sharing the in-flight lookup between concurrent requests.
+ */
+function tunnelRoute(hostname: string): Promise<TunnelRoute> {
+  const hit = routeCache.get(hostname)
+  if (hit && Date.now() - hit.at < hit.ttl) return hit.route
+  const route = resolveTunnelRoute(hostname)
+  const entry = { at: Date.now(), ttl: ROUTE_TTL_MS, route }
+  routeCache.set(hostname, entry)
+  route.then((r) => { if (r.ttl) entry.ttl = r.ttl }, () => routeCache.delete(hostname))
+  return route
+}
+
+async function resolveTunnelRoute(hostname: string): Promise<TunnelRoute> {
   if (net.isIP(hostname) || hostname === 'localhost') return { tcp: hostname, fakeIp: false }
   let sys: string[] = []
   try {
@@ -327,7 +349,7 @@ async function tunnelRoute(hostname: string): Promise<{ tcp: string, fakeIp: boo
   if (!sys.length || !sys.every(isClashFakeIP)) return { tcp: hostname, fakeIp: false }
   const real = (await dohA(hostname)).filter((ip) => !isClashFakeIP(ip))
   if (real[0]) return { tcp: real[0], fakeIp: true }
-  return { tcp: hostname, fakeIp: false }
+  return { tcp: hostname, fakeIp: false, ttl: ROUTE_RETRY_MS }
 }
 
 async function dohA(hostname: string): Promise<string[]> {
@@ -335,21 +357,22 @@ async function dohA(hostname: string): Promise<string[]> {
     `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=A`,
     `https://1.1.1.1/dns-query?name=${encodeURIComponent(hostname)}&type=A`,
   ]
-  for (const url of urls) {
-    try {
+  // Query both resolvers at once: sequential 4s timeouts stacked into 8s stalls.
+  try {
+    return await Promise.any(urls.map(async (url) => {
       const res = await fetch(url, {
         headers: { accept: 'application/dns-json' },
         signal: AbortSignal.timeout(4000),
       })
-      if (!res.ok) continue
+      if (!res.ok) throw new Error(`doh http ${res.status}`)
       const j = await res.json() as { Answer?: { type: number, data: string }[] }
       const ips = (j.Answer ?? []).filter((a) => a.type === 1).map((a) => a.data)
-      if (ips.length) return ips
-    } catch {
-      /* next resolver */
-    }
+      if (!ips.length) throw new Error('doh empty')
+      return ips
+    }))
+  } catch {
+    return []
   }
-  return []
 }
 
 function wsClientFrame(op: number, payload: Buffer): Buffer {
