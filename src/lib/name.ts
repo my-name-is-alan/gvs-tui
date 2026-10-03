@@ -89,8 +89,8 @@ export function folder(n: Naming, outDir: string): string {
     return join(outDir, sanitizePath(n.title), `season ${Math.max(n.season, 1)}`)
   }
   if (n.kind === 'short') return join(outDir, sanitizePath(n.title))
-  let base = n.nameDots || dots(n.title)
-  if (n.year > 0) base = `${base}.${n.year}`
+  let base = n.title.trim() || n.nameDots || 'Untitled'
+  if (n.year > 0) base = `${base} (${n.year})`
   if (n.tmdbId > 0) base = `${base} {tmdb-${n.tmdbId}}`
   let dir = join(outDir, sanitizePath(base))
   if (n.kind === 'show' && n.season > 0) dir = join(dir, `Season ${String(n.season).padStart(2, '0')}`)

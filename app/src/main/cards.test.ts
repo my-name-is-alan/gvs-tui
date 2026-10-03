@@ -10,6 +10,15 @@ import { detailPoster, posterOf, posterUrl, toCards } from './cards.ts'
 
 const item = (over: Record<string, unknown>) => ({ title: '片子', ...over })
 
+test('search cards retain movie/TV hints without guessing from a single episode', () => {
+  const cards = toCards('tencent', { items: [
+    { id: 'movie', title: '电影', kind: 'video', meta: { media_type: 'movie' } },
+    { id: 'tv', title: '剧集', raw: { category: '电视剧' } },
+    { id: 'unknown', title: '未知', kind: 'video', episode_count: 1 },
+  ] })
+  expect(cards.map(c => c.mediaKind)).toEqual(['movie', 'show', undefined])
+})
+
 test('没有明确 target 时，只有 target.id 的条目按 ID 打开详情', () => {
   const cards = toCards('youku', {
     items: [item({ title: '长安', target: { id: 'show-1' } })],

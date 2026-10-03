@@ -93,6 +93,19 @@ describe('tencentPlayProbeOk', () => {
 })
 
 describe('pickTencentDownloadURL', () => {
+  test('an unavailable HEVC rendition falls back to the returned default URL', () => {
+    const url = 'https://cdn.example/default.m3u8'
+    expect(pickTencentDownloadURL({ video: { url }, formats: [{ id: '322093', name: 'suhd', caption: '硬' }] },
+      { stream: 'suhd', caption: 'hard', formatId: '322157' })).toBe(url)
+  })
+
+  test('a matching rendition URL still wins when the gateway supplies one', () => {
+    const url = 'https://cdn.example/hevc-a.m3u8'
+    expect(pickTencentDownloadURL({ video: { url: 'https://cdn.example/default.m3u8' }, formats: [
+      { id: '322093', name: 'suhd', caption: 'hard', url: 'https://cdn.example/small.m3u8' },
+      { id: '322157', name: 'suhd', caption: 'hard', url },
+    ] }, { stream: 'suhd', caption: 'hard', formatId: '322157' })).toBe(url)
+  })
   test('HLS top-level url via pickURL path', () => {
     const u = pickTencentDownloadURL(
       {

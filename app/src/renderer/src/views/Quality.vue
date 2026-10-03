@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import type { AudioView, EnqueueRequest, NamingPreview, TmdbHit } from '@shared/api'
 import { resolveDefaultAudioId } from '@shared/audio-selection'
+import { defaultTmdbHit } from '@shared/tmdb-selection'
 import Icon from '../components/Icon.vue'
 import Skeleton from '../components/Skeleton.vue'
 import { back, errText, go, gvs, human, openQuality, store, toast } from '../store'
@@ -18,6 +19,9 @@ const tmdbError = ref('')
 const tmdbOpen = ref(false)
 const naming = ref<NamingPreview | null>(null)
 const starting = ref(false)
+const manualKind = ref(false)
+let tmdbSeq = 0
+const isMovie = computed(() => d.value?.kind === 'movie')
 
 const quality = computed(() => probe.value?.qualities[qIndex.value] ?? null)
 const audios = computed<AudioView[]>(() => {
@@ -46,11 +50,15 @@ function reconcileDefaultAudio() {
 watch(
   probe,
   (p) => {
+    ++tmdbSeq
+    tmdbLoading.value = false
     qIndex.value = 0
     preferredAudioId.value = ''
     tmdb.value = null
     tmdbHits.value = []
     tmdbError.value = ''
+    tmdbOpen.value = false
+    manualKind.value = false
     if (!p) return
     defaultAudios()
     void loadTmdb()
@@ -109,16 +117,41 @@ function toggleAudio(a: AudioView) {
 async function loadTmdb() {
   const v = d.value
   if (!v || !store.state?.settings.tmdbKey || (v.provider !== 'youku' && v.provider !== 'tencent')) return
+  const seq = ++tmdbSeq
   tmdbLoading.value = true
+  tmdbError.value = ''
   try {
-    tmdbHits.value = await gvs('tmdbSearch', v.title, v.kind !== 'movie')
-    const exact = tmdbHits.value.find((h) => h.name === v.title && (!v.year || h.year === v.year)) ?? tmdbHits.value[0]
-    tmdb.value = exact ?? null
+    const hits = await gvs('tmdbSearch', v.title, v.kind !== 'movie')
+    if (seq !== tmdbSeq || d.value !== v) return
+    tmdbHits.value = hits
+    selectTmdb(defaultTmdbHit(manualKind.value ? hits.filter(h => h.kind === v.kind) : hits, v.title, v.year, v.kind))
   } catch (e) {
-    tmdbError.value = errText(e)
+    if (seq === tmdbSeq) tmdbError.value = errText(e)
   } finally {
-    tmdbLoading.value = false
+    if (seq === tmdbSeq) tmdbLoading.value = false
   }
+}
+
+onUnmounted(() => { ++tmdbSeq })
+
+function setKind(kind: 'movie' | 'show') {
+  const v = d.value
+  if (!v) return
+  v.kind = kind
+  v.pickNoun = kind === 'movie' ? '个版本' : '集'
+  if (tmdb.value && tmdb.value.kind !== kind) tmdb.value = null
+}
+
+function selectTmdb(hit: TmdbHit | null) {
+  if (hit) setKind(hit.kind)
+  tmdb.value = hit
+  tmdbOpen.value = false
+}
+
+function changeKind(kind: 'movie' | 'show') {
+  // The user's choice must not be reversed by an earlier automatic lookup.
+  manualKind.value = true
+  setKind(kind)
 }
 
 const request = computed<EnqueueRequest | null>(() => {
@@ -155,11 +188,11 @@ watch(
 const totalSize = computed(() => (quality.value?.size ?? 0) * store.probeEpisodes.length)
 const hasDts = computed(() => audios.value.some((a) => audioIds.value.includes(a.id) && /dts/i.test(a.codec + a.label + a.id)))
 const count = computed(() => store.probeEpisodes.length)
-const noun = computed(() => d.value?.pickNoun ?? '集')
+const noun = computed(() => isMovie.value ? '个版本' : '集')
 
 async function start() {
   const r = request.value
-  if (!r) return
+  if (!r || tmdbLoading.value) return
   starting.value = true
   try {
     const n = await gvs('enqueue', r)
@@ -173,7 +206,7 @@ async function start() {
 }
 
 const spec = (q: { width: number; height: number; size: number; fps: number }) =>
-  [q.width && q.height ? `${q.width}×${q.height}` : '', q.fps ? `${q.fps}帧` : '', q.size ? `每${noun.value === '集' ? '集' : '个'}约 ${human(q.size)}` : '']
+  [q.width && q.height ? `${q.width}×${q.height}` : '', q.fps ? `${q.fps}帧` : '', q.size ? `${isMovie.value ? '' : '每集'}约 ${human(q.size)}` : '']
     .filter(Boolean)
     .join(' · ')
 const CODEC_NAME: Record<string, string> = { bytevc1: 'H.265', bytevc2: 'H.266', h264: 'H.264', avc: 'H.264', h265: 'H.265', hevc: 'H.265', av1: 'AV1' }
@@ -207,7 +240,7 @@ const tmpText = computed(() => (tmpFull.value ? sep(tmpFull.value) : '下载目�
     <button type="button" class="back" @click="back('detail')"><Icon name="back" :size="16" />{{ d?.title ?? '返回' }}</button>
     <div class="h1-row">
       <h1 class="h1">选择画质</h1>
-      <span class="muted">已选 {{ count }} {{ noun }} · 按第一{{ noun === '集' ? '集' : '个' }}探测，整批沿用</span>
+      <span class="muted">已选 {{ count }} {{ noun }}<template v-if="count > 1"> · 按{{ isMovie ? '首个版本' : '第一集' }}探测，整批沿用</template></span>
     </div>
 
     <div v-if="store.probing" class="cols">
@@ -238,6 +271,7 @@ const tmpText = computed(() => (tmpFull.value ? sep(tmpFull.value) : '下载目�
       </div>
       <aside class="card hard out">
         <h2 class="h2s">输出</h2>
+
         <div class="blk"><Skeleton w="72" h="13" /><Skeleton w="100%" h="38" r="8" /></div>
         <div class="blk"><Skeleton w="84" h="13" /><Skeleton w="100%" h="58" r="8" /></div>
         <Skeleton w="100%" h="16" />
@@ -305,21 +339,30 @@ const tmpText = computed(() => (tmpFull.value ? sep(tmpFull.value) : '下载目�
       <aside class="card hard out">
         <h2 class="h2s">输出</h2>
 
+        <div v-if="d?.provider === 'youku' || d?.provider === 'tencent'" class="blk">
+          <span class="lab">内容类型</span>
+          <div class="kind-options" role="group" aria-label="内容类型">
+            <button type="button" class="btn sm" :class="{ primary: isMovie }" :aria-pressed="isMovie" @click="changeKind('movie')">电影</button>
+            <button type="button" class="btn sm" :class="{ primary: !isMovie }" :aria-pressed="!isMovie" @click="changeKind('show')">剧集</button>
+          </div>
+        </div>
+
         <div v-if="store.state?.settings.tmdbKey && (d?.provider === 'youku' || d?.provider === 'tencent')" class="blk">
           <span class="lab">TMDB 匹配</span>
           <div v-if="tmdbLoading" class="dim small row"><span class="spin" />正在查 TMDB…</div>
-          <div v-else-if="tmdbError" class="warn-box">TMDB：{{ tmdbError }}</div>
+          <div v-else-if="tmdbError" class="warn-box">TMDB：{{ tmdbError }} <button type="button" class="linkish" @click="loadTmdb">重试</button></div>
           <template v-else>
             <div class="match" :class="{ none: !tmdb }">
               <Icon v-if="tmdb" name="check" :size="16" :stroke="2.5" />
-              <span>{{ tmdb ? `${tmdb.name}${tmdb.year ? ` (${tmdb.year})` : ''}` : '不使用 TMDB' }}</span>
+              <span>{{ tmdb ? `${tmdb.name}${tmdb.year ? ` (${tmdb.year})` : ''}` : tmdbHits.length ? '不使用 TMDB' : '未找到 TMDB 条目' }}</span>
               <button v-if="tmdbHits.length" type="button" class="linkish" @click="tmdbOpen = !tmdbOpen">{{ tmdbOpen ? '收起' : '更换' }}</button>
+              <button v-else type="button" class="linkish" @click="loadTmdb">重试</button>
             </div>
             <div v-if="tmdbOpen" class="hits">
-              <button v-for="h in tmdbHits" :key="h.id" type="button" class="hit" :class="{ on: tmdb?.id === h.id }" @click="(tmdb = h), (tmdbOpen = false)">
-                {{ h.name }}<span class="muted mono">{{ h.year || '' }}</span>
+              <button v-for="h in tmdbHits" :key="`${h.kind}:${h.id}`" type="button" class="hit" :class="{ on: tmdb?.id === h.id && tmdb?.kind === h.kind }" @click="selectTmdb(h)">
+                {{ h.name }}<span class="muted">{{ h.kind === 'movie' ? '电影' : '剧集' }} {{ h.year || '' }}</span>
               </button>
-              <button type="button" class="hit" :class="{ on: !tmdb }" @click="(tmdb = null), (tmdbOpen = false)">不使用 TMDB</button>
+              <button type="button" class="hit" :class="{ on: !tmdb }" @click="selectTmdb(null)">不使用 TMDB</button>
             </div>
           </template>
         </div>
@@ -338,7 +381,7 @@ const tmpText = computed(() => (tmpFull.value ? sep(tmpFull.value) : '下载目�
 
         <div v-if="totalSize" class="sum"><span class="dim">预计占用</span><span class="mono">约 {{ human(totalSize) }} · {{ count }} {{ noun }}</span></div>
 
-        <button type="button" class="btn primary big" :disabled="starting || !quality" @click="start">
+        <button type="button" class="btn primary big" :disabled="starting || !quality || tmdbLoading" @click="start">
           <span v-if="starting" class="spin" /><Icon v-else name="download" />开始下载 {{ count }} {{ noun }}
         </button>
       </aside>
@@ -348,6 +391,7 @@ const tmpText = computed(() => (tmpFull.value ? sep(tmpFull.value) : '下载目�
 
 <style scoped>
 .back { margin-bottom: -8px; }
+.kind-options { display: flex; gap: 8px; }
 .cols { display: flex; gap: 28px; align-items: flex-start; }
 .left { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 20px; }
 .fs { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }

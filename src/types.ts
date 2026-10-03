@@ -27,6 +27,8 @@ export type Episode = {
   languages?: Array<{ vid: string; lang: string; langcode?: string }>
 }
 export type TMDBHit = { id: number; name: string; title: string; year: number; overview?: string; kind: 'movie' | 'show' }
+/** Tencent rendition identity; separate from the release-group suffix in file names. */
+export type TencentQualitySelection = { formatId?: string; persona?: string; group?: 'main' | 'encode' | 'source' }
 export type Quality = {
   id: string
   label: string

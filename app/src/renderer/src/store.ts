@@ -4,6 +4,7 @@ import type {
   AppState,
   Card,
   DetailView,
+  DetailHint,
   EpisodeView,
   GvsApi,
   JobView,
@@ -40,7 +41,7 @@ export const store = reactive({
   detailLoading: false,
   detailError: '',
   /** 卡片上已有的标题/海报：详情接口没给时兜底，骨架屏也能先显示 */
-  detailHint: null as { title?: string; poster?: string } | null,
+  detailHint: null as DetailHint | null,
   /** 选中的集 vid */
   picked: [] as string[],
 
@@ -134,7 +135,7 @@ export async function runSearch(raw: string): Promise<void> {
 
 let searchGen = 0
 
-async function openDetailWith(load: () => Promise<DetailView>, hint?: { title?: string; poster?: string } | null): Promise<void> {
+async function openDetailWith(load: () => Promise<DetailView>, hint?: DetailHint | null): Promise<void> {
   go('detail')
   store.detail = null
   store.detailError = ''
@@ -156,19 +157,19 @@ async function openDetailWith(load: () => Promise<DetailView>, hint?: { title?: 
   }
 }
 
-export function openDetail(provider: Provider, id: string, hint?: { title?: string; poster?: string }): Promise<void> {
+export function openDetail(provider: Provider, id: string, hint?: DetailHint): Promise<void> {
   return openDetailWith(() => gvs('detail', provider, id, hint), hint)
 }
 
 /** 优酷单视频：id 是 vid，走链接解析 */
-export function openVideo(vid: string, hint?: { title?: string; poster?: string }): Promise<void> {
-  return openDetailWith(() => gvs('detailFromLink', { kind: 'youku', vid }), hint)
+export function openVideo(vid: string, hint?: DetailHint): Promise<void> {
+  return openDetailWith(() => gvs('detailFromLink', { kind: 'youku', vid }, hint), hint)
 }
 
 /** 卡片统一入口：能开详情就开详情，只能搜就搜，预约类不动作 */
 export function openCard(c: Card): void {
   if (c.target === 'unavailable') return
-  const hint = { title: c.title, poster: c.poster }
+  const hint = { title: c.title, poster: c.poster, mediaKind: c.mediaKind }
   if (c.video) void openVideo(c.id, hint)
   else if (c.target === 'detail' && c.id) void openDetail(c.provider, c.id, hint)
   else void runSearch(c.query || c.title)

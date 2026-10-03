@@ -13,6 +13,7 @@ import { createHlsRelay, type RelayEvent } from './hls-relay.ts'
 import { moveFileSync } from './file-move.ts'
 import { assertCencMp4Output, isMpegTsFile } from './media-output.ts'
 import { removeScratch, scratchDir, scratchDirIn } from './scratch.ts'
+import { tencentActualVersion, type ActualVersion } from './actual-version.ts'
 
 /** A CDN refused us (403/410 …) — usually the signed URL expired mid-flight. */
 export class CdnDenied extends Error {
@@ -155,6 +156,7 @@ export type TencentDownloadPickOpts = {
   stream?: string
   caption?: string
   formatId?: string
+  persona?: string
 }
 
 /**
@@ -165,6 +167,18 @@ export function pickTencentDownloadURL(
   data: Record<string, unknown>,
   opts: TencentDownloadPickOpts = {},
 ): string {
+  return pickTencentDownload(data, opts).url
+}
+
+/** Same compatible URL selection, with provenance kept alongside the chosen address. */
+export function pickTencentDownload(
+  data: Record<string, unknown>, opts: TencentDownloadPickOpts = {}, vid = '', refreshes = 0,
+): { url: string; version: ActualVersion } {
+  const finish = (url: string, source: ActualVersion['addressSource']) => ({
+    url, version: tencentActualVersion(data, url, source, {
+      stream: opts.stream, caption: opts.caption, formatId: opts.formatId, persona: opts.persona,
+    }, vid, refreshes),
+  })
   const stream = (opts.stream || '').trim().toLowerCase()
   const wantCap = (opts.caption || '').trim().toLowerCase()
   const wantId = (opts.formatId || '').trim()
@@ -190,7 +204,7 @@ export function pickTencentDownloadURL(
         best = u
       }
     }
-    if (best && bestScore > 0) return best
+    if (best && bestScore > 0) return finish(best, 'format')
   }
 
   // A selected format must win over the gateway's default video URL. The
@@ -198,13 +212,13 @@ export function pickTencentDownloadURL(
   // formats catalog carries the requested caption/quality variant.
   if (isObj(data.video)) {
     const u = asString(data.video.url) || asString(data.video.playlist_url)
-    if (u) return u
+    if (u) return finish(u, 'default')
   }
   const top = asString(data.url) || asString(data.playlist_url)
-  if (top) return top
+  if (top) return finish(top, 'default')
 
   // Last resort: pickURL (video already checked; may hit first formats[] url).
-  return pickURL(data)
+  return finish(pickURL(data), 'other')
 }
 
 /**
@@ -282,16 +296,38 @@ export function pickDouyinURL(data: Record<string, unknown>): string {
   return fallback
 }
 
-export type SpeedInfo = { log?: string; segments?: { done: number; total: number } }
+export type TransferProgress = { bytes: number; bytesPerSecond?: number }
+export type SpeedInfo = { phase?: PlaylistPhase; log?: string; segments?: { done: number; total: number }; transfer?: TransferProgress }
+
+/** Measure recent byte growth, excluding cached fragments present on resume. */
+export function transferSpeed(now: () => number = Date.now): (bytes: number) => TransferProgress {
+  let samples: Array<{ at: number; bytes: number }> = []
+  return bytes => {
+    const at = now()
+    const last = samples.at(-1)
+    if (last && (bytes < last.bytes || at < last.at)) samples = []
+    if (!samples.length || at > samples.at(-1)!.at) samples.push({ at, bytes })
+    while (samples.length > 2 && samples[1]!.at <= at - 2000) samples.shift()
+    const first = samples[0]!
+    return { bytes, ...(at - first.at >= 250 ? { bytesPerSecond: Math.max(0, (bytes - first.bytes) * 1000 / (at - first.at)) } : {}) }
+  }
+}
 
 /** Byte totals are file sizes. A total of 1 is the HLS 0–1 ratio, not 1 byte. */
 export function formatSpeed(n: number, total: number, elapsedSec: number, info?: SpeedInfo): string {
   if (info?.log) return info.log
+  if (info?.phase === 'merge' || info?.phase === 'decrypt') return info.phase === 'merge' ? '合并' : '解密'
   if (total > 1) {
     const spd = elapsedSec > 0.2 ? n / elapsedSec : 0
     return `${human(n)}/${human(total)}  ${human(spd)}/s`
   }
   const segments = info?.segments
+  if (info?.transfer) {
+    const rate = info.transfer.bytesPerSecond
+    return [segments && segments.total > 0 ? `${segments.done}/${segments.total} 段` : '',
+      `已下载 ${human(info.transfer.bytes)}`, rate === undefined ? '正在测速' : `约 ${human(rate)}/s`].filter(Boolean).join(' · ')
+  }
+  if (info?.phase === 'download' && !segments) return '正在测速'
   if (segments && segments.total > 0) return `${segments.done}/${segments.total} 段 · 速度未知`
   return '速度未知'
 }
@@ -621,13 +657,13 @@ export function reProgress(cb?: (n: number, total: number, segments?: { done: nu
 }
 
 export type PlaylistPhase = 'download' | 'merge' | 'decrypt'
-export type PlaylistProgress = { phase: PlaylistPhase; log?: string; segments?: { done: number; total: number } }
+export type PlaylistProgress = SpeedInfo & { phase: PlaylistPhase }
 export type ProgressCB = (n: number, total: number, info?: PlaylistProgress) => void
 
 /** RE's noninteractive console emits no intermediate progress. Count finished
  * fragment files against its selected-stream metadata; in-flight .tmp files
  * never count, and merge/decrypt phases continue using their byte monitors. */
-export function reDownloadedSegments(dir: string): { done: number; total: number } | undefined {
+export function reDownloadedSegments(dir: string): { done: number; total: number; bytes: number } | undefined {
   try {
     const root = join(dir, 'download')
     const streams: unknown = JSON.parse(readFileSync(join(root, 'meta_selected.json'), 'utf8').replace(/^\uFEFF/, ''))
@@ -640,12 +676,15 @@ export function reDownloadedSegments(dir: string): { done: number; total: number
       if (isObj(playlist.MediaInit)) total++
     }
     if (!total) return
-    let done = 0
+    let done = 0, bytes = 0
     for (const name of readdirSync(root, { recursive: true }) as string[]) {
       const leaf = basename(name)
-      if (/^(?:\d+|_init)\.(?:ts|m4s|mp4|m4a|clip|webm)$/.test(leaf) && fileSize(join(root, name)) > 0) done++
+      if (!/^(?:\d+|_init)\.(?:ts|m4s|mp4|m4a|clip|webm)(?:\.tmp)?$/.test(leaf)) continue
+      const size = fileSize(join(root, name))
+      bytes += size
+      if (size > 0 && !leaf.endsWith('.tmp')) done++
     }
-    return { done: Math.min(done, total), total }
+    return { done: Math.min(done, total), total, bytes }
   } catch { /* metadata appears only after parsing; a retry can replace it */ }
 }
 
@@ -792,6 +831,7 @@ export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: Pro
   let stopping: Promise<void> | undefined
   let phase: PlaylistPhase = 'download'
   let decryptAt = 0
+  const measureTransfer = transferSpeed()
   const failures = reHttpFailureMonitor()
   const stop = () => {
     if (stopped) return
@@ -812,7 +852,9 @@ export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: Pro
     if (!cb || !cwd) return
     if (phase === 'download') {
       const segments = reDownloadedSegments(cwd)
-      if (segments) cb(Math.min(0.99, segments.done / segments.total), 1, { phase, segments })
+      if (segments) cb(Math.min(0.99, segments.done / segments.total), 1, {
+        phase, segments: { done: segments.done, total: segments.total }, transfer: measureTransfer(segments.bytes),
+      })
       return
     }
     const side = reSidecarProgress(cwd, phase)
@@ -823,6 +865,8 @@ export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: Pro
     cb(side.ratio, 1, { phase, log })
   }
   const progress = reProgress((n, total, segments) => cb?.(n, total, { phase: 'download', segments }))
+  // Take the resume baseline before any newly downloaded bytes are reported.
+  emitSidecar()
   const collect = (chunk: string) => {
     output = (output + chunk).slice(-16384)
     bumpPhase(reWorkPhase(chunk))
@@ -1068,7 +1112,7 @@ export async function downloadPlaylist(opts: {
         if (order.indexOf(info.phase) >= order.indexOf(phase)) phase = info.phase
       }
       progress = Math.max(progress, Math.min(0.99, playlistOverall(phase, frac, decrypts)))
-      opts.cb?.(progress, 1, { phase, log: info?.log, segments: info?.segments })
+      opts.cb?.(progress, 1, { phase, log: info?.log, segments: info?.segments, transfer: info?.transfer })
     }
     for (let slowRestart = 0; ; slowRestart++) {
       try {
@@ -1131,7 +1175,7 @@ export async function downloadProgress(
   src: string,
   dest: string,
   ref: string,
-  cb?: (n: number, total: number) => void,
+  cb?: ProgressCB,
   note?: RetryNote,
   threads = 1,
   cipher?: HlsCipher,

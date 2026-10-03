@@ -1,10 +1,11 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { JobHub, discardJobWork, jobWorkDir, nextJobID, patchJob, seedJobID, tmpRoot, type DlTask, type JobEvt } from './jobs.ts'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
+import * as media from './media.ts'
 
 function task(partial: Partial<DlTask>): DlTask {
   return {
@@ -218,6 +219,52 @@ test('jobWorkDir is deterministic, per-task and under tmpRoot', () => {
   const sanitized = jobWorkDir(cfg, task({ vid: 'a:b/c*?' }))
   expect(sanitized).toContain('job-youku-a_')
   expect(/[:*?/\\]/.test(sanitized.slice(sanitized.lastIndexOf('job-')))).toBe(false)
+})
+
+test('Tencent resume chunks are isolated by rendition and subtitle choice', () => {
+  const cfg = { outDir: '/tmp/library', tmpDir: '' } as FileConfig
+  const base = task({ provider: 'tencent', vid: 'same', quality: 'suhd', caption: 'hard', tencentQuality: { formatId: '322157', persona: '2741517771455_硬', group: 'encode' } })
+  const paths = [base, { ...base, tencentQuality: { ...base.tencentQuality, formatId: '322093' } },
+    { ...base, tencentQuality: { ...base.tencentQuality, persona: 'default_硬' } },
+    { ...base, caption: 'soft' }, { ...base, tencentQuality: undefined }].map(t => jobWorkDir(cfg, t))
+  expect(new Set(paths).size).toBe(paths.length)
+  expect(jobWorkDir(cfg, JSON.parse(JSON.stringify(base)))).toBe(paths[0]!)
+})
+
+test('Tencent runner keeps compatible play parameters and downloads a returned default stream', async () => {
+  const outDir = tempDir('gvs-tencent-selection')
+  const calls: Array<Record<string, unknown>> = []
+  const cli = {
+    invoke: async (_provider: string, _action: string, input: Record<string, unknown>) => {
+      calls.push(input)
+      return { em: 0, has_url: true, defn: 'suhd', width: 3840, height: 1636,
+        video: { url: 'https://cdn.invalid/default.mp4' },
+        formats: [{ id: '322093', name: 'suhd', caption: '硬', width: 3840, height: 1636 }] }
+    },
+    extra: () => ({}),
+    observeTencentTransfer: () => {},
+  } as unknown as GwClient
+  const urls: string[] = []
+  const download = spyOn(media, 'downloadProgress').mockImplementation(async (src, _dest, _ref, cb) => {
+    urls.push(src)
+    cb?.(0.42, 1, { phase: 'download', segments: { done: 26, total: 85 }, transfer: { bytes: 5242880, bytesPerSecond: 1048576 } })
+    throw new Error('fixture: download reached')
+  })
+  try {
+    const t = task({ provider: 'tencent', vid: 'test', quality: 'suhd', caption: 'hard', tencentQuality: { formatId: '322157', persona: '2741517771455_硬', group: 'encode' } })
+    const cfg = { outDir, tmpDir: '', releaseGroup: 'WF', threads: 4, tencentMode: 'tv' } as FileConfig
+    const events: JobEvt[] = []
+    const hub = new JobHub(e => events.push(e))
+    hub.enqueue(cfg, cli, 25, t)
+    await until(() => events.some(e => e.done))
+    expect(calls).toEqual([{ vid: 'test', defn: 'suhd', caption: 'hard', session_type: 'tv' }])
+    const final = events.find(e => e.done)!
+    expect(final.status).toBe('失败')
+    expect(final.err).toBe('fixture: download reached')
+    expect(events.some(e => e.status === '下载')).toBe(true)
+    expect(events.some(e => e.status === '下载' && e.log === '26/85 段 · 已下载 5.0 MB · 约 1.0 MB/s')).toBe(true)
+    expect(urls).toEqual(['https://cdn.invalid/default.mp4'])
+  } finally { download.mockRestore(); rmSync(outDir, { recursive: true, force: true }) }
 })
 
 test('discardJobWork removes the job folder and an emptied tmpRoot', async () => {

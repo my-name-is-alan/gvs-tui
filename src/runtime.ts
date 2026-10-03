@@ -6,6 +6,7 @@ import { readTencentDiagnostics, tencentDiagnosticPath } from './lib/tencent-dia
 import { PROVIDER_IDS, supportsSearch, isManifestProvider } from './lib/providers.ts'
 import { needsTunnel } from './lib/tunnel-policy.ts'
 import { parseEpisodes as parseEps, episodeCollections } from './lib/episodes.ts'
+import { parseSeriesTitle, seriesSeason } from './lib/series-title.ts'
 import { startTencentDualQR, pollTencentQR, pollTencentDualQR, applyTencentLogin, tencentLabels, tencentPlayInput, type TencentMode } from './lib/tencent-qr.ts'
 import { fetchTencentAccount, txAccountSummary, type TxAccount } from './lib/tencent-account.ts'
 import { Discovery, discoveryRows } from './lib/discovery'
@@ -37,6 +38,7 @@ import {
   type DlTask,
 } from './lib/jobs.ts'
 import { moviePlayables, probeOptions, qualityChoiceLabel, youkuEditionsFromDetail, youkuMoviePick, tencentPlayQualityInput} from './lib/quality.ts'
+import { selectedTencentQuality } from './lib/tencent-quality-selection.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import {
   hostIsLocal,
@@ -1564,6 +1566,7 @@ export class Runtime {
       if (q) {
         t.quality = q.stream || q.id
         t.caption = q.caption
+        if (t.provider === 'tencent') t.tencentQuality = selectedTencentQuality(q)
         t.group = this.cfg.releaseGroup
         if (q.height > 0) t.height = q.tier || ((t.provider === 'hongguo' || t.provider === 'huangguo') && q.width > 0 && q.height > q.width
           ? tierHeight(q.height, q.width) : tierHeight(q.width, q.height))
@@ -2012,7 +2015,7 @@ export class Runtime {
         task.episode = 0
         task.edition = movieEdition(task.title, this.detailTitle)
       } else {
-        task.season = task.season || 1
+        task.season = seriesSeason(this.eps.find(ep => ep.vid === task.vid)?.season || task.season, this.detailTitle)
         task.episode = this.eps.find(ep => ep.vid === task.vid)?.number || task.episode || 1
         task.edition = ''
       }
@@ -2029,9 +2032,9 @@ export class Runtime {
     return {
       provider: this.detailProv,
       title: ep.title,
-      series: this.detailTitle,
+      series: movie ? this.detailTitle : parseSeriesTitle(this.detailTitle).title,
       vid: ep.vid,
-      season: movie ? 0 : (ep.season || 1),
+      season: movie ? 0 : seriesSeason(ep.season, this.detailTitle),
       episode: movie ? 0 : ep.number || i + 1,
       collection: ep.collection,
       height: 0,

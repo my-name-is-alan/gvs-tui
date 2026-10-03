@@ -18,15 +18,20 @@ import { episodeTitle, filename, folder, sourceTag } from './name.ts'
 import type { MediaKind, Naming } from './name.ts'
 import { writeEpisodeNFO, writeTvShowNFO } from './nfo.ts'
 import {
-  CdnDenied, downloadPlaylist, downloadProgress, firstLivePlaylist, hlsSegmentsEncrypted, pickDouyinURL, pickTencentDownloadURL, playlistStatus, referer, speedCB,
+  CdnDenied, downloadPlaylist, downloadProgress, firstLivePlaylist, hlsSegmentsEncrypted, pickDouyinURL, pickTencentDownload, playlistStatus, referer, speedCB,
   youkuAudioPlaylist, youkuAudioStreamType, youkuSpokenLangKey, youkuUsesSeparateAudio, youkuVideoPlaylist,
 } from './media.ts'
-import type { HlsCipher, RetryNote } from './media.ts'
+import type { HlsCipher, RetryNote, ProgressCB } from './media.ts'
 import { retryCdnRefresh } from './cdn-retry.ts'
 import { asString, human, isObj } from './util.ts'
-import type { Job } from '../types.ts'
+import type { Job, TencentQualitySelection } from '../types.ts'
+import { tencentDownloadSelection } from './tencent-quality-selection.ts'
 import { moveFileSync } from './file-move.ts'
 import { runLog } from './runlog.ts'
+import { prepareAudioLanguage } from './audio-language.ts'
+import type { TmdbDetails } from './tmdb.ts'
+import { actualVersionText, tencentActualVersion, type ActualVersion } from './actual-version.ts'
+import { finishedVersionRecord, saveVersionRecord } from './gvs-record.ts'
 
 export type DlTask = {
   provider: string
@@ -40,11 +45,15 @@ export type DlTask = {
   quality: string
   /** Tencent TV caption soft|hard */
   caption?: string
+  /** Exact selected Tencent format/persona, retained across pause and retry. */
+  tencentQuality?: TencentQualitySelection
   /** Audio tracks to mux in (空格勾选的那些）；空 = 只封平台默认音轨。 */
   audioTracks?: Array<{ id: string; label: string; lang: string; vid?: string; codec?: string; isDefault?: boolean }>
   group: string
   codec: string
   tmdbId: number
+  /** Details of the explicitly matched TMDB title, retained for resume/retry. */
+  tmdbMetadata?: TmdbDetails
   nameDots: string
   year: number
   plot: string
@@ -63,6 +72,8 @@ export type JobEvt = {
   err: string
   done?: boolean
   note?: string
+  /** Present only on successful completion; requested quality remains separate. */
+  actualVersion?: ActualVersion
   /** Final event only: the user stopped the job instead of it failing. */
   stopped?: 'pause' | 'cancel'
 }
@@ -302,8 +313,21 @@ async function runTask(
   let dir = ''
   let out = ''
   let succeeded = false
+  let actualVersion: ActualVersion | undefined
   try {
     signal?.throwIfAborted()
+    let audioLanguageFallback = ''
+    try {
+      if (t.tmdbId && (t.provider === 'youku' || t.provider === 'tencent')) {
+        emit('元数据', 0, '读取 TMDB 制作地区与原始语言')
+        audioLanguageFallback = await prepareAudioLanguage(cfg, t, signal)
+        log(`audio language fallback=${audioLanguageFallback || 'none'} tmdb=${t.tmdbId} countries=${t.tmdbMetadata?.countries.join(',') || 'unknown'}`)
+      }
+    } catch (e) {
+      signal?.throwIfAborted()
+      // Metadata failure must not fail a paid download or guess its language.
+      log(`TMDB 音轨语言查询失败，保留原标签：${e instanceof Error ? e.message : '查询失败'}`)
+    }
     const n = jobNaming(t, cfg)
     dir = t.provider === 'douyin' ? cfg.outDir : folder(n, cfg.outDir)
     mkdirSync(dir, { recursive: true })
@@ -330,10 +354,13 @@ async function runTask(
         await dlHuangguo(cli, t, out, ffmpeg, mkvmerge, emit, retryNote, cfg.threads, work, signal)
         break
       case 'youku':
-        out = await dlYouku(cli, cfg, t, dir, out, mkvmerge, emit, retryNote, work, signal, hooks)
+        out = await dlYouku(cli, cfg, t, dir, out, mkvmerge, emit, retryNote, work, signal, hooks, audioLanguageFallback)
         break
       case 'tencent':
-        note = await dlTencent(cli, cfg, t, out, mkvmerge, emit, retryNote, work, signal)
+        note = await dlTencent(cli, cfg, t, out, mkvmerge, emit, retryNote, work, signal, audioLanguageFallback, version => {
+          actualVersion = version
+          log(actualVersionText(version))
+        })
         break
       case 'douyin':
         await dlDouyin(cli, t, out, emit, retryNote, signal)
@@ -346,8 +373,22 @@ async function runTask(
       writeTvShowNFO(dirname(dir), n.title, t.plot, 0)
       writeEpisodeNFO(out, t.title, Math.max(t.season, 1), t.episode, '')
     }
+    if (actualVersion) {
+      emit('记录版本', 0.99, actualVersionText(actualVersion))
+      try {
+        const finished = await finishedVersionRecord(out, actualVersion, signal)
+        actualVersion = finished
+        saveVersionRecord(out, finished)
+      } catch {
+        signal?.throwIfAborted()
+        // Media is already complete. Keep provenance in jobs.json if the separate archive cannot be written.
+        note = [note, '版本档案未能保存'].filter(Boolean).join('；')
+        log('版本档案未能保存')
+      }
+    }
+    signal?.throwIfAborted()
     succeeded = true
-    emitEvt({ id, status: '完成', pct: 1, log: out, err: '', done: true, note })
+    emitEvt({ id, status: '完成', pct: 1, log: out, err: '', done: true, note, actualVersion })
   } catch (e) {
     // A stop is not a failure: one final event carrying `stopped`, never 失败.
     if (signal?.aborted) {
@@ -566,13 +607,6 @@ export function tencentMirrors(data: Record<string, unknown>, picked: string): s
   return urls.includes(picked) ? [picked, ...urls.filter(u => u && u !== picked)] : [picked]
 }
 
-function tencentDlPickOpts(t: DlTask) {
-  return {
-    stream: t.quality,
-    caption: t.caption,
-  }
-}
-
 function logTencentDownloadHost(cdn: string, t: DlTask): void {
   try {
     const host = new URL(cdn).host
@@ -590,6 +624,8 @@ async function dlTencent(
   retryNote: RetryNote,
   work: string,
   signal?: AbortSignal,
+  audioLanguageFallback = '',
+  onVersion?: (version: ActualVersion) => void,
 ): Promise<string> {
   emit('取链', 0.05, t.vid)
   const play = async () => {
@@ -599,9 +635,13 @@ async function dlTencent(
     return payload
   }
   // Skip CDN mirrors that refuse this network (200 + HTML "Forbidden").
+  let refreshes = 0
   const pick = async (data: Record<string, unknown>) => {
-    const u = pickTencentDownloadURL(data, tencentDlPickOpts(t))
-    return u && /\.m3u8/i.test(u) ? firstLivePlaylist(tencentMirrors(data, u), referer('tencent'), signal) : u
+    const picked = pickTencentDownload(data, { ...tencentDownloadSelection(t), persona: t.tencentQuality?.persona }, t.vid, refreshes)
+    const cdn = picked.url && /\.m3u8/i.test(picked.url) ? await firstLivePlaylist(tencentMirrors(data, picked.url), referer('tencent'), signal) : picked.url
+    if (cdn) onVersion?.(cdn === picked.url ? picked.version :
+      tencentActualVersion(data, cdn, picked.version.addressSource, picked.version.selected, t.vid, refreshes))
+    return cdn
   }
   let played = await play()
   let cdn = await pick(played)
@@ -621,9 +661,9 @@ async function dlTencent(
   const temps = [raw]
   let done = false
   emit('下载', 0.1, '')
-  const transferProgress = () => {
+  const transferProgress = (): ProgressCB => {
     const display = speedCB(emit, '下载', 0.1, 0.55)
-    return (n: number, total: number) => { cli.observeTencentTransfer(n, total); display(n, total) }
+    return (n, total, info) => { cli.observeTencentTransfer(n, total); display(n, total, info) }
   }
   try {
     try {
@@ -632,6 +672,7 @@ async function dlTencent(
       signal?.throwIfAborted()
       if (!(e instanceof CdnDenied)) throw e
       emit('重取', 0.1, `CDN ${e.status}，重新取链后下载`)
+      refreshes += 1
       played = await play()
       cdn = await pick(played)
       if (!cdn) throw new Error('腾讯重新取链失败')
@@ -651,7 +692,7 @@ async function dlTencent(
     if (!plan.files.length) {
       // The video stream carries its own default audio track.
       emit('封装', 0.86, out)
-      await muxToOut(() => mkvmergeRemux(mkvmerge, raw, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`), signal))
+      await muxToOut(() => mkvmergeRemux(mkvmerge, raw, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`), signal, audioLanguageFallback))
       done = true
       return note
     }
@@ -679,7 +720,7 @@ async function dlTencent(
     await muxToOut(() => mkvmergeMux(mkvmerge, raw, mux, out, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`), signal, message => {
       repairs.push(message)
       runLog(`tencent audio repair vid=${t.vid} ${message}`)
-    }))
+    }, audioLanguageFallback))
     done = true
     return [note, ...repairs].filter(Boolean).join('；')
   } finally {
@@ -732,6 +773,7 @@ async function dlYouku(
   work: string,
   signal?: AbortSignal,
   hooks?: JobHooks,
+  audioLanguageFallback = '',
 ): Promise<string> {
   // Rebind at download time too: drafts / older queues may still carry ep1 probe vids.
   const tracks = t.audioTracks?.length
@@ -903,9 +945,9 @@ async function dlYouku(
     temps.add(partial)
     temps.add(`${partial}.timing.json`)
     try {
-      if (dts) await mp4boxMux(mp4box, videoPath, muxInputs, partial, muxProgress, signal)
-      else if (muxInputs.length) await mkvmergeMux(mkvmerge, videoPath, muxInputs, partial, muxProgress, signal)
-      else await mkvmergeRemux(mkvmerge, videoPath, partial, muxProgress, signal)
+      if (dts) await mp4boxMux(mp4box, videoPath, muxInputs, partial, muxProgress, signal, audioLanguageFallback)
+      else if (muxInputs.length) await mkvmergeMux(mkvmerge, videoPath, muxInputs, partial, muxProgress, signal, undefined, audioLanguageFallback)
+      else await mkvmergeRemux(mkvmerge, videoPath, partial, muxProgress, signal, audioLanguageFallback)
       signal?.throwIfAborted()
       moveFileSync(partial, out)
       succeeded = true
@@ -941,7 +983,7 @@ export function tmpRoot(cfg: FileConfig): string {
  */
 export function jobWorkDir(cfg: FileConfig, t: DlTask): string {
   const vid = t.vid.replace(/[^\w.-]+/g, '_').slice(0, 48) || 'task'
-  const key = JSON.stringify([
+  const identity: unknown[] = [
     t.quality ?? '',
     t.height ?? 0,
     (t.audioTracks ?? []).map(a => a.id),
@@ -949,7 +991,12 @@ export function jobWorkDir(cfg: FileConfig, t: DlTask): string {
     t.codec ?? '',
     t.season ?? 0,
     t.episode ?? 0,
+  ]
+  // Preserve old resume paths, but never mix new Tencent rendition/caption chunks.
+  if (t.provider === 'tencent' && t.tencentQuality) identity.push([
+    t.tencentQuality.formatId || '', t.tencentQuality.persona || '', t.tencentQuality.group || '', t.caption || '',
   ])
+  const key = JSON.stringify(identity)
   return join(tmpRoot(cfg), `job-${t.provider}-${vid}-${createHash('sha256').update(key).digest('hex').slice(0, 12)}`)
 }
 

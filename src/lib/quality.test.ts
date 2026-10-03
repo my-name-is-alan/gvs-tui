@@ -421,8 +421,8 @@ describe('tencentPlayQualityInput', () => {
     ).toEqual({ defn: 'maxplus', caption: 'soft' })
   })
 
-  test('strips composite id to defn name', () => {
-    expect(tencentPlayQualityInput({ quality: 'fhd|soft|3|l3_soft' })).toEqual({ defn: 'fhd' })
+  test('retains format and caption from a composite id', () => {
+    expect(tencentPlayQualityInput({ quality: 'fhd|soft|3|l3_soft' })).toEqual({ defn: 'fhd', caption: 'soft' })
   })
 })
 

@@ -2,6 +2,18 @@ import { describe, expect, test } from 'bun:test'
 import { parseEpisodes, episodeCollections } from './episodes.ts'
 import { folder, type Naming } from './name.ts'
 
+test('season-specific details fill missing episode seasons without replacing explicit metadata', () => {
+  const eps = parseEpisodes({ title: '大王饶命 第2季', episodes: [
+    { vid: 'first', number: 1 },
+    { vid: 'later', number: 2, seasonNumber: 3 },
+    { vid: 'snake', number: 3, season_number: 4 },
+  ] })
+  expect(eps.map(ep => [ep.number, ep.season])).toEqual([[1, 2], [2, 3], [3, 4]])
+  expect(parseEpisodes({ raw: { title: '某剧 第二季' }, episodes: [{ vid: 'raw' }] })[0]?.season).toBe(2)
+  expect(parseEpisodes({ title: '某剧 第2季', season: 3, episodes: [{ vid: 'metadata' }] })[0]?.season).toBe(3)
+  expect(parseEpisodes({ title: '某剧', episodes: [{ vid: 'plain' }] })[0]?.season).toBeUndefined()
+})
+
 describe('official episode collections', () => {
   test('preserves interviews and trailers, defaults to main and deduplicates VID', () => {
     const eps = parseEpisodes({ episode_groups: [{ id: '正片' }, { id: '专访' }], episodes: [

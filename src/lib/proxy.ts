@@ -82,6 +82,11 @@ export async function fetchRemote(url: string, init: RequestInit = {}): Promise<
   }
 }
 
+/** An explicit TMDB proxy must never fall back to a direct request. */
+export function fetchTmdb(url: string, init: RequestInit & { proxy?: string } = {}): Promise<Response> {
+  return init.proxy ? fetch(url, init) : fetchRemote(url, init)
+}
+
 /** Returns after a no-op. Re-exec path never returns: it exits with the child. */
 export async function reexecWithoutProxy(): Promise<void> {
   const found = inheritedProxyUrl()

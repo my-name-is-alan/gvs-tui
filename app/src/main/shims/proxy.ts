@@ -44,6 +44,11 @@ export async function fetchRemote(url: string, init: RequestInit = {}): Promise<
   return net.fetch(url, init as Parameters<typeof net.fetch>[1])
 }
 
+/** Like desktop TMDB search, use Chromium's system proxy rather than Bun options. */
+export function fetchTmdb(url: string, init: RequestInit & { proxy?: string } = {}): Promise<Response> {
+  return fetchRemote(url, init)
+}
+
 /** 桌面端网关请求走系统代理。tui.json 里的 gatewayProxy 只给终端版用。 */
 export async function fetchGateway(url: string, init: RequestInit, _savedProxy = ''): Promise<Response> {
   return net.fetch(url, init as Parameters<typeof net.fetch>[1])

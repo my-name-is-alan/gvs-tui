@@ -14,6 +14,7 @@ const collections = computed(() => {
   return names.includes('正片') ? ['正片', ...names.filter(g => g !== '正片')] : names
 })
 const eps = computed(() => (d.value?.episodes ?? []).filter(e => !collection.value || e.collection === collection.value))
+const duplicateNumbers = computed(() => new Set(eps.value.map(e => e.number)).size < eps.value.length)
 const picked = computed(() => new Set(store.picked))
 const range = ref('')
 const anchor = ref(-1)
@@ -69,7 +70,6 @@ const invert = () => setPicked(eps.value.filter((e) => !picked.value.has(e.vid))
 const clear = () => setPicked([])
 
 const isMovie = computed(() => d.value?.kind === 'movie')
-const cols = computed(() => collection.value ? 'repeat(auto-fill, minmax(250px, 1fr))' : (eps.value.length > 200 ? 'repeat(auto-fill, minmax(60px, 1fr))' : 'repeat(auto-fill, minmax(64px, 1fr))'))
 const meta = computed(() => {
   const v = d.value
   if (!v) return ''
@@ -78,6 +78,13 @@ const meta = computed(() => {
     .join(' · ')
 })
 const label = (n: number) => String(n).padStart(eps.value.length >= 100 ? 3 : 2, '0')
+function duration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '时长未知'
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor(seconds % 3600 / 60)
+  const s = String(Math.floor(seconds % 60)).padStart(2, '0')
+  return h ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`
+}
 
 /** 还没拿到详情时：先用卡片带上来的标题/海报撑住骨架 */
 const hint = computed(() => store.detailHint ?? {})
@@ -138,8 +145,8 @@ const descLong = computed(() => (d.value?.desc?.length ?? 0) > 150)
 
       <section class="card eps">
         <div class="eps-h">
-          <h2 class="h2s">{{ isMovie ? '版本' : `${collection || '正片'} ${eps.length} ${collection ? '条' : '集'}` }}</h2>
-          <span v-if="!isMovie" class="muted small">{{ collection ? '仅选择当前栏目 · 按住 Shift 可连选' : '预告已自动隐藏 · 按住 Shift 可连选' }}</span>
+          <h2 class="h2s">{{ isMovie ? '版本' : `${collection || '选集'} ${eps.length} 条` }}</h2>
+          <span v-if="!isMovie" class="muted small">{{ collection ? '仅选择当前栏目 · 按住 Shift 可连选' : '按标题和时长区分正片与片段 · 按住 Shift 可连选' }}</span>
           <div v-if="!isMovie && eps.length > 1" class="tools">
             <form class="range" @submit.prevent="applyRange">
               <label for="range" class="small dim">范围</label>
@@ -157,33 +164,38 @@ const descLong = computed(() => (d.value?.desc?.length ?? 0) > 150)
             @click="switchCollection(name)">{{ name }}</button>
         </div>
         <div v-if="!eps.length" class="empty">当前栏目没有返回可下载的视频</div>
-        <div v-else-if="isMovie" class="editions">
+        <p v-if="duplicateNumbers && !isMovie" class="muted small">同集号有多个条目，请按标题和时长确认。</p>
+        <div v-if="eps.length && isMovie" class="editions">
           <button
             v-for="(e, i) in eps"
             :key="e.vid"
             type="button"
             class="edition"
-            :class="{ on: picked.has(e.vid), detailed: !!collection }"
+            :class="{ on: picked.has(e.vid) }"
             :aria-pressed="picked.has(e.vid)"
+            :title="`${e.title || '正片'} · ${duration(e.duration)}`"
             @click="toggle(i, $event)"
           >
             <span class="box"><Icon v-if="picked.has(e.vid)" name="check" :size="14" :stroke="3" /></span>
             <span class="et">{{ e.title || '正片' }}</span>
-            <span v-if="e.duration" class="muted mono">{{ Math.round(e.duration / 60) }} 分钟</span>
+            <span class="muted mono">{{ duration(e.duration) }}</span>
           </button>
         </div>
-        <div v-else class="grid" :style="{ gridTemplateColumns: cols }">
+        <div v-if="eps.length && !isMovie" class="grid">
           <button
             v-for="(e, i) in eps"
             :key="e.vid"
             type="button"
-            class="ep mono"
-            :class="{ on: picked.has(e.vid), detailed: !!collection }"
+            class="ep"
+            :class="{ on: picked.has(e.vid) }"
             :aria-pressed="picked.has(e.vid)"
-            :title="e.title"
+            :aria-label="`第 ${e.number} 集，${e.title || '标题未提供'}，${duration(e.duration)}${e.collection ? `，栏目：${e.collection}` : ''}`"
+            :title="`${e.title || '标题未提供'} · ${duration(e.duration)}`"
             @click="toggle(i, $event)"
           >
-            <span>{{ label(e.number) }}</span><span v-if="collection" class="episode-title">{{ e.title }}</span>
+            <span class="episode-number mono">{{ label(e.number) }}</span>
+            <span class="episode-info"><span class="episode-title">{{ e.title || '标题未提供' }}</span><span class="episode-meta mono">{{ duration(e.duration) }}</span></span>
+            <Icon v-if="picked.has(e.vid)" class="episode-check" name="check" :size="14" :stroke="3" />
           </button>
         </div>
 
@@ -227,11 +239,15 @@ const descLong = computed(() => (d.value?.desc?.length ?? 0) > 150)
 .range:focus-within { border-color: var(--ink); }
 .range input { width: 80px; border: 0; outline: 0; font-size: 14px; background: transparent; }
 .collection-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
-.ep.detailed { height: auto; min-height: 62px; display: flex; gap: 10px; align-items: center; text-align: left; padding: 10px; }
-.episode-title { font-family: var(--font-body); font-size: 13px; line-height: 1.5; }
+.episode-number { font-size: 16px; font-weight: 700; flex-shrink: 0; }
+.episode-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.episode-title { font-size: 13px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.episode-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--ink-3); font-weight: 400; }
+.ep.on .episode-meta { color: var(--ink-2); }
+.episode-check { flex-shrink: 0; }
 /* 和整页一起滚：内层再套一个滚动区会让 sticky 底栏压住最后几行 */
-.grid { display: grid; gap: 8px; padding: 2px; }
-.ep { height: 40px; border-radius: 6px; border: 1.5px solid var(--line); background: var(--card); font-size: 14px; cursor: pointer; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); gap: 8px; padding: 2px; }
+.ep { min-height: 64px; padding: 8px 12px; display: flex; gap: 12px; align-items: center; text-align: left; border-radius: 6px; border: 1.5px solid var(--line); background: var(--card); cursor: pointer; min-width: 0; }
 .ep:hover { border-color: var(--ink); }
 .ep.on { background: var(--orange); border-color: var(--ink); font-weight: 700; }
 .editions { display: flex; flex-direction: column; gap: 8px; }

@@ -15,6 +15,7 @@ if (process.env.GVS_PROFILE_DIR) {
   app.setPath('userData', process.env.GVS_PROFILE_DIR)
   process.env.APPDATA = process.env.GVS_PROFILE_DIR
 }
+process.env.GVS_VERSION_RECORDS_PATH ||= join(app.getPath('userData'), 'actual-versions.jsonl')
 
 captureProxyEnv()
 patchGlobalWebSocket()
@@ -58,7 +59,7 @@ const api: { [K in keyof GvsApi]: (...args: Parameters<GvsApi[K]>) => unknown } 
   searchTargets: () => core.searchTargets(),
   searchProvider: (p, q) => core.searchProvider(p, q),
   detail: (p, id, hint) => core.detail(p, id, hint),
-  detailFromLink: (l) => core.detailFromLink(l),
+  detailFromLink: (l, hint) => core.detailFromLink(l, hint),
   probe: (p, eps) => core.probe(p, eps),
   namingPreview: (r) => core.namingPreview(r),
   tmdbSearch: (t, tv) => core.tmdbSearch(t, tv),

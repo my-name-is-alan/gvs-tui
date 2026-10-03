@@ -33,10 +33,13 @@ import { youkuSpokenLangKey } from '@tui/media.ts'
 import { filename, folder, sourceTag, tierHeight, dots, type Naming } from '@tui/name.ts'
 import { isDtsAudio } from '@tui/mp4box.ts'
 import { moviePlayables, probeOptions, qualityChoiceLabel, youkuEditionsFromDetail, youkuMoviePick } from '@tui/quality.ts'
+import { selectedTencentQuality } from '@tui/tencent-quality-selection.ts'
 import { runLog } from '@tui/runlog.ts'
 import { applyTencentLogin, pollTencentDualQR, tencentTVLoginInput } from '@tui/tencent-qr.ts'
 import { fetchTencentAccount, txAccountSummary, type TxAccount } from '@tui/tencent-account.ts'
 import { tmdbSearch } from '@tui/tmdb.ts'
+import { mediaKindFromMetadata, movieEdition } from '@tui/media-kind.ts'
+import { parseSeriesTitle, seriesSeason } from '@tui/series-title.ts'
 import { ensureTools, lookBundledFFmpeg, lookMP4Box, lookMkvmerge, lookM3u8dl } from '@tui/tools.ts'
 import { runTunnel } from '@tui/tunnel.ts'
 import { anyInt, asString, isObj } from '@tui/util.ts'
@@ -59,6 +62,7 @@ import {
   type BrowseResult,
   type Card,
   type DetailView,
+  type DetailHint,
   type EnqueueRequest,
   type EpisodeView,
   type JobView,
@@ -190,12 +194,12 @@ function pickTags(...srcs: Array<Record<string, unknown>>): string[] {
 }
 
 /** runtime.ts parseDetail + 海报 */
-function buildDetail(provider: Provider, id: string, data: Record<string, unknown>, fallbackTitle: string, eps: Episode[], hint?: { title?: string; poster?: string }): DetailView {
+function buildDetail(provider: Provider, id: string, data: Record<string, unknown>, fallbackTitle: string, eps: Episode[], hint?: DetailHint): DetailView {
   const raw = isObj(data.raw) ? data.raw : {}
   const show = isObj(data.show) ? data.show : {}
   const category = asString(data.category) || asString(raw.category) || asString(show.category)
   const list = Array.isArray(data.episodes) ? data.episodes : []
-  const kind: DetailView['kind'] = /电影/.test(category) ? 'movie' : 'show'
+  const kind = mediaKindFromMetadata(data) ?? hint?.mediaKind ?? 'show'
   return {
     provider,
     id,
@@ -888,7 +892,7 @@ export class Core {
 
   // ---------------------------------------------------------------- 详情
 
-  async detail(provider: Provider, id: string, hint?: { title?: string; poster?: string }): Promise<DetailView> {
+  async detail(provider: Provider, id: string, hint?: DetailHint): Promise<DetailView> {
     const input: Record<string, unknown> = isManifestProvider(provider) && id.startsWith('https://') ? { url: id } : { id }
     if (provider === 'hongguo') input.seriesId = id
     else if (provider === 'youku') {
@@ -905,8 +909,8 @@ export class Core {
     return view
   }
 
-  async detailFromLink(link: LinkTarget): Promise<DetailView> {
-    if (link.kind === 'mewatch' || link.kind === 'hamivideo') return this.detail(link.kind, link.url)
+  async detailFromLink(link: LinkTarget, hint?: DetailHint): Promise<DetailView> {
+    if (link.kind === 'mewatch' || link.kind === 'hamivideo') return this.detail(link.kind, link.url, hint)
     if (link.kind === 'youku') {
       let data: Record<string, unknown> = {}
       try {
@@ -918,7 +922,7 @@ export class Core {
       const sid = asString(data.showId) || asString(isObj(data.show) ? data.show.showId : '')
       if (sid) {
         try {
-          return await this.detail('youku', sid)
+          return await this.detail('youku', sid, hint)
         } catch {
           /* 回落到单视频 */
         }
@@ -934,19 +938,19 @@ export class Core {
       }
       const title = asString(data.title) || `优酷视频 ${link.vid}`
       const one: Episode = parseEps(data).find((e) => e.vid === link.vid) ?? { vid: link.vid, title, number: 1, selected: true }
-      return buildDetail('youku', link.vid, data, title, [one])
+      return buildDetail('youku', link.vid, data, title, [one], hint)
     }
     if (link.kind === 'tencent') {
       if (link.cid) {
-        const view = await this.detail('tencent', link.cid)
+        const view = await this.detail('tencent', link.cid, hint)
         view.focusVid = link.vid || undefined
         return view
       }
       const data = await this.invoke('tencent', 'resolve', link.url ? { url: link.url } : { vid: link.vid })
       const cid = asString(data.cid)
-      if (cid) return this.detail('tencent', cid)
+      if (cid) return this.detail('tencent', cid, hint)
       const title = asString(data.title) || '腾讯视频'
-      return buildDetail('tencent', link.vid, data, title, [{ vid: link.vid, title, number: 1, selected: true }])
+      return buildDetail('tencent', link.vid, data, title, [{ vid: link.vid, title, number: 1, selected: true }], hint)
     }
     throw new Error('没认出链接：支持优酷播放页和腾讯视频播放页')
   }
@@ -1045,7 +1049,11 @@ export class Core {
   async tmdbSearch(title: string, tv: boolean): Promise<TmdbHit[]> {
     if (!this.cfg.tmdbKey.trim()) return []
     const hits = await tmdbSearch(this.cfg.tmdbKey, this.cfg.tmdbLang, title)
-    return hits.filter((h) => h.kind === (tv ? 'show' : 'movie')).slice(0, 8).map((h) => ({ id: h.id, name: h.name || h.title, title: h.title, year: h.year, overview: h.overview ?? '' }))
+    // Prefer the platform's type, but keep the other type: incomplete metadata
+    // must not hide an exact movie match as if TMDB had no record.
+    const preferred = tv ? 'show' : 'movie'
+    return hits.sort((a, b) => Number(b.kind === preferred) - Number(a.kind === preferred))
+      .map((h) => ({ id: h.id, name: h.name || h.title, title: h.title, year: h.year, overview: h.overview ?? '', kind: h.kind }))
   }
 
   // ---------------------------------------------------------------- 入队
@@ -1056,7 +1064,7 @@ export class Core {
     if (!probe) throw new Error('画质信息已过期，请重新打开画质页')
     const q = probe.qualities[req.quality]
     if (!q) throw new Error('请选择画质')
-    const movie = req.detail.kind === 'movie'
+    const movie = (req.tmdb?.kind ?? req.detail.kind) === 'movie'
     // 与 TUI 一致：这一档自带音轨就用它的，否则用探测到的整体音轨（优酷各档都不单独带）
     const pool = q.audios?.length ? q.audios : probe.audios
     const tracks = selectAudioTracks(pool, req.audioIds, req.defaultAudioId)
@@ -1065,14 +1073,15 @@ export class Core {
       const t: DlTask = {
         provider: req.detail.provider,
         title: ep.title,
-        series: req.detail.title,
+        series: movie ? req.detail.title : parseSeriesTitle(req.detail.title).title,
         vid: ep.vid,
-        season: movie ? 0 : (ep.season || 1),
+        season: movie ? 0 : seriesSeason(ep.season, req.detail.title),
         episode: movie ? 0 : ep.number || i + 1,
         collection: ep.collection,
         height: 0,
         quality: q.stream || q.id,
         caption: q.caption,
+        tencentQuality: req.detail.provider === 'tencent' ? selectedTencentQuality(q) : undefined,
         group: this.cfg.releaseGroup,
         codec: q.codec || '',
         tmdbId: 0,
@@ -1080,7 +1089,7 @@ export class Core {
         year: req.detail.year,
         plot: '',
         kind: movie ? 'movie' : 'show',
-        edition: movie && ep.title && ep.title !== '正片' ? ep.title : '',
+        edition: movie ? movieEdition(ep.title, req.detail.title) : '',
         languages: ep.languages.filter((l) => l.vid).map((l) => ({ vid: l.vid, lang: l.lang })),
       }
       if (q.height > 0)
@@ -1178,6 +1187,7 @@ export class Core {
     const v = rec.view
     // 暂停/取消的收尾事件只带状态，不要把进度和日志清掉。
     if (!e.done) {
+      v.actualVersion = undefined
       v.status = e.status
       v.pct = e.pct
       v.log = e.log
@@ -1200,7 +1210,10 @@ export class Core {
       v.note = e.note ?? ''
       v.state = e.err ? 'failed' : 'done'
       v.finishedAt = Date.now()
-      if (!e.err) v.output = e.log
+      if (!e.err) {
+        v.output = e.log
+        v.actualVersion = e.actualVersion
+      }
       if (!e.err) this.emit.toast(`${v.groupTitle} ${v.label} 下载完成${v.note ? `：${v.note}` : ''}`, v.note ? 'warn' : 'ok')
     }
     this.pushJobs()
@@ -1305,7 +1318,10 @@ export class Core {
     // 只从列表移除时文件一律不动；勾了「同时删除」才删成品和工作目录。
     if (deleteFiles) {
       try {
-        if (rec.view.state === 'done' && rec.view.output && existsSync(rec.view.output)) rmSync(rec.view.output, { force: true })
+        if (rec.view.state === 'done' && rec.view.output) {
+          rmSync(rec.view.output, { force: true })
+          rmSync(`${rec.view.output}.gvs.json`, { force: true })
+        }
       } catch (e) {
         runLog(`remove output ${id} failed ${errText(e)}`)
       }

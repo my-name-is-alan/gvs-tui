@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { actualVersionDetail, actualVersionSummary } from '../../../../../src/lib/actual-version'
 import TencentDiagnostics from '../components/TencentDiagnostics.vue'
 import { computed, reactive, ref, watch } from 'vue'
 import type { JobView } from '@shared/api'
@@ -64,7 +65,7 @@ const groupStatus = (j: JobView) =>
 const base = (p: string) => p.split(/[\\/]/).pop() || p
 const sub = (j: JobView) =>
   j.state === 'failed' ? j.err
-  : j.state === 'done' ? `完成于 ${ago(j.finishedAt) || '刚刚'}${j.output ? ` · ${base(j.output)}` : ''}`
+  : j.state === 'done' ? base(j.output)
   : j.state === 'paused' ? '已暂停 · 继续后从断点接着下'
   : j.log || j.status
 const subTitle = (j: JobView) => (j.state === 'done' ? j.output : sub(j))
@@ -164,8 +165,12 @@ function removeGroup(ids: number[], deleteFiles: boolean) {
         <div v-for="j in jobsOf(g)" :key="j.id" class="job">
           <span class="mono lbl">{{ j.label }}</span>
           <div class="st">
-            <span class="stt" :class="j.state">{{ groupStatus(j) }}</span>
-            <span class="muted sub" :title="subTitle(j)">{{ sub(j) }}</span>
+            <div class="status-line">
+              <span class="stt" :class="j.state">{{ groupStatus(j) }}</span>
+              <span v-if="j.state === 'done'" class="muted completed-at">· {{ ago(j.finishedAt) || '刚刚' }}</span>
+            </div>
+            <span v-if="sub(j)" class="muted sub" :title="subTitle(j)">{{ sub(j) }}</span>
+            <span v-if="j.actualVersion && actualVersionSummary(j.actualVersion)" class="muted sub" :title="actualVersionDetail(j.actualVersion)">{{ actualVersionSummary(j.actualVersion) }}</span>
           </div>
           <div class="bar">
             <div class="progress" :class="barClass(j)"><div :style="{ width: pct(j) + '%' }" /></div>
@@ -237,10 +242,10 @@ function removeGroup(ids: number[], deleteFiles: boolean) {
 .small { font-size: 13px; }
 .grp { overflow: hidden; }
 .gh { min-height: 64px; padding: 10px 18px; display: flex; align-items: center; gap: 14px; }
-.gt { display: flex; flex-direction: column; gap: 3px; min-width: 0; max-width: 300px; }
+.gt { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
 .gtt { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 700; min-width: 0; }
 .gname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gbar { margin-left: auto; display: flex; align-items: center; gap: 12px; width: min(280px, 32%); }
+.gbar { margin-left: auto; display: flex; flex-shrink: 0; align-items: center; gap: 12px; width: min(280px, 32%); }
 .gbar .progress { flex-grow: 1; }
 .gbar span { flex-shrink: 0; }
 .ga { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
@@ -254,6 +259,8 @@ function removeGroup(ids: number[], deleteFiles: boolean) {
 .job:first-child { border-top: 0; }
 .lbl { font-size: 14px; font-weight: 500; }
 .st { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.status-line { display: flex; align-items: baseline; gap: 8px; }
+.completed-at { font-size: 12px; white-space: nowrap; }
 .stt { font-size: 14px; font-weight: 700; }
 .stt.done { color: var(--ok); }
 .stt.failed { color: var(--err); }

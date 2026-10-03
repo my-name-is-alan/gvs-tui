@@ -6,6 +6,7 @@
 // 这里的 `@tui/util.ts` 故意写成相对路径：bun test 不认 electron.vite 的
 // `@tui` 别名，而相对路径在打包时同样能解析。所以本文件不要引入其他 `@tui/*`。
 import { anyInt, isObj } from '../../../src/lib/util.ts'
+import { mediaKindFromMetadata } from '../../../src/lib/media-kind.ts'
 import type { Card, Provider } from '@shared/api'
 
 const str = (v: unknown) => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '')
@@ -191,6 +192,7 @@ export function toCards(provider: Provider, data: Record<string, unknown>): Card
       reason: reason || undefined,
       query: target === 'search' ? query || title : undefined,
       video: video || undefined,
+      mediaKind: mediaKindFromMetadata(raw),
     })
   }
   return out

@@ -1,4 +1,5 @@
 import type { TencentDiagnostic } from '../../../src/lib/diagnostic-types'
+import type { ActualVersion } from '../../../src/lib/actual-version'
 export type { TencentDiagnostic } from '../../../src/lib/diagnostic-types'
 import { PROVIDER_IDS, PROVIDER_LABELS } from '../../../src/lib/providers'
 // 主进程 ↔ 界面之间的契约。只放可序列化的纯数据。
@@ -79,7 +80,11 @@ export type Card = {
   query?: string
   /** 优酷单视频（id 是 vid 而非节目 id），走 detailFromLink */
   video?: boolean
+  /** Explicit movie/TV metadata from search/browse, retained when detail lacks it. */
+  mediaKind?: 'movie' | 'show'
 }
+
+export type DetailHint = { title?: string; poster?: string; mediaKind?: 'movie' | 'show' }
 
 /** channels：栏目里嵌的子频道（红果剧场的「真人剧」「漫剧」…），界面当成栏目标签 */
 export type BrowseResult = { cards: Card[]; channels: Section[]; more: boolean; next: string; notice: string }
@@ -158,7 +163,7 @@ export type ProbeResult = {
   warning: string
 }
 
-export type TmdbHit = { id: number; name: string; title: string; year: number; overview: string }
+export type TmdbHit = { id: number; name: string; title: string; year: number; overview: string; kind: 'movie' | 'show' }
 
 export type EnqueueRequest = {
   token: number
@@ -179,6 +184,7 @@ export type JobView = {
   poster: string
   label: string
   quality: string
+  actualVersion?: ActualVersion
   status: string
   pct: number
   log: string
@@ -227,8 +233,8 @@ export interface GvsApi {
   searchTargets(): Promise<Provider[]>
   searchProvider(provider: Provider, query: string): Promise<SearchGroup>
   /** hint：卡片上已有的标题/海报，详情接口没给时兜底 */
-  detail(provider: Provider, id: string, hint?: { title?: string; poster?: string }): Promise<DetailView>
-  detailFromLink(link: LinkTarget): Promise<DetailView>
+  detail(provider: Provider, id: string, hint?: DetailHint): Promise<DetailView>
+  detailFromLink(link: LinkTarget, hint?: DetailHint): Promise<DetailView>
   probe(provider: Provider, episodes: EpisodeView[]): Promise<ProbeResult>
   namingPreview(req: EnqueueRequest): Promise<NamingPreview>
   tmdbSearch(title: string, tv: boolean): Promise<TmdbHit[]>

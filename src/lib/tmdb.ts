@@ -1,6 +1,8 @@
 import { dots } from './name.ts'
-import { fetchRemote, normalizeHttpProxy } from './proxy.ts'
+import { fetchTmdb, normalizeHttpProxy } from './proxy.ts'
 import { runLog } from './runlog.ts'
+import { isObj } from './util.ts'
+import { parseSeriesTitle } from './series-title.ts'
 
 export type TmdbResult = {
   id: number
@@ -10,6 +12,14 @@ export type TmdbResult = {
   overview: string
   englishDots: string
   kind: 'movie' | 'show'
+}
+
+/** Details of the matched title, not the viewer's locale or the release region. */
+export type TmdbDetails = {
+  id: number
+  kind: 'movie' | 'show'
+  countries: string[]
+  originalLanguage: string
 }
 
 type SearchResponse = {
@@ -40,24 +50,20 @@ export function normalizeTmdbProxy(value: string): string {
 
 type TmdbRequestInit = RequestInit & { proxy?: string }
 type TmdbFetch = (url: string, init?: TmdbRequestInit) => Promise<Response>
-
-/** An explicitly configured TMDB proxy must not fall back to a direct request. */
-const fetchTmdb: TmdbFetch = (url, init) => init?.proxy ? fetch(url, init) : fetchRemote(url, init)
+type TmdbOptions = { proxy?: string }
 
 /** Both are TMDB API hosts. Keep the last reachable one first for this session. */
-export function createTmdbSearch(fetcher: TmdbFetch = fetchTmdb, timeoutMs = 10_000) {
+function createTmdbRequest(fetcher: TmdbFetch, timeoutMs: number) {
   let preferred = 'api.tmdb.org'
-  return async (apiKey: string, lang: string, query: string, options: { proxy?: string } = {}): Promise<TmdbResult[]> => {
+  return async <T>(apiKey: string, path: string, params: Record<string, string>, parse: (out: unknown) => T, options: TmdbOptions): Promise<T> => {
     const key = apiKey.trim().replace(/^Bearer\s+/i, '')
     if (!key) throw new Error('未配置 TMDB API Key')
-    if (!query.trim()) throw new Error('缺少用于 TMDB 搜索的片名')
     const proxy = normalizeTmdbProxy(options.proxy || '')
     const route = proxy ? 'proxy' : 'default'
     const hosts = [preferred, ...['api.tmdb.org', 'api.themoviedb.org'].filter(h => h !== preferred)]
     for (const host of hosts) {
-      // Missing platform categories must not lock a movie into the TV endpoint.
-      const url = new URL(`https://${host}/3/search/multi`)
-      url.search = new URLSearchParams({ language: lang || 'zh-CN', query: query.trim(), include_adult: 'false' }).toString()
+      const url = new URL(`https://${host}/3/${path}`)
+      url.search = new URLSearchParams(params).toString()
       const headers: Record<string, string> = { Accept: 'application/json' }
       if (key.includes('.')) headers.Authorization = `Bearer ${key}`
       else url.searchParams.set('api_key', key)
@@ -71,29 +77,14 @@ export function createTmdbSearch(fetcher: TmdbFetch = fetchTmdb, timeoutMs = 10_
           throw new TmdbHttpError(res.status)
         }
         // The timeout includes reading the body, not just receiving headers.
-        const out = await res.json() as SearchResponse
-        if (!Array.isArray(out.results)) throw new Error('invalid TMDB response')
+        const out = parse(await res.json())
         preferred = host
-        const rows = out.results.filter(h => h.media_type === 'movie' || h.media_type === 'tv').slice(0, 8)
-        runLog(`tmdb search host=${host} via=${route} ${Date.now() - started}ms ok candidates=${rows.length}`)
-        return rows.map((h) => {
-          const movie = h.media_type === 'movie'
-          const date = (movie ? h.release_date : h.first_air_date) || ''
-          const name = (movie ? h.title : h.name) || ''
-          return {
-            id: h.id,
-            name,
-            title: h.title || '',
-            year: Number.parseInt(date.slice(0, 4), 10) || 0,
-            overview: h.overview || '',
-            englishDots: dots(h.original_name || h.original_title || name),
-            kind: movie ? 'movie' : 'show',
-          }
-        })
+        runLog(`tmdb ${path} host=${host} via=${route} ${Date.now() - started}ms ok`)
+        return out
       } catch (e) {
         // Never log the request URL or raw fetch error: either can contain the key.
         const reason = e instanceof TmdbHttpError ? `http=${e.status}` : ac.signal.aborted ? 'timeout' : 'network-or-response'
-        runLog(`tmdb search host=${host} via=${route} ${Date.now() - started}ms fail ${reason}`)
+        runLog(`tmdb ${path} host=${host} via=${route} ${Date.now() - started}ms fail ${reason}`)
         if (e instanceof TmdbHttpError && e.status < 500) throw e
       } finally {
         clearTimeout(timer)
@@ -105,4 +96,70 @@ export function createTmdbSearch(fetcher: TmdbFetch = fetchTmdb, timeoutMs = 10_
   }
 }
 
+export function createTmdbSearch(fetcher: TmdbFetch = fetchTmdb, timeoutMs = 10_000) {
+  const request = createTmdbRequest(fetcher, timeoutMs)
+  return (apiKey: string, lang: string, query: string, options: TmdbOptions = {}): Promise<TmdbResult[]> => {
+    if (!query.trim()) return Promise.reject(new Error('缺少用于 TMDB 搜索的片名'))
+    // Missing platform categories must not lock a movie into the TV endpoint.
+    return request(apiKey, 'search/multi', { language: lang || 'zh-CN', query: parseSeriesTitle(query).title, include_adult: 'false' }, out => {
+      if (!isObj(out) || !Array.isArray(out.results)) throw new Error('invalid TMDB response')
+      const rows = (out as SearchResponse).results!.filter(h => h.media_type === 'movie' || h.media_type === 'tv').slice(0, 8)
+      return rows.map(h => {
+        const movie = h.media_type === 'movie'
+        const date = (movie ? h.release_date : h.first_air_date) || ''
+        const name = (movie ? h.title : h.name) || ''
+        return { id: h.id, name, title: h.title || '', year: Number.parseInt(date.slice(0, 4), 10) || 0,
+          overview: h.overview || '', englishDots: dots(h.original_name || h.original_title || name), kind: movie ? 'movie' : 'show' }
+      })
+    }, options)
+  }
+}
+
+/** Cancellation stops this caller's wait without aborting another episode's shared request. */
+function waitForDetails(promise: Promise<TmdbDetails>, signal?: AbortSignal): Promise<TmdbDetails> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(signal.reason)
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason) }
+    signal.addEventListener('abort', abort, { once: true })
+    promise.then(value => { signal.removeEventListener('abort', abort); resolve(value) }, error => { signal.removeEventListener('abort', abort); reject(error) })
+  })
+}
+
+/** One details request per matched title in a batch, including concurrent episodes. */
+export function createTmdbDetails(fetcher: TmdbFetch = fetchTmdb, timeoutMs = 10_000) {
+  const request = createTmdbRequest(fetcher, timeoutMs)
+  const cache = new Map<string, { expires: number; promise: Promise<TmdbDetails> }>()
+  return (apiKey: string, kind: 'movie' | 'show', id: number, options: TmdbOptions & { signal?: AbortSignal } = {}): Promise<TmdbDetails> => {
+    if (options.signal?.aborted) return Promise.reject(options.signal.reason)
+    if (!Number.isSafeInteger(id) || id <= 0) return Promise.reject(new Error('无效的 TMDB ID'))
+    const key = JSON.stringify([apiKey.trim(), kind, id, options.proxy || ''])
+    const hit = cache.get(key)
+    if (hit && hit.expires > Date.now()) return waitForDetails(hit.promise, options.signal)
+    const promise = request(apiKey, `${kind === 'movie' ? 'movie' : 'tv'}/${id}`, {}, out => {
+      if (!isObj(out) || out.id !== id) throw new Error('invalid TMDB details')
+      // TV origin_country describes where the show originated; production countries
+      // are the fallback for older/incomplete TV records and the movie API.
+      const origin = Array.isArray(out.origin_country) ? out.origin_country : []
+      const production = Array.isArray(out.production_countries) ? out.production_countries.filter(isObj).map(c => c.iso_3166_1) : []
+      const countries = (kind === 'show' && origin.length ? origin : production)
+        .filter((c): c is string => typeof c === 'string' && /^[a-z]{2}$/i.test(c)).map(c => c.toUpperCase())
+      return { id, kind, countries: [...new Set(countries)], originalLanguage: typeof out.original_language === 'string' ? out.original_language.toLowerCase() : '' }
+    }, options).then(value => {
+      entry.expires = Date.now() + 60 * 60_000
+      return value
+    }, error => {
+      // Avoid repeated timeouts for every episode; a retry can recover shortly.
+      entry.expires = Date.now() + 30_000
+      throw error
+    })
+    const entry = { expires: Infinity, promise }
+    cache.delete(key)
+    cache.set(key, entry)
+    if (cache.size > 128) cache.delete(cache.keys().next().value!)
+    return waitForDetails(entry.promise, options.signal)
+  }
+}
+
 export const tmdbSearch = createTmdbSearch()
+export const tmdbDetails = createTmdbDetails()

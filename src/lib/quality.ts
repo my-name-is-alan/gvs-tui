@@ -9,6 +9,8 @@ import { hongguoResolveInput } from './hongguo.ts'
 import { huangguoResolveInput, huangguoStreamOptions } from './huangguo.ts'
 import { tencentPlayInput } from './tencent-qr.ts'
 import { runLog } from './runlog.ts'
+import { tencentSelectedPlayInput, tencentPersonaKey } from './tencent-quality-selection.ts'
+export { tencentPersonaKey } from './tencent-quality-selection.ts'
 
 export type StreamOptions = { qualities: Quality[]; audios: Audio[]; vip?: VipProbe }
 
@@ -390,11 +392,6 @@ export const TENCENT_HEVC_FPS_ENCODE_TAGS: Readonly<Record<string, string>> = {
   '5741917771647': 'HEVC·D',
   '61111111016223': 'HEVC·E',
   '2741527771647': 'HEVC·F',
-}
-
-/** Strip soft/hard / 软/硬 suffix → persona encode key. */
-export function tencentPersonaKey(persona: string): string {
-  return persona.trim().replace(/_(?:软|硬|soft|hard)$/i, '')
 }
 
 /** Map persona → short Chinese/ASCII encode tag (empty for main-ladder personas). */
@@ -837,19 +834,7 @@ async function probeTencent(cli: GwClient, cfg: FileConfig, vid: string): Promis
 }
 
 /** Build play params for a selected Tencent quality / pending task. */
-export function tencentPlayQualityInput(q: {
-  quality?: string
-  stream?: string
-  caption?: string
-  group?: string
-}): Record<string, string> {
-  const stream = (q.stream || q.quality || 'fhd').trim()
-  const out: Record<string, string> = {}
-  out.defn = stream.includes('|') ? stream.split('|')[0]! : stream
-  const cap = (q.caption || '').toLowerCase()
-  if (cap === 'soft' || cap === 'hard') out.caption = cap
-  return out
-}
+export const tencentPlayQualityInput = tencentSelectedPlayInput
 
 function hongguoCodec(value: unknown): string {
  const codec = asString(value).toLowerCase()

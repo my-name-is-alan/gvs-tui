@@ -7,6 +7,7 @@ import { ensureFFmpeg } from './tools.ts'
 import { firstPresentationMs, relativePresentationStarts, isEac3ProbeError, dropFirstAudioPacket } from './media-timing.ts'
 import { moveFileSync } from './file-move.ts'
 import { removeScratch, scratchDir } from './scratch.ts'
+import { isUnknownAudioLanguage, resolveAudioLanguage } from './audio-language.ts'
 
 type Phase = { out: string; inputs?: string[]; cb?: (n: number, total: number) => void }
 
@@ -58,18 +59,32 @@ export function mkvLang(lang: string): string {
   if (/^(chi|zho|zh|cmn|普通话|国语|中文)$/.test(s)) return 'chi'
   if (/^(jpn|ja|日语|日本)$/.test(s)) return 'jpn'
   if (/粤/.test(s) || s === 'yue') return 'yue'
-  if (/^[a-z]{3}$/.test(s)) return s
+  if (/^(nan|闽南|闽南语)$/.test(s)) return 'nan'
+  // Common BCP 47 and two-letter labels returned by providers/source containers.
+  const code = s.split(/[-_]/)[0]!
+  const iso: Record<string, string> = { zh: 'chi', en: 'eng', ja: 'jpn', ko: 'kor', fr: 'fre', de: 'ger', es: 'spa', it: 'ita', pt: 'por', ru: 'rus', th: 'tha', vi: 'vie', id: 'ind' }
+  if (iso[code]) return iso[code]!
+  if (/^[a-z]{3}$/.test(code)) return code
   return 'und'
 }
 
-export function mkvmergeRemux(
+export async function mkvmergeRemux(
   mkvmerge: string,
   inPath: string,
   outPath: string,
   onProgress?: (n: number, total: number) => void,
   signal?: AbortSignal,
+  audioLanguageFallback = '',
 ): Promise<void> {
-  return run(mkvmerge, ['-o', outPath, inPath], { out: outPath, inputs: [inPath], cb: onProgress }, signal)
+  const args = ['-o', outPath]
+  if (audioLanguageFallback) {
+    const info = await identify(mkvmerge, inPath, signal)
+    for (const track of info.tracks.filter(t => t.type === 'audio')) {
+      if (isUnknownAudioLanguage(trackLanguage(track))) args.push('--language', `${track.id}:${audioLanguageFallback}`)
+    }
+  }
+  args.push(inPath)
+  return run(mkvmerge, args, { out: outPath, inputs: [inPath], cb: onProgress }, signal)
 }
 
 /**
@@ -105,6 +120,7 @@ export async function mkvmergeMux(
   onProgress?: (n: number, total: number) => void,
   signal?: AbortSignal,
   onWarning?: (message: string) => void,
+  audioLanguageFallback = '',
 ): Promise<void> {
   const ffmpeg = await ensureFFmpeg()
   const report: Record<string, unknown> = { version: 1, video: videoPath, audio: audios.map(a => ({ path: a.path, delayMs: a.delayMs ?? 0 })) }
@@ -112,6 +128,21 @@ export async function mkvmergeMux(
   try {
     work = scratchDir(outPath, 'gvs-mux-')
     audios = audios.map(a => ({ ...a }))
+    // Catalog "原声" is not a language. Preserve meaningful input tags before
+    // applying the TMDB fallback, and do this before any damaged-frame repair.
+    await Promise.all(audios.map(async a => {
+      if (!isUnknownAudioLanguage(a.lang)) return
+      try {
+        const info = await identify(mkvmerge, a.path, signal)
+        const track = info.tracks.find(t => t.type === 'audio')
+        a.lang = resolveAudioLanguage(a.lang, track && trackLanguage(track), audioLanguageFallback)
+      } catch (e) {
+        signal?.throwIfAborted()
+        // Language inspection alone must not disable an otherwise usable input.
+        a.lang = 'und'
+        onWarning?.('未能读取源音轨语言，保留未知标签')
+      }
+    }))
     const repairs: Array<{ track: number; message: string }> = []
     const [sourceVideoMs, ...sourceAudioMs] = await Promise.all([
       firstPresentationMs(ffmpeg, videoPath, 'v:0', signal),
@@ -152,7 +183,7 @@ export async function mkvmergeMux(
     Object.assign(report, { initialStartsMs: initialStarts, correctionsMs: corrections })
     let result = initial
     if (corrections.some(n => Math.abs(n) > 2)) {
-      const info = await identify(mkvmerge, initial)
+      const info = await identify(mkvmerge, initial, signal)
       const videoTracks = info.tracks.filter(t => t.type === 'video')
       const audioTracks = info.tracks.filter(t => t.type === 'audio')
       if (videoTracks.length !== 1 || audioTracks.length !== audios.length) throw new Error('封装轨道数量与选择不符')
@@ -179,15 +210,23 @@ export async function mkvmergeMux(
   }
 }
 
-async function identify(bin: string, path: string): Promise<{ tracks: Array<{ id: number; type: string }> }> {
+type IdentifiedTrack = { id: number; type: string; properties?: { language?: string; language_ietf?: string } }
+
+function trackLanguage(track: IdentifiedTrack): string {
+  const { language_ietf, language } = track.properties ?? {}
+  return !isUnknownAudioLanguage(language_ietf) ? language_ietf! : language ?? ''
+}
+
+async function identify(bin: string, path: string, signal?: AbortSignal): Promise<{ tracks: IdentifiedTrack[] }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, ['-J', path], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(bin, ['-J', path], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], signal })
     let out = '', err = ''
     child.stdout.on('data', b => { out += b })
     child.stderr.on('data', b => { err += b })
     child.once('error', reject)
     child.once('close', code => {
-      try { if (code !== 0) throw new Error(`mkvmerge 轨道识别失败: ${err}`); resolve(JSON.parse(out)) } catch (e) { reject(e) }
+      if (signal?.aborted) { reject(signal.reason); return }
+      try { if (code !== 0 && code !== 1) throw new Error(`mkvmerge 轨道识别失败: ${err}`); resolve(JSON.parse(out)) } catch (e) { reject(e) }
     })
   })
 }

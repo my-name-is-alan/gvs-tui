@@ -43,10 +43,20 @@ describe('short-drama folders', () => {
     })
   }
 
-  test('regular show and movie layouts keep their existing naming', () => {
-    expect(folder(movie({ kind: 'show' }), 'downloads')).toBe(join('downloads', 'District.9.2009', 'Season 01'))
-    expect(folder(movie(), 'downloads')).toBe(join('downloads', 'District.9.2009'))
+  test('regular show and movie folders use the display title and parenthesized year', () => {
+    expect(folder(movie({ kind: 'show' }), 'downloads')).toBe(join('downloads', '第九区 (2009)', 'Season 01'))
+    expect(folder(movie(), 'downloads')).toBe(join('downloads', '第九区 (2009)'))
   })
+})
+
+test('TMDB folders retain the readable title, year and ID above the correct season', () => {
+  const naming = movie({ kind: 'show', title: '妾本草芥', nameDots: '妾本草芥', year: 2026, tmdbId: 335218 })
+  expect(folder(naming, '/downloads')).toBe(join('/downloads', '妾本草芥 (2026) {tmdb-335218}', 'Season 01'))
+  expect(folder({ ...naming, season: 2 }, '/downloads')).toBe(join('/downloads', '妾本草芥 (2026) {tmdb-335218}', 'Season 02'))
+  expect(folder({ ...naming, kind: 'movie' }, '/downloads')).toBe(join('/downloads', '妾本草芥 (2026) {tmdb-335218}'))
+  expect(folder({ ...naming, title: 'Some Show: A/B', nameDots: 'Some.Show.A.B' }, '/downloads'))
+    .toBe(join('/downloads', 'Some Show_ A_B (2026) {tmdb-335218}', 'Season 01'))
+  expect(folder({ ...naming, year: 0, tmdbId: 0 }, '/downloads')).toBe(join('/downloads', '妾本草芥', 'Season 01'))
 })
 
 test('episode title follows SxxExx and preserves the technical filename suffix', () => {

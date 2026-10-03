@@ -350,6 +350,25 @@ test('youku multi-ep applyOptions rebinds probe audio vids onto each episode', a
   expect(internal.pending[0].audioTracks).not.toBe(internal.pending[1].audioTracks)
 })
 
+test('Tencent batch selection retains distinct rendition IDs and personas in every task', async () => {
+  const r = await start(); const internal = r as any
+  internal.detailProv = 'tencent'
+  internal.qualities = [{ id: 'suhd|hard|322157|2741517771455_硬', stream: 'suhd', caption: 'hard', formatId: '322157', persona: '2741517771455_硬', group: 'encode', label: 'HEVC·A', title: 'suhd', width: 3840, height: 1636, size: 1128670539, codec: '4', drm: '' }]
+  internal.qIdx = 0; internal.audios = []
+  internal.pending = [{ provider: 'tencent', vid: 'one' }, { provider: 'tencent', vid: 'two' }]
+  internal.applyOptions()
+  expect(internal.pending.map((t: any) => t.tencentQuality)).toEqual([
+    { formatId: '322157', persona: '2741517771455_硬', group: 'encode' },
+    { formatId: '322157', persona: '2741517771455_硬', group: 'encode' },
+  ])
+  expect(internal.pending[0].group).toBe(internal.cfg.releaseGroup)
+  expect(internal.pending[0].tencentQuality).not.toBe(internal.pending[1].tencentQuality)
+  internal.qualities[0] = { ...internal.qualities[0], id: 'suhd|soft|322093|default_软', formatId: '322093', persona: 'default_软', caption: 'soft' }
+  internal.applyOptions()
+  expect(internal.pending[0].tencentQuality.formatId).toBe('322093')
+  expect(internal.pending[0].caption).toBe('soft')
+})
+
 
 test('Tab cycles platforms on search scene (youku→tencent→hongguo)', async () => {
   const r = await start()
@@ -481,6 +500,30 @@ test('new provider settings and single Hami scope are visible without inventing 
  x.keyInfo={all:true,scope:[]};x.emit()
  expect(x.settingFields()).toContain('mewatch 激活')
  expect(x.settingFields()).toContain('腾讯诊断日志')
+})
+
+test('a second-season detail keeps S02 and episode numbers with and without a TMDB match', async () => {
+  const r = await start()
+  const internal = r as any
+  internal.detailProv = 'tencent'
+  internal.cli.invoke = async () => ({ title: '大王饶命 第2季', year: 2023,
+    episodes: [{ vid: 'season2-ep1', title: '第1集', number: 1 }, { vid: 'season2-ep2', title: '第2集', number: 2 }] })
+  await internal.detail('tencent', 'season2')
+  r.handleKey('a')
+  r.handleKey('enter')
+  expect(internal.pending.map((t: any) => [t.series, t.season, t.episode])).toEqual([
+    ['大王饶命', 2, 1], ['大王饶命', 2, 2],
+  ])
+  internal.scene = 'tmdb'
+  r.handleKey('s')
+  expect(r.snapshot.confirmation?.name).toContain('S02E01')
+  expect(r.snapshot.confirmation?.name).not.toContain('第2季')
+  internal.scene = 'tmdb'
+  internal.tmdbHits = [{ id: 146339, name: '大王饶命', title: '', year: 2021, kind: 'show' }]
+  r.handleKey('enter')
+  expect(r.snapshot.confirmation?.name).toContain('S02E01')
+  expect(internal.pending.every((t: any) => t.tmdbId === 146339 && t.season === 2)).toBe(true)
+  expect(folder({ ...internal.pending[0], container: 'mkv' }, '/downloads')).toEndWith('Season 02')
 })
 
 test('TMDB movie selection fixes a Tencent detail without category and removes episode naming', async () => {
@@ -721,14 +764,14 @@ test('batch episode titles survive TMDB matching and share preview and download 
   r.handleKey('a')
   r.handleKey('enter')
   r.handleKey('enter')
-  expect(r.snapshot.confirmation?.name).toContain('.S01E01.名场面特辑.狼人有救了.')
+  expect(r.snapshot.confirmation?.name).toContain('.S03E01.名场面特辑.狼人有救了.')
   internal.scene = 'tmdb'
   internal.tmdbHits = [{ id: 123, name: '现在就出发', title: '现在就出发', year: 2026, kind: 'show' }]
   r.handleKey('enter')
   const tasks = internal.pending
   const names = tasks.map((task: any) => filename(jobNaming(task, internal.cfg)))
-  expect(names[0]).toContain('现在就出发.S01E01.名场面特辑.狼人有救了.2026.')
-  expect(names[1]).toContain('现在就出发.S01E02.加更篇.一起出发.2026.')
+  expect(names[0]).toContain('现在就出发.S03E01.名场面特辑.狼人有救了.2026.')
+  expect(names[1]).toContain('现在就出发.S03E02.加更篇.一起出发.2026.')
   expect(r.snapshot.confirmation?.name).toBe(names[0])
   expect(r.snapshot.confirmation?.directory).toBe(folder(jobNaming(tasks[0], internal.cfg), internal.cfg.outDir))
   r.handleKey('enter')
