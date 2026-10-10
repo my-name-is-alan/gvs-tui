@@ -2,7 +2,7 @@
   "name": "gvs-desktop",
   "productName": "GVS",
   "private": true,
-  "version": "0.1.38",
+  "version": "0.1.39",
   "description": "GVS 桌面端：多平台搜索与本机下载",
   "main": "out/main/index.js",
   "scripts": {
