@@ -20,16 +20,35 @@ import { fetchMediaProbe } from './proxy.ts'
 import { usesMeasuredNaming } from './completed-naming.ts'
 import { muxIQ } from './iq-mux.ts'
 import { selectIQSubtitles, type IQSubtitleFile } from './iq-subtitles.ts'
+import { isUnknownAudioLanguage } from './audio-language.ts'
+
+/** IQ's default track identifies the source-preferred language, not its codec tier. */
+function iqAudioLanguage(row: Record<string, unknown>): string {
+  const language = asString(row.language).trim().toLowerCase()
+  if (!isUnknownAudioLanguage(language)) return `code:${language}`
+  const lid = Number(row.lid)
+  if (Number.isInteger(lid) && lid > 0) return `lid:${lid}`
+  const name = asString(row.lang).trim().toLowerCase()
+  return isUnknownAudioLanguage(name) ? '' : `name:${name}`
+}
 
 export function iqOptions(data: Record<string, unknown>): { qualities: Quality[]; audios: Audio[] } {
   const formats = Array.isArray(data.formats) ? data.formats.filter(isObj) : []
-  const tracks = Array.isArray(data.audios) ? data.audios.filter(isObj) : []
+  const tracks = (Array.isArray(data.audios) ? data.audios.filter(isObj) : []).filter(a => asString(a.id))
   const qualities = formats.map(f => {
     const width = Number(f.width) || 0, height = Number(f.height) || 0, tier = tierHeight(width,height)
     const label = tier >= 2160 ? '4K' : tier ? `${tier}P` : asString(f.label)
     return { id: asString(f.id), label, title: `IQ TV · ${asString(f.codec).toUpperCase()}`, size: Number(f.size) || 0, width, height, codec: asString(f.codec), drm: Number(f.drm) === 5 ? 'IQ BBTS' : 'none', stream: asString(f.id), fps: Number(f.fps) || 25, tier }
   }).filter(f => f.id)
-  const audios = tracks.map(a => ({ id: asString(a.id), label: asString(a.label), lang: asString(a.lang), codec: asString(a.codec), isDefault: a.default === true, selected: a.default === true, embedded: false })).filter(a => a.id)
+  const preferred = tracks.find(a => a.default === true)
+  const languages = new Set(tracks.map(iqAudioLanguage).filter(Boolean))
+  // Select every codec of the platform default language, never every dub.
+  // With no default, a single known language is safe; otherwise retain just
+  // one source track for manual confirmation rather than guessing by country.
+  const initial = preferred ?? tracks[0]
+  const mainLanguage = preferred ? iqAudioLanguage(preferred) : languages.size === 1 ? [...languages][0]! : ''
+  const audios = tracks.map(a => ({ id: asString(a.id), label: asString(a.label), lang: asString(a.lang), codec: asString(a.codec), isDefault: a.default === true,
+    selected: mainLanguage ? iqAudioLanguage(a) === mainLanguage : a === initial, embedded: false }))
   return { qualities, audios }
 }
 

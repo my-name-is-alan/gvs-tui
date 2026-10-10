@@ -1,8 +1,9 @@
 import type { TmdbSeason } from './lib/tmdb-types'
 import type { TencentPlayParams } from './lib/tencent-edition-types'
 export type { TencentPlayParams } from './lib/tencent-edition-types'
+import type { CompletedMedia } from './lib/actual-version'
 
-export type Job = { id: number; title: string; status: string; pct: number; log: string; err: string; note?: string; phase?: string }
+export type Job = { id: number; title: string; status: string; pct: number; log: string; err: string; note?: string; phase?: string; completedMedia?: CompletedMedia }
 export type Row = {
   title: string
   id: string
@@ -35,6 +36,8 @@ export type Episode = {
 export type TMDBHit = { id: number; name: string; title: string; year: number; overview?: string; kind: 'movie' | 'show' }
 /** Tencent rendition identity; separate from the release-group suffix in file names. */
 export type TencentQualitySelection = { formatId?: string; persona?: string; captionProbe?: string; group?: 'main' | 'encode' | 'source'; width?: number; height?: number; fps?: number; hdr?: string }
+/** Domestic video IDs belong to one episode; retain stable attributes for batch matching. */
+export type IQCNQualitySelection = { sourceTvid: string; codecCode?: number; dynamicRangeCode?: number }
 export type Quality = {
   id: string
   label: string
@@ -48,6 +51,8 @@ export type Quality = {
   audios?: Audio[]
   /** soft | hard — 腾讯 TV caption */
   caption?: string
+  /** Requested Tencent subtitle mode; does not confirm the delivered video's subtitles. */
+  captionProbe?: 'soft' | 'hard'
   /** hdr | hdr10 | sdr — 腾讯 fi 动态范围（MAX+ / HDR10 / 臻彩 MAX·SDR） */
   hdr?: string
   fps?: number
@@ -61,6 +66,7 @@ export type Quality = {
   persona?: string
   /** Short encode label derived from persona (默认 / H264 / HEVC·A …). */
   encodeTag?: string
+  iqcnQuality?: IQCNQualitySelection
 }
 /** Selectable audio track (only some platforms expose more than one). */
 export type Audio = { id: string; label: string; lang: string; codec: string; isDefault: boolean; selected: boolean; embedded?: boolean; vid?: string; url?: string }

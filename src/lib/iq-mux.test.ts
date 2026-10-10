@@ -64,12 +64,12 @@ test('IQ puts preferred simplified then traditional subtitles first, preserving 
   expect(orderedIQSubtitles([])).toEqual([])
 })
 
-realMediaTest('IQ mux respects a manually selected second default and publishes measured naming from a reserved path', async () => {
+realMediaTest('IQ mux moves the selected default first and publishes measured naming from a reserved path', async () => {
   const root = mkdtempSync(join(tmpdir(), 'gvs-iq-mux-'))
   try {
-    const video = join(root, 'video.mkv'), aac = join(root, 'aac.m4a'), ddp = join(root, 'ddp.m4a'), sub = join(root, 'sub.srt')
+    const video = join(root, 'video.mkv'), aac = join(root, 'aac.mka'), ddp = join(root, 'ddp.m4a'), sub = join(root, 'sub.srt')
     ff(['-f', 'lavfi', '-i', 'testsrc2=size=64x48:rate=25', '-t', '0.3', '-c:v', 'mpeg4', video])
-    ff(['-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-t', '0.3', '-c:a', 'aac', aac])
+    ff(['-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000', '-t', '0.3', '-c:a', 'aac', '-metadata:s:a:0', 'title=普通话 · AAC', aac])
     ff(['-f', 'lavfi', '-i', 'anullsrc=channel_layout=5.1:sample_rate=48000', '-t', '0.3', '-c:a', 'eac3', '-f', 'mp4', ddp])
     writeFileSync(sub, '1\n00:00:00,000 --> 00:00:00,200\n字幕\n')
     const dest = reserveOutputPath(join(root, 'provisional.mkv'))
@@ -77,13 +77,18 @@ realMediaTest('IQ mux respects a manually selected second default and publishes 
       audios: [{ path: aac, language: 'zho', title: 'AAC' }, { path: ddp, language: 'zho', title: 'Dolby', isDefault: true }],
       subtitles: [{ path: sub, language: 'zho', title: '中文' }] }
     const muxAudio = await muxIQ('ffmpeg', options)
-    expect(muxAudio).toEqual({ index: 1, count: 2 })
+    expect(muxAudio).toEqual({ index: 0, count: 2 })
     expect(statSync(dest).size).toBeGreaterThan(0)
     expect(readdirSync(root).some(file => file.startsWith('.gvs-iq-mux-'))).toBe(false)
-    expect((await probeFinishedMedia(dest)).audio).toMatchObject({ status: 'confirmed', index: 1, codec: 'eac3', channels: 6 })
+    expect((await probeFinishedMedia(dest)).audio).toMatchObject({ status: 'confirmed', index: 0, codec: 'eac3', channels: 6 })
     const streams = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_streams', '-of', 'json', dest],
       { encoding: 'utf8', timeout: 10000 })).streams
     expect(streams.filter((s: { codec_type: string }) => s.codec_type === 'audio')).toHaveLength(2)
+    const audios = streams.filter((s: { codec_type: string }) => s.codec_type === 'audio')
+    expect(audios.every((s: { tags?: { title?: string } }) => !s.tags?.title)).toBe(true)
+    expect(audios.map((s: { tags: { language: string } }) => s.tags.language)).toEqual(['zho', 'zho'])
+    expect(audios.map((s: { codec_name: string }) => s.codec_name)).toEqual(['eac3', 'aac'])
+    expect(audios.map((s: { disposition: { default: number } }) => s.disposition.default)).toEqual([1, 0])
     expect(streams.filter((s: { codec_type: string }) => s.codec_type === 'subtitle')).toHaveLength(1)
     const named = await finalizeCompletedName(dest, { kind: 'show', title: '海外节目', nameDots: '', year: 2026,
       season: 0, episode: 298, episodeTitle: '特别篇', height: 2160, codec: 'HEVC', source: sourceTag('iq'),
@@ -94,7 +99,9 @@ realMediaTest('IQ mux respects a manually selected second default and publishes 
     expect(basename(named.output)).not.toMatch(/2160p|HEVC|HQ|MAXPLUS|25fps/)
 
     const aacDest = reserveOutputPath(join(root, 'default-aac.mkv'))
-    await muxIQ('ffmpeg', { ...options, dest: aacDest, audios: options.audios.map((a, i) => ({ ...a, isDefault: i === 0 })) })
+    await muxIQ('ffmpeg', { ...options, dest: aacDest, audios: [
+      { ...options.audios[1]!, isDefault: false }, { ...options.audios[0]!, isDefault: true },
+    ] })
     expect((await probeFinishedMedia(aacDest)).audio).toMatchObject({ index: 0, codec: 'aac', channels: 2 })
 
     // Publication refuses a reservation modified during mux/validation.
@@ -157,7 +164,7 @@ realMediaTest('IQ mux puts simplified and traditional subtitles first with corre
     await muxIQ('ffmpeg', { video, audios, subtitles: subtitles.filter(s => !s.title.includes('简体')),
       dest: legacy, reservedOutput: false, emit: () => {} })
     const legacySubs = probe(legacy).filter((s: { codec_type: string }) => s.codec_type === 'subtitle')
-    expect(legacySubs.map((s: { tags: { title: string } }) => s.tags.title)).toEqual(['简体中文 (OpenCC 转换)', '繁体中文', '英语'])
+    expect(legacySubs.map((s: { tags: { title: string } }) => s.tags.title)).toEqual(['简体中文', '繁体中文', '英语'])
     expect(legacySubs.map((s: { disposition: { default: number } }) => s.disposition.default)).toEqual([1, 0, 0])
     const convertedText = execFileSync('ffmpeg', ['-nostdin', '-v', 'error', '-i', legacy, '-map', '0:s:0', '-f', 'srt', '-'],
       { encoding: 'utf8', timeout: 10000 })
@@ -197,11 +204,11 @@ realMediaTest('IQ final MKV contains an OpenCC Chinese pair, excludes AI alterna
     writeFileSync(eng, '1\n00:00:00,000 --> 00:00:00,200\nEnglish subtitle\n\n')
     const cases = [
       { name: 'normal-sc', source: { path: sc, language: 'zh-Hans', title: '简体中文' },
-        titles: ['简体中文', '繁体中文 (OpenCC 转换)', '英语'], texts: ['汉语与音乐 后台发表', '漢語與音樂 後臺發表'] },
+        titles: ['简体中文', '繁体中文', '英语'], texts: ['汉语与音乐 后台发表', '漢語與音樂 後臺發表'] },
       { name: 'normal-tc', source: { path: tc, language: 'zh-Hant', title: '繁体中文' },
-        titles: ['简体中文 (OpenCC 转换)', '繁体中文', '英语'], texts: ['汉语与音乐 后台发表', '漢語與音樂 後臺發表'] },
+        titles: ['简体中文', '繁体中文', '英语'], texts: ['汉语与音乐 后台发表', '漢語與音樂 後臺發表'] },
       { name: 'ai-only', source: { path: sc, language: 'zh-Hans', title: '简体中文', ai: true },
-        titles: ['简体中文 (AI)', '繁体中文 (AI · OpenCC 转换)', '英语'], texts: ['汉语与音乐 后台发表', '漢語與音樂 後臺發表'] },
+        titles: ['简体中文 (AI)', '繁体中文 (AI)', '英语'], texts: ['汉语与音乐 后台发表', '漢語與音樂 後臺發表'] },
     ]
     for (const scenario of cases) {
       const subtitles = [{ path: eng, language: 'eng', title: '英语' },

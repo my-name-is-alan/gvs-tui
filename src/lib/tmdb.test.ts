@@ -34,6 +34,21 @@ test('an empty final-season search falls back to the base show, but an exact tit
   expect(calls).toBe(1)
 })
 
+test('annual titles fall back to their parent show only after an empty search and retain an exact full-title match', async () => {
+  const queries: string[] = []
+  const search = createTmdbSearch(async url => {
+    const query = new URL(url).searchParams.get('query')!
+    queries.push(query)
+    return Response.json({ results: query === '逆天邪神' ? [{ id: 235643, media_type: 'tv', name: '逆天邪神', first_air_date: '2023-09-23' }] : [] })
+  })
+  expect((await search('key', 'zh-CN', '逆天邪神年番'))[0]).toMatchObject({ id: 235643, name: '逆天邪神', year: 2023, kind: 'show' })
+  expect(queries).toEqual(['逆天邪神年番', '逆天邪神'])
+  let calls = 0
+  const exact = createTmdbSearch(async () => { calls++; return Response.json({ results: [{ id: 12, media_type: 'tv', name: '某剧年番' }] }) })
+  expect((await exact('key', 'zh-CN', '某剧年番'))[0]?.name).toBe('某剧年番')
+  expect(calls).toBe(1)
+})
+
 test('TMDB seasons retain S00, validate rows, sort by number and share concurrent requests', async () => {
   let calls = 0
   const seasons = createTmdbSeasons(async (url, init) => {
@@ -94,6 +109,79 @@ test('searches movies and TV together, excludes people, and retains their distin
   expect(hits.map(h => [h.kind, h.name, h.year])).toEqual([
     ['movie', '追凶者也', 2016], ['show', '灵境行者', 2026],
   ])
+})
+
+test('each search bypasses cached responses, retaining exact new entries without a release date', async () => {
+  let calls = 0
+  const search = createTmdbSearch(async (url, init) => {
+    expect(init?.cache).toBe('no-store')
+    calls++
+    if (new URL(url).pathname.endsWith('/search/movie')) return Response.json({ results: [] })
+    return Response.json({ results: calls === 1 ? [] : [{ id: 1793262, media_type: 'movie', title: '捉妖天师', release_date: '' }] })
+  })
+  expect(await search('key', 'zh-CN', '捉妖天师')).toEqual([])
+  expect((await search('key', 'zh-CN', '捉妖天师'))[0]).toMatchObject({ id: 1793262, name: '捉妖天师', year: 0, kind: 'movie' })
+  expect(calls).toBe(3)
+})
+
+test('regional movie search fills missing years by ID without changing known years, TV hits or result order', async () => {
+  const calls: string[] = []
+  const search = createTmdbSearch(async (url, init) => {
+    const u = new URL(url)
+    calls.push(u.pathname)
+    expect(init?.cache).toBe('no-store')
+    expect(init?.proxy).toBe('http://127.0.0.1:7897')
+    if (u.pathname.endsWith('/search/multi')) return Response.json({ results: [
+      { id: 3053, media_type: 'movie', title: '天师捉妖', release_date: '1967-11-13' },
+      { id: 1793262, media_type: 'movie', title: '捉妖天师', release_date: '' },
+      { id: 1793262, media_type: 'tv', name: '同名剧集', first_air_date: '' },
+    ] })
+    expect(u.searchParams.get('query')).toBe('捉妖天师')
+    expect(u.searchParams.get('language')).toBe('zh-CN')
+    expect(u.searchParams.get('region')).toBe('CN')
+    return Response.json({ results: [
+      { id: 1793262, title: '捉妖天师', release_date: '2026-10-10' },
+      { id: 3053, title: '天师捉妖', release_date: '2026-01-01' },
+      { id: 999, title: '捉妖天师', release_date: '2025-01-01' },
+    ] })
+  })
+  const hits = await search('key', 'zh-CN', '捉妖天师', { proxy: 'http://127.0.0.1:7897' })
+  expect(hits.map(h => [h.id, h.kind, h.year])).toEqual([
+    [3053, 'movie', 1967], [1793262, 'movie', 2026], [1793262, 'show', 0],
+  ])
+  expect(calls).toEqual(['/3/search/multi', '/3/search/movie'])
+})
+
+test('missing movie dates stay unknown when another title ID or an invalid date is returned', async () => {
+  const search = createTmdbSearch(async url => Response.json({ results: new URL(url).pathname.endsWith('/search/multi')
+    ? [{ id: 1793262, media_type: 'movie', title: '捉妖天师', release_date: '' }]
+    : [{ id: 999, title: '捉妖天师', release_date: '2026-10-10' }, { id: 1793262, release_date: '2026?' }] }))
+  expect((await search('key', '', '捉妖天师'))[0]?.year).toBe(0)
+})
+
+test('unavailable optional movie search preserves the original candidates', async () => {
+  let calls = 0
+  const search = createTmdbSearch(async url => {
+    calls++
+    if (new URL(url).pathname.endsWith('/search/movie')) return new Response('unavailable', { status: 503 })
+    return Response.json({ results: [{ id: 1793262, media_type: 'movie', title: '捉妖天师', release_date: '' }] })
+  })
+  expect((await search('key', '', '捉妖天师'))[0]).toMatchObject({ id: 1793262, name: '捉妖天师', year: 0 })
+  expect(calls).toBe(3)
+})
+
+test('complete movie dates and TV searches do not trigger the optional movie request', async () => {
+  let calls = 0
+  const search = createTmdbSearch(async url => {
+    calls++
+    expect(new URL(url).pathname).toBe('/3/search/multi')
+    return Response.json({ results: [
+      { id: 1, media_type: 'movie', title: '电影', release_date: '2026-10-10' },
+      { id: 2, media_type: 'tv', name: '剧集', first_air_date: '' },
+    ] })
+  })
+  await search('key', '', '电影')
+  expect(calls).toBe(1)
 })
 
 test('network failures try the alternate host and remember the working host', async () => {
@@ -195,6 +283,16 @@ test('matched movie details use production countries, not the search/display loc
   })
   expect(await details('key', 'movie', 653438, { proxy: 'http://127.0.0.1:7897' }))
     .toEqual({ id: 653438, kind: 'movie', countries: ['CN'], originalLanguage: 'zh' })
+})
+
+test('movie origin country fills a missing production country list and never replaces a populated one', async () => {
+  const details = createTmdbDetails(async url => {
+    const id = Number(new URL(url).pathname.split('/').at(-1))
+    return Response.json({ id, original_language: 'zh', origin_country: ['CN'],
+      production_countries: id === 1793262 ? [] : [{ iso_3166_1: 'US' }] })
+  })
+  expect(await details('key', 'movie', 1793262)).toEqual({ id: 1793262, kind: 'movie', countries: ['CN'], originalLanguage: 'zh' })
+  expect((await details('key', 'movie', 123)).countries).toEqual(['US'])
 })
 
 test('TV origin country wins over overseas production companies and movie IDs stay distinct', async () => {

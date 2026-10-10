@@ -177,12 +177,12 @@ export class GwClient {
       diagnostic(undefined, e)
       if (!(e instanceof TencentRiskStop)) await tracker?.finish(operation, undefined, e).catch(() => {})
       const msg = e instanceof Error ? e.message : String(e)
-      const metadata = e as { httpStatus?: unknown; errorCode?: unknown }
-      const httpStatus = Number(metadata?.httpStatus)
-      const safeCode = typeof metadata?.errorCode === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(metadata.errorCode) ? metadata.errorCode : '-'
-      const reason = provider === 'iqcn' ? ` http=${Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? httpStatus : '-'} error_code=${safeCode}` : ''
+      const fields = e && typeof e === 'object' ? e as Record<string, unknown> : {}
+      const http = typeof fields.httpStatus === 'number' && fields.httpStatus >= 100 && fields.httpStatus <= 599 ? fields.httpStatus : '-'
+      const code = typeof fields.code === 'number' && Number.isFinite(fields.code) ? fields.code : '-'
+      const errorCode = typeof fields.errorCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(fields.errorCode) ? fields.errorCode : '-'
       runLog(
-        `invoke ${provider}/${action} ${summarizeInput(input)}${headerNote ? ` hdr=${headerNote}` : ''} ${Date.now() - t0}ms fail${reason} ${truncate(msg, 160)}`,
+        `invoke ${provider}/${action} ${summarizeInput(input)}${headerNote ? ` hdr=${headerNote}` : ''} ${Date.now() - t0}ms fail http=${http} code=${code} error_code=${errorCode} ${truncate(msg, 160)}`,
       )
       throw e
     }

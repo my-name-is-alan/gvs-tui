@@ -458,6 +458,8 @@ bun run scripts/check-detect.ts     # TUI 会怎么说（账号行 + 画质页�
 
 `gatewayProxy` 是终端版的网关 API 代理，支持 HTTP/HTTPS 地址。设置里保存后，网关请求和隧道都会走它；启动环境中的 `GVS_PROXY` 优先。显式代理连接失败不会回退直连，本机网关仍直连。桌面端网关走系统代理，不读这个字段。它不影响媒体 CDN 请求。
 
+桌面版使用独立的 `desktopProxy` 字段，可在「设置 → 网关 → 代理地址」或首次连接页填写。支持 HTTP/HTTPS 地址和自定义端口，留空使用系统代理/PAC。网关、隧道、TMDB 和 IQ 海外版登录/取流使用同一地址；不修改图片、媒体下载或国内平台上游路由。保存时重连网关，失败恢复先前配置；显式代理请求失败不会回退直连。
+
 TMDB 由客户端请求（优先 `api.tmdb.org`，网络失败后尝试 `api.themoviedb.org`），不经过网关。设置 `tmdbProxy` 时仅 TMDB 使用该 HTTP/HTTPS 代理；留空沿用默认网络及 `GVS_PROXY`，不自动读取系统 PAC。显式代理失败不会回退直连。优酷/腾讯在填了 `tmdbKey` 时，下载前通过 `/3/search/multi` 同时匹配电影和剧集，过滤人物结果。候选类型随 `media_type` 返回，用户采用时同步修正任务类型、季集编号和文件名。支持 v3 API Key 或 API Read Access Token。
 
 平台详情的 `kind` / `media_type` / `type` / `category` 等明确类型字段用于初始分类；无类型字段时保留搜索行上的类型。单条正片不代表一定是电影，详情页 `M` 可手动切换，TMDB 选择也可纠正类型。

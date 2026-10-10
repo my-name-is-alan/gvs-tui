@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { defaultAudioIndex, resolveDefaultAudioId, selectAudioTracks } from './audio-selection.ts'
+import { defaultAudioIndex, orderedMuxAudios, resolveDefaultAudioId, selectAudioTracks } from './audio-selection.ts'
 
 const pool = [
   { id: 'mandarin', label: 'AAC', lang: '普通话', isDefault: true },
@@ -86,4 +86,32 @@ test('only one available audio becomes the mux default, including older tasks an
   expect(defaultAudioIndex([{ isDefault: false }, { isDefault: false }])).toBe(0)
   expect(defaultAudioIndex([{}, {}])).toBe(0)
   expect(defaultAudioIndex([{ isDefault: true }, { isDefault: true }])).toBe(0)
+})
+
+test('mux puts the selected default first and preserves all other languages and their relative order', () => {
+  const selected = selectAudioTracks(pool, pool.map(a => a.id), 'minnan')
+  const saved = JSON.parse(JSON.stringify(selected))
+  const ordered = orderedMuxAudios(selected)
+  expect(ordered.map(a => [a.id, a.lang, a.isDefault])).toEqual([
+    ['minnan', '闽南', true], ['mandarin', '普通话', false], ['min', 'min', false],
+  ])
+  expect(selected).toEqual(saved)
+  expect(ordered.every(a => !selected.includes(a))).toBe(true)
+  expect(orderedMuxAudios(JSON.parse(JSON.stringify(selected)))).toEqual(ordered)
+})
+
+test('mux ordering follows the chosen default, including automatic DDP and manually selected AAC', () => {
+  const ids = [tiers[0]!.id, tiers[2]!.id]
+  expect(orderedMuxAudios(selectAudioTracks(tiers, ids)).map(a => a.codec)).toEqual(['E-AC-3', 'AAC'])
+  expect(orderedMuxAudios(selectAudioTracks(tiers, allTiers)).map(a => a.codec)).toEqual(['DTS', 'AAC', 'E-AC-3'])
+  expect(orderedMuxAudios(selectAudioTracks(tiers, allTiers, tiers[0]!.id)).map(a => a.codec)).toEqual(['AAC', 'DTS', 'E-AC-3'])
+})
+
+test('mux keeps a deterministic first default for old queues without changing their source flags', () => {
+  const missing: Array<{ id: string; isDefault?: boolean }> = [{ id: 'a' }, { id: 'b' }]
+  expect(orderedMuxAudios(missing)).toEqual([{ id: 'a', isDefault: true }, { id: 'b', isDefault: false }])
+  expect(missing).toEqual([{ id: 'a' }, { id: 'b' }])
+  expect(orderedMuxAudios([{ id: 'a' }, { id: 'b', isDefault: true }, { id: 'c', isDefault: true }]))
+    .toEqual([{ id: 'b', isDefault: true }, { id: 'a', isDefault: false }, { id: 'c', isDefault: false }])
+  expect(orderedMuxAudios([])).toEqual([])
 })

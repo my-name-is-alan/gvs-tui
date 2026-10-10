@@ -10,7 +10,9 @@ export function defaultTmdbHit(hits: TmdbHit[], title: string, year: number, kin
   // base title and TV type, and still leave equal-title remakes unselected.
   const exact = hits.filter(h => {
     const key = titleKey(h.name || h.title)
-    return (key === titleKey(title) && (!year || h.year === year))
+    // A newly added entry may not have its release date yet. Missing metadata
+    // does not contradict an exact title; a known different year still does.
+    return (key === titleKey(title) && (!year || !h.year || h.year === year))
       || (series !== title.trim() && h.kind === 'show' && key === titleKey(series))
   })
   const sameKind = exact.filter(h => h.kind === kind)

@@ -72,6 +72,62 @@ func parseSampleDescriptor(text string, offset int) (sampleDescriptor, error) {
 	return d, nil
 }
 
+type sampleTextRange struct {
+	start, end int
+	service    bool
+}
+
+// Use the SDT service-name length, excluding its provider name and section CRC.
+// A printable CRC can otherwise look like another f/m field after the final |.
+func sampleDescriptorRanges(payload []byte, unitStart bool) ([]sampleTextRange, error) {
+	fallback := []sampleTextRange{{0, len(payload), false}}
+	if !unitStart || len(payload) < 1 {
+		return fallback, nil
+	}
+	section := 1 + int(payload[0])
+	if section+3 > len(payload) || (payload[section] != 0x42 && payload[section] != 0x46) {
+		return fallback, nil
+	}
+	end := section + 3 + (int(payload[section+1]&15)<<8 | int(payload[section+2]))
+	if end > len(payload) || end < section+15 {
+		return nil, fmt.Errorf("invalid SDT section length")
+	}
+	end -= 4 // CRC32 is not descriptor text.
+	var ranges []sampleTextRange
+	for service := section + 11; service < end; {
+		if service+5 > end {
+			return nil, fmt.Errorf("invalid SDT service length")
+		}
+		loopEnd := service + 5 + (int(payload[service+3]&15)<<8 | int(payload[service+4]))
+		if loopEnd > end {
+			return nil, fmt.Errorf("invalid SDT descriptor loop length")
+		}
+		for descriptor := service + 5; descriptor < loopEnd; {
+			if descriptor+2 > loopEnd {
+				return nil, fmt.Errorf("invalid SDT descriptor length")
+			}
+			body := descriptor + 2
+			descEnd := body + int(payload[descriptor+1])
+			if descEnd > loopEnd {
+				return nil, fmt.Errorf("invalid SDT descriptor length")
+			}
+			if payload[descriptor] == 0x48 {
+				if body+2 > descEnd {
+					return nil, fmt.Errorf("invalid SDT service descriptor")
+				}
+				nameLength := body + 2 + int(payload[body+1])
+				if nameLength >= descEnd || nameLength+1+int(payload[nameLength]) > descEnd {
+					return nil, fmt.Errorf("invalid SDT service name length")
+				}
+				ranges = append(ranges, sampleTextRange{nameLength + 1, nameLength + 1 + int(payload[nameLength]), true})
+			}
+			descriptor = descEnd
+		}
+		service = loopEnd
+	}
+	return ranges, nil
+}
+
 func sampleDescriptors(data []byte) ([]sampleDescriptor, error) {
 	var records []sampleDescriptor
 	for offset := 0; offset+samplePacketSize <= len(data); offset += samplePacketSize {
@@ -88,22 +144,33 @@ func sampleDescriptors(data []byte) ([]sampleDescriptor, error) {
 			continue
 		}
 		payload := packet[start:]
-		for position := 0; position < len(payload); {
-			index := bytes.Index(payload[position:], []byte("a0|"))
-			if index < 0 {
-				break
+		ranges, err := sampleDescriptorRanges(payload, packet[1]&0x40 != 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, region := range ranges {
+			for position := region.start; position < region.end; {
+				index := bytes.Index(payload[position:region.end], []byte("a0|"))
+				if index < 0 {
+					break
+				}
+				index += position
+				begin := index
+				for region.service && begin > region.start && payload[begin-1] >= 0x20 && payload[begin-1] < 0x7f {
+					begin--
+				}
+				// Legacy service names put the explicit mode/pattern before a0.
+				end := index
+				for end < region.end && payload[end] >= 0x20 && payload[end] < 0x7f {
+					end++
+				}
+				d, err := parseSampleDescriptor(string(payload[begin:end]), offset+start+begin)
+				if err != nil {
+					return nil, err
+				}
+				records = append(records, d)
+				position = end
 			}
-			index += position
-			end := index
-			for end < len(payload) && payload[end] >= 0x20 && payload[end] < 0x7f {
-				end++
-			}
-			d, err := parseSampleDescriptor(string(payload[index:end]), offset+start+index)
-			if err != nil {
-				return nil, err
-			}
-			records = append(records, d)
-			position = end
 		}
 	}
 	if len(records) == 0 {

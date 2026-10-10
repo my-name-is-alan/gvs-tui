@@ -34,7 +34,8 @@ export function qualityColumns(width: number, rows: Quality[]): QualityColumn[] 
   const optional: Array<QualityColumn & { show: boolean }> = [
     { key: 'hdr', title: 'HDR', width: 8, show: rows.some(q => !!q.hdr) },
     { key: 'fps', title: 'fps', width: 5, show: rows.some(q => !!q.fps) },
-    { key: 'caption', title: '字幕', width: 8, show: rows.some(q => !!q.caption) },
+    { key: 'caption', title: '字幕', width: 8,
+      show: rows.some(q => !!q.caption || !!q.captionProbe) },
     { key: 'resolution', title: '分辨率', width: 11, show: true },
     { key: 'drm', title: 'DRM', width: 3, show: rows.some(q => !!q.drm) },
   ]

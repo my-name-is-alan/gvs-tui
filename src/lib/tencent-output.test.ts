@@ -1,5 +1,7 @@
 import { expect, test } from 'bun:test'
-import { assertTencentCoverage, assertTencentSpecs, tencentSpecsFromFFmpeg, verifyTencentCoverage } from './tencent-output.ts'
+import { assertTencentCoverage, assertTencentSpecs, tencentSpecsFromFFmpeg, verifyTencentCoverage, verifyTencentSpecs } from './tencent-output.ts'
+import { completedFilename } from './name.ts'
+import { probeFinishedMedia } from './gvs-record.ts'
 import type { TrackTiming } from './media-timing.ts'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -30,11 +32,20 @@ test('1080p/25fps video cannot satisfy selected 4K/60fps/HDR specs', () => {
   expect(() => assertTencentSpecs({ width: 3840, height: 1608, fps: 25, hdr: false }, {}, 2160)).not.toThrow()
 })
 
-test('portrait 10-bit BT.709 video remains SDR and cannot satisfy selected HDR', () => {
+test('portrait 10-bit BT.709 video remains SDR and catalog HDR becomes a completion warning', () => {
   const specs = tencentSpecsFromFFmpeg('  Stream #0:0[0x100]: Video: hevc (Main 10) ([36][0][0][0] / 0x0024), yuv420p10le(tv, bt709), 2160x3840 [SAR 1:1 DAR 9:16], 60 fps, 60 tbr, 90k tbn, start 0.050000')
   expect(specs).toEqual({ width: 2160, height: 3840, fps: 60, hdr: false })
   expect(() => assertTencentSpecs(specs, { width: 3840, height: 2160, fps: 60, hdr: 'sdr' })).not.toThrow()
-  expect(() => assertTencentSpecs(specs, { width: 2160, height: 3840, fps: 60, hdr: 'hdr' })).toThrow('所选 HDR 未在实际视频中确认')
+  expect(assertTencentSpecs(specs, { width: 2160, height: 3840, fps: 60, hdr: 'hdr' })).toContain('所选 HDR 未在实际视频中确认')
+})
+
+test('4K60 SDR is retained with a warning while missing specifications still fail', () => {
+  const actual = { width: 3840, height: 1604, fps: 60, hdr: false }
+  expect(assertTencentSpecs(actual, { width: 3840, height: 1604, fps: 60, hdr: 'hdr' })).toContain('已保留下载结果')
+  expect(assertTencentSpecs({ ...actual, hdr: true }, { hdr: 'hdr' })).toBe('')
+  expect(assertTencentSpecs(actual, { hdr: 'sdr' })).toBe('')
+  expect(assertTencentSpecs(actual, {})).toBe('')
+  expect(() => assertTencentSpecs(null, { hdr: 'hdr' })).toThrow('无法确认')
 })
 
 test('landscape batch specs accept the portrait 4K/25fps shopping clips', () => {
@@ -85,5 +96,25 @@ test.skipIf(process.env.GVS_MEDIA_TESTS !== '1')('real MKV with longer audio fai
     execFileSync(ffmpeg, ['-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'color=s=32x32:r=25:d=1',
       '-f', 'lavfi', '-i', 'sine=duration=15', '-c:v', 'mpeg4', '-c:a', 'aac', '-y', dest], { windowsHide: true })
     await expect(verifyTencentCoverage(ffmpeg, dest)).rejects.toThrow('不完整')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test.skipIf(process.env.GVS_MEDIA_TESTS !== '1')('real SDR video passes HDR-warning verification and names measured SDR', async () => {
+  const ffmpeg = lookBundledFFmpeg() || 'ffmpeg', dir = mkdtempSync(join(tmpdir(), 'gvs-tencent-hdr-warning-'))
+  try {
+    const path = join(dir, 'sdr.mkv')
+    execFileSync(ffmpeg, ['-nostdin', '-v', 'error', '-f', 'lavfi', '-i', 'color=s=320x240:r=60:d=2',
+      '-f', 'lavfi', '-i', 'sine=duration=2', '-c:v', 'libx264', '-preset', 'ultrafast',
+      '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709', '-c:a', 'aac', '-y', path], { windowsHide: true })
+    const checked = await verifyTencentSpecs(ffmpeg, path, { width: 320, height: 240, fps: 60, hdr: 'hdr' })
+    expect(checked).toMatchObject({ width: 320, height: 240, fps: 60, hdr: false })
+    expect(checked.note).toContain('已保留下载结果')
+    expect(await verifyTencentCoverage(ffmpeg, path, 2)).toBeGreaterThan(1.9)
+    const actual = await probeFinishedMedia(path)
+    expect(actual.dynamicRange).toBe('SDR')
+    const name = completedFilename({ kind: 'show', title: '节目', nameDots: '', year: 2026, season: 1, episode: 1,
+      height: 2160, codec: 'HEVC', tmdbId: 0, source: 'TX', group: 'WF', container: 'mkv' }, actual, 'MAXPLUS')
+    expect(name).toContain('.WEB-DL.MAXPLUS.60fps.AVC.AAC.')
+    expect(name).not.toContain('.HDR.')
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })

@@ -25,7 +25,7 @@ test('domestic traditional-only VTT gets a simplified default while keeping Engl
   const work = mkdtempSync(join(tmpdir(), 'iqcn-subs-'))
   const { cli, plan } = fixture([{ index: 0, language_id: 3, formats: ['srt'] }, { index: 1, language_id: 2, formats: ['webvtt'] }], [srt.replace('汉语与音乐', 'English'), vtt])
   const result = await prepareIQCNSubtitles(cli, plan, 'plan', work)
-  expect(result.subtitles.map(s => s.title)).toEqual(['简体中文 (OpenCC 转换)', '繁体中文', '英语'])
+  expect(result.subtitles.map(s => s.title)).toEqual(['简体中文', '繁体中文', '英语'])
   expect(result.subtitles.map(s => s.language)).toEqual(['zho', 'zho', 'eng'])
   expect(defaultIQSubtitleIndex(result.subtitles)).toBe(0)
   expect(readFileSync(result.subtitles[0]!.path, 'utf8')).toContain('汉语与音乐')

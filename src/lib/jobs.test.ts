@@ -84,7 +84,7 @@ test('episode-title switch is pinned to the task and controls both legacy and me
   const cfg = { ...defaultConfig(), releaseGroup: 'WF', includeEpisodeTitle: false }
   const specs = { status: 'probed' as const, width: 3840, height: 1608, codec: 'hevc', fps: 25,
     dynamicRange: 'SDR', audio: { status: 'confirmed' as const, codec: 'eac3', channels: 2 } }
-  for (const [provider, platform] of [['youku', 'YOUKU'], ['tencent', 'TX'], ['iq', 'IQ']]) {
+  for (const [provider, platform] of [['youku', 'YOUKU'], ['tencent', 'TX'], ['iq', 'IQ'], ['iqcn', 'IQIYI']]) {
     const base = task({ provider, kind: 'show', namingVersion: 1, title: '朱门盛景，终究一场梦', series: '一瓯春',
       year: 2026, episode: 29, group: 'WF', height: 2160, codec: 'HEVC' })
     const on = { ...base, includeEpisodeTitle: true }

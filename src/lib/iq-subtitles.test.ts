@@ -57,7 +57,7 @@ test('a sole normal simplified track produces traditional locally and never uses
     const tracks = [{ ...english, path }, { ...aiTC, path }, { ...sc, path }, { ...aiSC, path }, { ...aiThai, path }]
     const result = await prepareIQSubtitles(tracks, root)
     expect(result.note).toBeUndefined()
-    expect(result.subtitles.map(s => s.title)).toEqual(['简体中文', '繁体中文 (OpenCC 转换)', '英语'])
+    expect(result.subtitles.map(s => s.title)).toEqual(['简体中文', '繁体中文', '英语'])
     expect(result.subtitles[1]).toMatchObject({ language: 'zho', ai: false })
     expect(readFileSync(result.subtitles[1]!.path, 'utf8')).toContain('漢語與音樂')
     expect(readFileSync(path, 'utf8')).toBe(srt)
@@ -70,7 +70,7 @@ test('a sole normal traditional VTT track produces simplified first and preserve
     const path = join(root, 'source.vtt'), text = 'WEBVTT\n\n01\n00:01.000 --> 00:03.000\n繁體字幕與音樂\n\n'
     writeFileSync(path, text)
     const result = await prepareIQSubtitles([{ ...tc, path }, { ...aiSC, path }, { ...english, path }], root)
-    expect(result.subtitles.map(s => s.title)).toEqual(['简体中文 (OpenCC 转换)', '繁体中文', '英语'])
+    expect(result.subtitles.map(s => s.title)).toEqual(['简体中文', '繁体中文', '英语'])
     expect(result.subtitles[0]!.path).toEndWith('.vtt')
     expect(readFileSync(result.subtitles[0]!.path, 'utf8')).toBe(text.replace('繁體字幕與音樂', '繁体字幕与音乐'))
     expect(readFileSync(path, 'utf8')).toBe(text)
@@ -92,7 +92,7 @@ test('AI-only Chinese remains marked AI, including a generated missing counterpa
     expect(both.subtitles.map(s => s.title)).toEqual(['中文 (AI)', aiTC.title, english.title])
     expect(readdirSync(root)).toEqual(['source.srt'])
     const single = await prepareIQSubtitles([{ ...aiSC, path }, { ...aiThai, path }, { ...english, path }], root)
-    expect(single.subtitles.map(s => s.title)).toEqual(['中文 (AI)', '繁体中文 (AI · OpenCC 转换)', english.title])
+    expect(single.subtitles.map(s => s.title)).toEqual(['中文 (AI)', '繁体中文 (AI)', english.title])
     expect(single.subtitles[1]?.ai).toBe(true)
   } finally { rmSync(root, { recursive: true, force: true }) }
 })

@@ -1,6 +1,6 @@
 import type { StreamOptions } from './quality.ts'
 import { asString, isObj } from './util.ts'
-import { appendFileSync, writeFileSync, linkSync, unlinkSync, mkdirSync } from 'node:fs'
+import { appendFileSync, writeFileSync, linkSync, unlinkSync, mkdirSync, lstatSync } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { GwClient } from './client.ts'
@@ -12,13 +12,16 @@ import { downloadIQCNLocalSegment, iqcnProcessing, type IQCNLocalRuntime } from 
 import { orderedDownload, processingQueue } from './ordered-download.ts'
 import { restoreIQCNLocal } from './iqcn-local.ts'
 import { iqcnAudios, selectIQCNAudios, prepareIQCNAudio, downloadIQCNAudio, type IQCNAudioPlan } from './iqcn-audio.ts'
-import { runLog } from './runlog.ts'
 import { prepareIQCNSubtitles } from './iqcn-subtitles.ts'
 import { defaultIQSubtitleIndex } from './iq-subtitles.ts'
-import { iqcnEpisodeRendition } from './iqcn-rendition.ts'
+import { iqcnNamingEvidence, usesMeasuredNaming } from './completed-naming.ts'
+import { iqcnRendition, resolveIQCNSelection } from './iqcn-quality-selection.ts'
+import { runLog } from './runlog.ts'
+import { orderedMuxAudios } from './audio-selection.ts'
+export { iqcnSelection } from './iqcn-quality-selection.ts'
 
 /** Domestic selection uses source BID/bitrate/frame rate, never guessed tiers. */
-export function iqcnOptions(data: Record<string, unknown>): StreamOptions {
+export function iqcnOptions(data: Record<string, unknown>, sourceTvid = ''): StreamOptions {
   const formats = Array.isArray(data.formats) ? data.formats.filter(isObj) : []
   const counts = new Map<string, number>()
   const qualities = formats.map(raw => {
@@ -27,23 +30,15 @@ export function iqcnOptions(data: Record<string, unknown>): StreamOptions {
     // Legacy gateways omit names; use the official App tier vocabulary.
     const name = asString(raw.name) || ({ 800: '超高清 4K', 600: '高清 1080P', 500: '准高清 720P', 300: '高清', 200: '标清', 100: '流畅' } as Record<number, string>)[Number(raw.bid)] || '未命名画质'
     const high = Number(raw.br) > 100 ? ' · 高码率' : ''
-    const rangeName = ({ 1: '杜比视界', 3: '杜比视界', 2: 'HDR10', 7: 'SDR 10bit' } as Record<number, string>)[Number(raw.dynamic_range_code)] || ''
+    const rangeName = ({ 1: '杜比视界', 3: '杜比视界', 2: 'HDR10', 4: 'EDR', 7: 'SDR 10bit', 8: 'EDR 10bit' } as Record<number, string>)[Number(raw.dynamic_range_code)] || ''
     const base = asString(raw.name) || name + high + (rangeName ? ` · ${rangeName}` : '')
     const variant = (counts.get(base) || 0) + 1
     counts.set(base, variant)
     return { id: asString(raw.id), stream: asString(raw.id), label: base + (variant > 1 ? ` · 版本 ${variant}` : ''), title: '爱奇艺国内版',
-      width, height, tier, size: Number(raw.size) || 0, fps: Number(raw.fr) || 0, codec: ({ 1: 'H265', 2: 'H264' } as Record<number,string>)[Number(raw.codec_code)] || (/^ts$/i.test(asString(raw.codec)) ? '' : asString(raw.codec).toUpperCase()), drm: Number(raw.drm) > 0 ? 'IQCN' : '' }
+      width, height, tier, size: Number(raw.size) || 0, fps: Number(raw.fr) || 0, codec: ({ 1: 'H265', 2: 'H264' } as Record<number,string>)[Number(raw.codec_code)] || (/^ts$/i.test(asString(raw.codec)) ? '' : asString(raw.codec).toUpperCase()), drm: Number(raw.drm) > 0 ? 'IQCN' : '',
+      iqcnQuality: iqcnRendition(raw, sourceTvid || asString(data.tvid)) }
   }).filter(raw => raw.id)
   return { qualities, audios: iqcnAudios(data) }
-}
-
-export function iqcnSelection(quality: string): Record<string, string> {
-  const parts = quality.split('|')
-  if (![3, 4].includes(parts.length)) throw new Error('爱奇艺国内版画质选择无效')
-  const [bid, br, fr, vid] = parts
-  if (![bid, br, fr].every(value => value && /^[1-9]\d*$/.test(value))) throw new Error('爱奇艺国内版画质选择无效')
-  if (parts.length === 4 && !/^[A-Za-z0-9]+$/.test(vid || '')) throw new Error('爱奇艺国内版视频标识无效')
-  return { bid: bid!, br: br!, fr: fr!, ...(vid ? { vid } : {}) }
 }
 
 export function assertIQCNCoverage(tracks: TrackTiming[], expectedSeconds = 0): void {
@@ -58,14 +53,17 @@ export function assertIQCNCoverage(tracks: TrackTiming[], expectedSeconds = 0): 
   }
 }
 
-export async function downloadIQCN(cli: GwClient, task: DlTask, dest: string, work: string, emit: (status: string, pct: number, log: string) => void, signal?: AbortSignal, runtime?: IQCNLocalRuntime, threads = 1): Promise<string> {
+export async function downloadIQCN(cli: GwClient, task: DlTask, dest: string, work: string, emit: (status: string, pct: number, log: string) => void, signal?: AbortSignal,
+  runtime?: IQCNLocalRuntime, threads = 1, options: { reservedOutput?: boolean } = {}): Promise<string> {
   signal?.throwIfAborted()
-  let selection = iqcnSelection(task.quality)
-  if (selection.vid) {
-    const catalog = await cli.invoke('iqcn', 'probe', { tvid: task.vid }, {}, { timeoutMs: 150000 })
-    signal?.throwIfAborted()
-    selection = iqcnEpisodeRendition(catalog, task.vid, selection, task.codec)
-  }
+  if (usesMeasuredNaming(task)) task.namingEvidence = undefined
+  // The shared measured-naming runner claims an empty provisional path.
+  // Only that unchanged reservation may be removed when publishing the mux.
+  const reservation = options.reservedOutput ? lstatSync(dest) : undefined
+  if (reservation && (!reservation.isFile() || reservation.size !== 0)) throw new Error('爱奇艺国内版输出占位已改变，未覆盖现有文件')
+  emit('匹配画质', 0.01, '按本集匹配所选码率、帧率、编码和动态范围')
+  const selection = await resolveIQCNSelection(cli, task, signal)
+  signal?.throwIfAborted()
   const plan = await cli.invoke('iqcn', 'streams', { tvid: task.vid, ...selection, transport: 'local-v1' }, {}, { timeoutMs: 150000 })
   const video = isObj(plan.video) ? plan.video : {}
   const segments = Array.isArray(video.segments) ? video.segments.filter(isObj) : []
@@ -73,7 +71,7 @@ export async function downloadIQCN(cli: GwClient, task: DlTask, dest: string, wo
   if (!planId || !segments.length) throw new Error('爱奇艺国内版未返回完整下载计划')
   const transport = join(work, 'iqcn-video.ts'), staged = join(dirname(dest), `.gvs-iqcn-${randomUUID()}${extname(dest)}`)
   try {
-    const selected = selectIQCNAudios(plan, task.audioTracks)
+    const selected = orderedMuxAudios(selectIQCNAudios(plan, task.audioTracks))
     const audioPlans: IQCNAudioPlan[] = []
     emit('检查音轨', 0.01, '确认所选音轨可用')
     for (const audio of selected) {
@@ -112,13 +110,19 @@ export async function downloadIQCN(cli: GwClient, task: DlTask, dest: string, wo
       },
     })
     const ffmpeg = await ensureFFmpeg(undefined, signal)
+    const notes: string[] = []
+    const copyOptions = { onCodecDiagnostic: () => {
+      const note = '封装有可恢复的编码探测提示，已保留下载结果'
+      notes.push(note)
+      runLog(`iqcn mux probe warning tvid=${task.vid} ${note}`)
+    } }
     const audioFiles: Array<{ path: string; language: string; title: string; isDefault: boolean }> = []
     for (const [index, audio] of selected.entries()) {
       signal?.throwIfAborted()
       emit('下载独立音轨', 0.90 + 0.03 * index / selected.length, audio.label)
       const path = join(work, `iqcn-audio-${index}.m4a`)
       const info = await downloadIQCNAudio(cli, planId, audio.vid!, path, threads, signal, runtime?.fetch,
-        () => runIQFFmpeg(ffmpeg, ['-i', transport, '-map', '0:a:0', '-c', 'copy', '-y', path], '标准音轨提取失败', signal), audioPlans[index])
+        () => runIQFFmpeg(ffmpeg, ['-i', transport, '-map', '0:a:0', '-c', 'copy', '-y', path], '标准音轨提取失败', signal, copyOptions), audioPlans[index])
       audioFiles.push({ path, ...info, isDefault: !!audio.isDefault })
     }
     const defaultIndex = Math.max(0, audioFiles.findIndex(audio => audio.isDefault))
@@ -136,20 +140,31 @@ export async function downloadIQCN(cli: GwClient, task: DlTask, dest: string, wo
       if (audioFiles.length) audioFiles.forEach((_, index) => args.push('-map', `${index + 1}:a:0`))
       else args.push('-map', '0:a')
       subtitles.forEach((_, index) => args.push('-map', `${index + audioFiles.length + 1}:s:0`))
-      args.push('-c', 'copy', '-c:s', muxed.endsWith('.mp4') ? 'mov_text' : 'srt')
-      audioFiles.forEach((audio, index) => args.push(`-metadata:s:a:${index}`, `language=${audio.language}`, `-metadata:s:a:${index}`, `title=${audio.title}`, `-disposition:a:${index}`, audio.isDefault ? 'default' : '0'))
+      args.push('-c', 'copy', '-c:s', muxed.endsWith('.mp4') ? 'mov_text' : 'srt', '-metadata:s:a', 'title=', '-metadata:s:a', 'handler_name=')
+      audioFiles.forEach((audio, index) => args.push(`-metadata:s:a:${index}`, `language=${audio.language}`, `-disposition:a:${index}`, audio.isDefault ? 'default' : '0'))
+      if (!audioFiles.length) args.push('-disposition:a', '0', '-disposition:a:0', 'default')
       subtitles.forEach((sub, index) => args.push(`-metadata:s:s:${index}`, `language=${sub.language}`, `-metadata:s:s:${index}`, `title=${sub.title}`, `-disposition:s:${index}`, index === subtitleDefault ? 'default' : '0'))
       args.push('-y', muxed)
-      await runIQFFmpeg(ffmpeg, args, '爱奇艺国内版音轨与字幕封装失败', signal)
+      await runIQFFmpeg(ffmpeg, args, '爱奇艺国内版音轨与字幕封装失败', signal, copyOptions)
     }
     const { copyFileSync } = await import('node:fs')
     copyFileSync(muxed, staged)
     signal?.throwIfAborted()
+    if (reservation) {
+      const current = lstatSync(dest)
+      if (!current.isFile() || current.size !== 0 || current.ino !== reservation.ino || current.dev !== reservation.dev)
+        throw new Error('爱奇艺国内版输出占位已改变，未覆盖现有文件')
+      unlinkSync(dest)
+    }
     // Same-directory hard link publishes atomically and refuses an existing
     // destination, including another concurrent task's completed output.
     linkSync(staged, dest)
     unlinkSync(staged)
-    return prepared.note || ''
+    if (usesMeasuredNaming(task)) task.namingEvidence = {
+      ...iqcnNamingEvidence(plan),
+      ...(audioFiles.length ? { muxAudio: { index: defaultIndex, count: audioFiles.length } } : {}),
+    }
+    return [...new Set([...notes, prepared.note].filter(Boolean))].join('；')
   } finally {
     try { unlinkSync(staged) } catch { /* no staged output */ }
     await cli.invoke('iqcn', 'download-finish', { planId }, {}, { timeoutMs: 15000 }).catch(() => undefined)

@@ -3,7 +3,8 @@ import { userMessage } from './user-message.ts'
 import { youkuMediaError } from './media-output.ts'
 import { decryptYoukuTs } from './youku-ts.ts'
 import { tencentPlayInput } from './tencent-qr.ts'
-import { tencentAudioDownloadPlan, tencentAudioPlanNote, tencentPlayQualityInput } from './quality.ts'
+import { tencentAudioDownloadPlan, tencentAudioPlanNote, tencentCatalogProbeInput, tencentPlayQualityInput } from './quality.ts'
+import { equivalentTencentRendition } from './tencent-rendition-resolution.ts'
 import { resolveHongguoDownload } from './hongguo.ts'
 import { huangguoKeyMode, resolveHuangguoDownload } from './huangguo.ts'
 import { mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
@@ -25,22 +26,23 @@ import {
 import type { HlsCipher, RetryNote, ProgressCB } from './media.ts'
 import { retryCdnRefresh } from './cdn-retry.ts'
 import { asString, human, isObj } from './util.ts'
-import type { Job, TencentQualitySelection } from '../types.ts'
+import type { Job, TencentQualitySelection, IQCNQualitySelection } from '../types.ts'
 import { tencentDownloadSelection } from './tencent-quality-selection.ts'
 import { moveFileSync } from './file-move.ts'
 import { downloadIQ } from './iq.ts'
 import { downloadIQCN } from './iqcn.ts'
 import { youkuPlayInput } from './youku-play-input.ts'
+import type { IQCNLocalRuntime } from './iqcn-local.ts'
 import { runLog } from './runlog.ts'
 import { prepareAudioLanguage } from './audio-language.ts'
 import type { TmdbDetails } from './tmdb.ts'
 import { actualVersionText, tencentActualVersion, type ActualVersion } from './actual-version.ts'
 import { verifyTencentCoverage, verifyTencentSpecs } from './tencent-output.ts'
 import { tencentChoiceSelection } from './tencent-quality-selection.ts'
-import { finishedVersionRecord, saveVersionRecord } from './gvs-record.ts'
+import { finishedMediaRecord, finishedVersionRecord, saveVersionRecord } from './gvs-record.ts'
 import { finalizeCompletedName, reserveOutputPath, tencentNamingEvidence, usesMeasuredNaming, youkuNamingEvidence, type NamingEvidence } from './completed-naming.ts'
-import { defaultAudioIndex } from './audio-selection.ts'
-import type { MediaSpecs } from './actual-version.ts'
+import { defaultAudioIndex, orderedMuxAudios } from './audio-selection.ts'
+import type { CompletedMedia, MediaSpecs } from './actual-version.ts'
 
 export type DlTask = {
   tencentPlayParams?: import('../types.ts').TencentPlayParams
@@ -59,6 +61,8 @@ export type DlTask = {
   caption?: string
   /** Exact selected Tencent format/persona, retained across pause and retry. */
   tencentQuality?: TencentQualitySelection
+  /** Stable domestic rendition attributes, with the original probe episode. */
+  iqcnQuality?: IQCNQualitySelection
   /** New tasks opt into measured naming; old saved queues intentionally omit this version. */
   namingVersion?: 1
   namingEvidence?: NamingEvidence
@@ -91,6 +95,7 @@ export type JobEvt = {
   note?: string
   /** Present only on successful completion; requested quality remains separate. */
   actualVersion?: ActualVersion
+  completedMedia?: CompletedMedia
   /** Final event only: the user stopped the job instead of it failing. */
   stopped?: 'pause' | 'cancel'
 }
@@ -308,7 +313,7 @@ export function jobNaming(t: DlTask, cfg: FileConfig): Naming {
   }
 }
 
-async function runTask(
+export async function runTask(
   emitEvt: (e: JobEvt) => void,
   cfg: FileConfig,
   cli: GwClient,
@@ -316,6 +321,7 @@ async function runTask(
   t: DlTask,
   signal?: AbortSignal,
   hooks?: JobHooks,
+  iqcnRuntime?: IQCNLocalRuntime,
 ): Promise<void> {
   // Surface CDN retries in the job row instead of letting the bar sit still.
   let lastPct = 0
@@ -332,6 +338,7 @@ async function runTask(
   let ownsOutput = false
   let succeeded = false
   let actualVersion: ActualVersion | undefined
+  let completedMedia: CompletedMedia | undefined
   try {
     signal?.throwIfAborted()
     let audioLanguageFallback = ''
@@ -364,7 +371,7 @@ async function runTask(
     emit('取链', 0.01, out.split(/[/\\]/).pop() ?? out)
     switch (t.provider) {
       case 'iqcn':
-        note = await downloadIQCN(cli, t, out, work, emit, signal, undefined, cfg.threads)
+        note = await downloadIQCN(cli, t, out, work, emit, signal, iqcnRuntime, cfg.threads, { reservedOutput: ownsOutput })
         break
       case 'iq':
         note = await downloadIQ(cli,cfg,t,out,work,emit,signal)
@@ -420,9 +427,18 @@ async function runTask(
         log('版本档案未能保存')
       }
     }
+    if (['youku', 'iq', 'iqcn'].includes(t.provider)) {
+      try {
+        completedMedia = await finishedMediaRecord(out, signal, finishedMedia)
+      } catch {
+        signal?.throwIfAborted()
+        note = [note, '视频规格未能记录'].filter(Boolean).join('；')
+        log('视频规格未能记录')
+      }
+    }
     signal?.throwIfAborted()
     succeeded = true
-    emitEvt({ id, status: '完成', pct: 1, log: out, err: '', done: true, note, actualVersion })
+    emitEvt({ id, status: '完成', pct: 1, log: out, err: '', done: true, note, actualVersion, completedMedia })
   } catch (e) {
     // A stop is not a failure: one final event carrying `stopped`, never 失败.
     if (signal?.aborted) {
@@ -705,20 +721,40 @@ async function dlTencent(
   onVersion?: (version: ActualVersion) => void,
 ): Promise<string> {
   emit('取链', 0.05, t.vid)
+  // Keep the persisted batch selection intact; only this episode's play selector changes.
+  let episodeChoice = t
+  let refreshes = 0
+  const pickVersion = (data: Record<string, unknown>) => pickTencentDownload(data,
+    { ...tencentDownloadSelection(episodeChoice), persona: tencentChoiceSelection(episodeChoice).persona }, t.vid, refreshes)
+  const versionMismatch = () => new Error('腾讯返回的实际版本与所选版本不同，已停止下载；请重新取流或选择可用版本')
   const play = async () => {
-    const payload = await cli.invoke('tencent', 'play', { vid: t.vid, ...tencentPlayInput(cfg, t.tencentPlayParams), ...tencentPlayQualityInput(t) }, cli.extra(cfg, 'tencent'))
-    // The gateway call has no signal of its own; stop right after it returns.
-    signal?.throwIfAborted()
+    const request = async () => {
+      const payload = await cli.invoke('tencent', 'play', { vid: t.vid, ...tencentPlayInput(cfg, t.tencentPlayParams), ...tencentPlayQualityInput(episodeChoice) }, cli.extra(cfg, 'tencent'))
+      // The gateway call has no signal of its own; stop right after it returns.
+      signal?.throwIfAborted()
+      return payload
+    }
+    let payload = await request()
+    if (pickVersion(payload).version.matchesSelection === 'different') {
+      const catalog = await cli.invoke('tencent', 'play', tencentCatalogProbeInput(cfg, t.vid, t.tencentPlayParams), cli.extra(cfg, 'tencent'))
+      signal?.throwIfAborted()
+      const resolved = equivalentTencentRendition(episodeChoice, catalog.formats)
+      if (!resolved) throw versionMismatch()
+      runLog(`tencent episode rendition rebound vid=${t.vid} requested_format=${tencentChoiceSelection(t).formatId || '-'} episode_format=${resolved.formatId}`)
+      episodeChoice = { ...t, tencentQuality: resolved }
+      payload = await request()
+      // The catalog alone does not authorize a different URL; the second play response must match.
+      if (pickVersion(payload).version.matchesSelection === 'different') throw versionMismatch()
+    }
     return payload
   }
   // Skip CDN mirrors that refuse this network (200 + HTML "Forbidden").
-  let refreshes = 0
   const pick = async (data: Record<string, unknown>) => {
-    const selection = tencentChoiceSelection(t)
-    const picked = pickTencentDownload(data, { ...tencentDownloadSelection(t), persona: selection.persona }, t.vid, refreshes)
+    const selection = tencentChoiceSelection(episodeChoice)
+    const picked = pickVersion(data)
     const v = isObj(data.video) ? data.video : {}
     runLog(`tencent stream selection requested=${t.quality.split('|')[0]} format=${selection.formatId || '-'} actual=${picked.version.actual?.formatId || '-'} match=${picked.version.matchesSelection} width=${Number(v.width ?? data.width) || 0} height=${Number(v.height ?? data.height) || 0} duration=${Number(v.duration ?? data.duration) || 0}`)
-    if (picked.version.matchesSelection === 'different') throw new Error('腾讯返回的实际版本与所选版本不同，已停止下载；请重新取流或选择可用版本')
+    if (picked.version.matchesSelection === 'different') throw versionMismatch()
     // Missing rendition metadata is not a confirmed mismatch. Keep it unknown;
     // the existing post-download checks verify the actual video specifications and coverage.
     const cdn = picked.url && /\.m3u8/i.test(picked.url) ? await firstLivePlaylist(tencentMirrors(data, picked.url), referer('tencent'), signal) : picked.url
@@ -770,6 +806,10 @@ async function dlTencent(
     const videoSeconds = await verifyTencentCoverage(ffmpeg, raw, expected, signal)
     const specs = await verifyTencentSpecs(ffmpeg, raw, t.tencentQuality ?? {}, t.height, signal)
     runLog(`tencent video verified width=${specs.width} height=${specs.height} fps=${specs.fps} hdr=${specs.hdr} video_seconds=${videoSeconds.toFixed(3)} expected_seconds=${expected}`)
+    if (specs.note) {
+      runLog(`tencent video specification warning vid=${t.vid} ${specs.note}`)
+      emit('规格提示', 0.55, specs.note)
+    }
     // A long audio track must not make a truncated video look complete.
     const muxToOut = async (mux: (dest: string) => Promise<void>) => writeFinal(out, async dest => {
       await mux(dest)
@@ -783,7 +823,7 @@ async function dlTencent(
       emit('封装', 0.86, out)
       await muxToOut(dest => mkvmergeRemux(mkvmerge, raw, dest, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`), signal, audioLanguageFallback))
       done = true
-      return note
+      return [note, specs.note].filter(Boolean).join('；')
     }
     const mux: MuxAudio[] = []
     for (let i = 0; i < plan.files.length; i++) {
@@ -799,19 +839,20 @@ async function dlTencent(
       await downloadProgress(audioURL, dest, referer('tencent'), speedCB(emit, '音轨', base, span), retryNote, cfg.threads, audioCipher, undefined, signal)
       mux.push({ path: dest, title: audio.label, lang: audio.lang, isDefault: audio.isDefault })
     }
-    for (const input of mux) {
+    const muxAudios = orderedMuxAudios(mux)
+    for (const input of muxAudios) {
       const probed = await audioTrackLabel(ffmpeg, input.path)
       input.title = muxTrackTitle(input.lang ?? '', probed)
     }
     emit('封装', 0.86, out)
     const repairs: string[] = []
-    await muxToOut(dest => mkvmergeMux(mkvmerge, raw, mux, dest, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`), signal, message => {
+    await muxToOut(dest => mkvmergeMux(mkvmerge, raw, muxAudios, dest, (n, total) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`), signal, message => {
       repairs.push(message)
       runLog(`tencent audio repair vid=${t.vid} ${message}`)
     }, audioLanguageFallback))
-    if (usesMeasuredNaming(t)) t.namingEvidence = { ...t.namingEvidence, muxAudio: { index: defaultAudioIndex(mux), count: mux.length } }
+    if (usesMeasuredNaming(t)) t.namingEvidence = { ...t.namingEvidence, muxAudio: { index: defaultAudioIndex(muxAudios), count: muxAudios.length } }
     done = true
-    return [note, ...repairs].filter(Boolean).join('；')
+    return [note, specs.note, ...repairs].filter(Boolean).join('；')
   } finally {
     // Success and cancel drop the sources; a failure keeps them for diagnosis,
     // and a pause keeps them so the resume can reuse the downloaded bytes.
@@ -1039,17 +1080,18 @@ async function dlYouku(
     ])
     signal?.throwIfAborted()
     emit('封装', 0.86, muxInputs.length > 1 ? `封装 ${muxInputs.length} 条音轨` : out)
+    const muxAudios = orderedMuxAudios(muxInputs)
     const muxProgress = (n: number, total: number) => emit('封装', 0.86 + 0.13 * (n / total), `封装 ${human(n)}/${human(total)}`)
     const partial = join(dir, `.${t.vid}.mux-partial${dts ? '.mp4' : '.mkv'}`)
     temps.add(partial)
     temps.add(`${partial}.timing.json`)
     try {
-      if (dts) await mp4boxMux(mp4box, videoPath, muxInputs, partial, muxProgress, signal, audioLanguageFallback)
-      else if (muxInputs.length) await mkvmergeMux(mkvmerge, videoPath, muxInputs, partial, muxProgress, signal, undefined, audioLanguageFallback)
+      if (dts) await mp4boxMux(mp4box, videoPath, muxAudios, partial, muxProgress, signal, audioLanguageFallback)
+      else if (muxAudios.length) await mkvmergeMux(mkvmerge, videoPath, muxAudios, partial, muxProgress, signal, undefined, audioLanguageFallback)
       else await mkvmergeRemux(mkvmerge, videoPath, partial, muxProgress, signal, audioLanguageFallback)
       signal?.throwIfAborted()
       moveFileSync(partial, out)
-      if (usesMeasuredNaming(t) && muxInputs.length) t.namingEvidence = { ...t.namingEvidence, muxAudio: { index: defaultAudioIndex(muxInputs), count: muxInputs.length } }
+      if (usesMeasuredNaming(t) && muxAudios.length) t.namingEvidence = { ...t.namingEvidence, muxAudio: { index: defaultAudioIndex(muxAudios), count: muxAudios.length } }
       succeeded = true
       return out
     } catch (e) {
@@ -1186,7 +1228,10 @@ export function patchJob(jobs: Job[], e: JobEvt): void {
   row.pct = e.pct
   row.log = e.log
   row.err = e.err
-  if (e.done) row.note = e.note ?? ''
+  if (e.done) {
+    row.note = e.note ?? ''
+    if (!e.err && !e.stopped) row.completedMedia = e.completedMedia
+  } else row.completedMedia = undefined
 }
 
 /** mkv track name from the probed codec. Platform slogans stay off the file. */

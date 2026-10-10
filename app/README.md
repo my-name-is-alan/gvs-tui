@@ -54,18 +54,21 @@ bun run dist:mac     # 需在 Mac 上执行；release/GVS-<版本>-arm64.dmg / -
 src/main/index.ts      窗口、IPC（gvs:call 按方法名分发）
 src/main/core.ts       业务编排：连接/隧道、浏览、搜索、详情、探测、入队、账号登录
 src/main/posters.ts    gvs-img:// 海报协议：带 Referer 直连 + 磁盘缓存，HEIC 用 ffmpeg 转 JPG
-src/main/env.ts        网络环境：网关与 IQ 认证走系统代理，默认上游直连；隧道 WebSocket 挂代理
+src/main/env.ts        网络环境：隧道和 IQ 海外版接口使用配置或系统代理，默认上游直连
+src/main/desktop-network.ts  网关 / TMDB 的独立代理会话，不修改默认网络会话
 src/main/shims/        构建时替换 TUI 里依赖 Bun 的 proxy.ts、依赖源码布局的 tool-paths.ts
 src/shared/api.ts      主进程 ↔ 界面契约
 src/renderer/          界面（设计稿：GVS 桌面端设计稿，米白/墨黑/橙色硬阴影）
 ```
 
-网络约定与 TUI 相同：网关与 TMDB 请求走 Chromium 网络栈（跟随系统代理，适配网关屏蔽 CN 的部署）；
-优酷/腾讯上游经隧道、CDN 分片都从本机直连。
-IQ 账号认证域名 `passport.iq.com`、`intl-passport.iqiyi.com` 同样跟随系统代理与 PAC，
-可在 Clash 规则模式下登录，无需开启 TUN。登录使用的出口由 Clash 规则决定；
-可添加 `DOMAIN-SUFFIX,iq.com,代理组` 和 `DOMAIN,intl-passport.iqiyi.com,代理组`，登录后按需关闭这两条分流。
-`~/.config/gvs/desktop-run.log` 中的 `iq_auth_transport` 记录认证域名、系统代理决策与 HTTP 状态，
+桌面版可在「设置 → 网关 → 代理地址」或首次连接页填写 HTTP/HTTPS 代理，如 `http://127.0.0.1:7890`；
+端口按自己的代理软件填写，留空使用系统代理与 PAC。地址以 `desktopProxy` 保存在本机配置，重启后继续使用；
+与终端版的 `gatewayProxy` / `tmdbProxy` 独立。保存后网关重连；连接失败恢复先前配置，显式代理失败不回退直连。
+网关 HTTP、隧道 WebSocket、TMDB、IQ 海外版登录和取流使用这个地址，代理节点与分流仍由代理软件决定。
+网关与 TMDB 使用独立的 Chromium 网络会话，本机网关始终直连；不会修改默认会话、媒体下载与图片的路由。
+优酷、腾讯和爱奇艺国内版上游保留直连；IQ 海外版的 `iq.com`、`intl-passport.iqiyi.com`、
+`inter.iqiyi.com`、`video.iqiyi.com` 接口通过代理。Clash 规则模式下需给这些域名配置相应代理组，无需开启 TUN。
+`~/.config/gvs/desktop-run.log` 中的 `iq_auth_transport` / `iq_source_transport` 记录域名、配置或系统代理决策与 HTTP 状态，
 不记录账号、Cookie、请求路径或请求正文；节点与实际分流结果以 Clash 连接日志为准。
 
 IQ 的 Web / TV 会话由网关保存和恢复，桌面端不保存账号密码，也不把登录成功的界面状态当作有效会话。

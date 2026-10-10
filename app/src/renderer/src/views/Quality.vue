@@ -387,6 +387,7 @@ const tmpText = computed(() => (tmpFull.value ? sep(tmpFull.value) : '下载目�
               </div>
             </div>
           </div>
+          <div v-if="d?.provider === 'iq'" class="muted small">初始只选平台默认语言的音轨，其他配音可手动选择。</div>
           <div class="muted small">已选音轨默认优先 DTS，其次杜比 / 全景声，再选 AAC；也可手动指定，整批下载沿用此选择。</div>
           <div v-if="hasDts" class="muted small">选了 DTS 音轨，会用 MP4Box 封装成 MP4</div>
         </fieldset>

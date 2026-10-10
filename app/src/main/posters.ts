@@ -1,14 +1,16 @@
 // gvs-img://poster/?u=<url>&p=<provider>
 // 海报统一走主进程：带 Referer 直连 CDN、磁盘缓存；红果的 HEIC 用内置 ffmpeg 转 JPG
 // （Chromium 不解 HEIC）。
-import { app, protocol } from 'electron'
-import { createDecipheriv, createHash } from 'node:crypto'
+import { app, nativeImage, protocol } from 'electron'
+import { createDecipheriv, createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { headersFor, referer } from '@tui/media.ts'
 import { lookBundledFFmpeg } from '@tui/tools.ts'
 import { runLog } from '@tui/runlog.ts'
+import { createPosterQueue, posterResizeSize } from './poster-loading'
 
 export const POSTER_SCHEME = 'gvs-img'
 
@@ -19,6 +21,7 @@ export function registerPosterScheme(): void {
 }
 
 const inflight = new Map<string, Promise<{ body: Buffer; type: string }>>()
+const networkSlot = createPosterQueue(6)
 let converting = 0
 const waiters: Array<() => void> = []
 
@@ -154,18 +157,26 @@ function cacheFiles(dir: string): Array<{ path: string; size: number; mtime: num
 }
 
 /** 写完之后顺手收一次；一分钟最多扫一次，别把协议处理拖慢。 */
-function trimCache(dir: string): void {
+async function trimCache(dir: string): Promise<void> {
   const now = Date.now()
   if (now - lastSweep < SWEEP_INTERVAL) return
   lastSweep = now
-  const files = cacheFiles(dir)
+  const files = (await Promise.all((await readdir(dir, { withFileTypes: true }))
+    .filter(file => file.isFile() && file.name.endsWith('.img'))
+    .map(async file => {
+      const path = join(dir, file.name)
+      try {
+        const info = await stat(path)
+        return { path, size: info.size, mtime: info.mtimeMs }
+      } catch { return null }
+    }))).filter((file): file is { path: string; size: number; mtime: number } => file !== null)
   let total = files.reduce((n, f) => n + f.size, 0)
   if (total <= MAX_CACHE_BYTES) return
   files.sort((a, b) => a.mtime - b.mtime)
   for (const f of files) {
     if (total <= TARGET_CACHE_BYTES) break
     try {
-      rmSync(f.path, { force: true })
+      await rm(f.path, { force: true })
       total -= f.size
     } catch {
       /* 下次再删 */
@@ -190,22 +201,65 @@ export function clearPosterCache(): void {
   inflight.clear()
 }
 
+/** Keep full-size source images off the disk cache; animated/transparent formats retain their original bytes. */
+function compactJpeg(body: Buffer): Buffer {
+  try {
+    const image = nativeImage.createFromBuffer(body)
+    if (image.isEmpty()) return body
+    const { width, height } = image.getSize()
+    const size = posterResizeSize(width, height, body.length)
+    if (!size) return body
+    const compact = image.resize({ ...size, quality: 'good' }).toJPEG(82)
+    return compact.length < body.length ? compact : body
+  } catch {
+    return body
+  }
+}
+
+async function writeCached(cached: string, body: Buffer): Promise<void> {
+  const pending = `${cached}.${randomUUID()}.tmp`
+  try {
+    await writeFile(pending, body)
+    await rename(pending, cached)
+  } finally {
+    await rm(pending, { force: true })
+  }
+}
+
 async function load(url: string, provider: string): Promise<{ body: Buffer; type: string }> {
   const dir = cacheDir()
-  mkdirSync(dir, { recursive: true })
   const key = cacheKeyFor(url)
   const cached = join(dir, `${key}.img`)
-  if (existsSync(cached)) {
-    const body = readFileSync(cached)
-    return { body, type: sniff(body) }
+  try {
+    const body = await readFile(cached)
+    const type = sniff(body)
+    if (type.startsWith('image/')) {
+      if (type === 'image/jpeg' && body.length > 512 * 1024) {
+        const compact = compactJpeg(body)
+        if (compact !== body) await writeCached(cached, compact)
+        return { body: compact, type }
+      }
+      return { body, type }
+    }
+    // A partial/invalid cache file must not permanently break the same cover.
+    await rm(cached, { force: true })
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
   }
-  const res = await fetch(url, { headers: headersFor(referer(provider)), signal: AbortSignal.timeout(15_000) })
-  if (!res.ok) throw new Error(`poster http ${res.status}`)
-  let body: Buffer = Buffer.from(await res.arrayBuffer())
+  await mkdir(dir, { recursive: true })
+  const downloaded = await networkSlot(async () => {
+    const res = await fetch(url, { headers: headersFor(referer(provider)), signal: AbortSignal.timeout(15_000) })
+    if (!res.ok) {
+      await res.body?.cancel()
+      throw new Error(`poster http ${res.status}`)
+    }
+    return { body: Buffer.from(await res.arrayBuffer()), contentType: res.headers.get('content-type') }
+  })
+  let body: Buffer = downloaded.body
   let type = sniff(body)
   if (!type.startsWith('image/')) {
     const plain = decryptCover(body)
-    if (!plain) throw new Error(`poster not an image (${res.headers.get('content-type')}, ${body.length}B)`)
+    if (!plain) throw new Error(`poster not an image (${downloaded.contentType}, ${body.length}B)`)
     body = plain
     type = sniff(body)
   }
@@ -213,8 +267,9 @@ async function load(url: string, provider: string): Promise<{ body: Buffer; type
     body = await heicToJpeg(body, dir, key)
     type = 'image/jpeg'
   }
-  writeFileSync(cached, body)
-  trimCache(dir)
+  if (type === 'image/jpeg') body = compactJpeg(body)
+  await writeCached(cached, body)
+  void trimCache(dir).catch(() => {})
   return { body, type }
 }
 
@@ -226,16 +281,22 @@ export function handlePosterProtocol(): void {
     // 卡片上可能是协议相对地址（`//img.x/y.jpg`），补全后再校验。
     const target = raw.startsWith('//') ? `https:${raw}` : raw
     if (!/^https?:\/\//i.test(target)) return new Response(null, { status: 400 })
-    let job = inflight.get(target)
+    let source: URL
+    try { source = new URL(target) } catch { return new Response(null, { status: 400 }) }
+    // Signed URLs for the same cover share both the disk cache and pending fetch.
+    const requestKey = `${provider}:${cacheKeyFor(target)}`
+    let job = inflight.get(requestKey)
     if (!job) {
-      job = load(target, provider).finally(() => inflight.delete(target))
-      inflight.set(target, job)
+      job = load(target, provider).finally(() => {
+        if (inflight.get(requestKey) === job) inflight.delete(requestKey)
+      })
+      inflight.set(requestKey, job)
     }
     try {
       const { body, type } = await job
       return new Response(new Uint8Array(body), { headers: { 'content-type': type, 'cache-control': 'max-age=86400' } })
     } catch (e) {
-      runLog(`poster fail ${provider} ${target.slice(0, 120)} ${e instanceof Error ? e.message : e}`)
+      runLog(`poster fail ${provider} ${source.origin}${source.pathname.slice(0, 100)} ${e instanceof Error ? e.message : e}`)
       return new Response(null, { status: 404 })
     }
   })

@@ -46,3 +46,14 @@ export function defaultAudioIndex(audios: readonly { isDefault?: boolean }[]): n
   const index = audios.findIndex(a => a.isDefault)
   return index === -1 ? 0 : index
 }
+
+/** Put the chosen output default first without changing the other tracks' order.
+ * Clone and normalize flags so old queues with missing/duplicate defaults also
+ * have exactly one default. The saved selection and source metadata stay intact.
+ */
+export function orderedMuxAudios<T extends { isDefault?: boolean }>(audios: readonly T[]): Array<Omit<T, 'isDefault'> & { isDefault: boolean }> {
+  if (!audios.length) return []
+  const index = defaultAudioIndex(audios)
+  return [audios[index]!, ...audios.filter((_, i) => i !== index)]
+    .map((audio, i) => ({ ...audio, isDefault: i === 0 }))
+}

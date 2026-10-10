@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { join } from 'node:path'
 import type { GvsApi, JobView, Tone } from '@shared/api'
-import { captureProxyEnv, installIQAuthProxy, patchGlobalWebSocket } from './env'
+import { captureProxyEnv, installIQSourceProxy, patchGlobalWebSocket } from './env'
 import { Core } from './core'
 import { handlePosterProtocol, registerPosterScheme } from './posters'
 import { runLog } from '@tui/runlog.ts'
@@ -20,7 +20,7 @@ process.env.GVS_VERSION_RECORDS_PATH ||= join(app.getPath('userData'), 'actual-v
 
 captureProxyEnv()
 patchGlobalWebSocket()
-installIQAuthProxy()
+installIQSourceProxy()
 registerPosterScheme()
 
 if (!app.requestSingleInstanceLock()) app.quit()
@@ -51,7 +51,7 @@ const updater = new Updater((u) => {
 
 const api: { [K in keyof GvsApi]: (...args: Parameters<GvsApi[K]>) => unknown } = {
   state: () => core.state(),
-  setup: (host, key) => core.setup(host, key),
+  setup: (host, key, proxy) => core.setup(host, key, proxy),
   saveSettings: (patch) => core.saveSettings(patch),
   catalog: (p) => core.catalog(p),
   browse: (p, s, c) => core.browse(p, s, c),

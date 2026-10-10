@@ -15,3 +15,8 @@ export function tuiBinDir(): string {
 export function toolDirectoryFrom(_modulePath: string): string {
   return tuiBinDir()
 }
+
+export function iqcnLocalPath(): string {
+  const dir = app.isPackaged ? join(process.resourcesPath, 'bin') : tuiBinDir()
+  return join(dir, process.platform === 'win32' ? 'iqcn-local.exe' : 'iqcn-local')
+}

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
-import { defaultAudioIndex } from './audio-selection.ts'
+import { defaultAudioIndex, orderedMuxAudios } from './audio-selection.ts'
 import { defaultIQSubtitleIndex, prepareIQSubtitles } from './iq-subtitles.ts'
 import type { IQSubtitleFile } from './iq-subtitles.ts'
 export { defaultIQSubtitleIndex, orderedIQSubtitles } from './iq-subtitles.ts'
@@ -32,7 +32,8 @@ function ffmpeg(bin: string, args: string[], signal?: AbortSignal): Promise<void
 
 /** Mux to a fresh same-volume path, then replace only the job's unchanged empty reservation. */
 export async function muxIQ(bin: string, options: IQMuxOptions): Promise<{ index: number; count: number; note?: string }> {
-  const { video, audios, dest, reservedOutput, signal, emit } = options
+  const { video, dest, reservedOutput, signal, emit } = options
+  const audios = orderedMuxAudios(options.audios)
   signal?.throwIfAborted()
   mkdirSync(dirname(dest), { recursive: true })
   const reservation = reservedOutput ? lstatSync(dest) : undefined
@@ -48,9 +49,9 @@ export async function muxIQ(bin: string, options: IQMuxOptions): Promise<{ index
     const args = ['-i', video, ...audios.flatMap(a => ['-i', a.path]), ...subtitles.flatMap(s => ['-i', s.path]), '-map', '0:v:0']
     for (let i = 0; i < audios.length; i++) args.push('-map', `${i + 1}:a:0`)
     for (let i = 0; i < subtitles.length; i++) args.push('-map', `${1 + audios.length + i}:s:0`)
-    args.push('-c', 'copy', '-metadata:s:v:0', 'language=zho')
+    args.push('-c', 'copy', '-metadata:s:v:0', 'language=zho', '-metadata:s:a', 'title=', '-metadata:s:a', 'handler_name=')
     audios.forEach((a, i) => args.push(`-metadata:s:a:${i}`, `language=${a.language}`,
-      `-metadata:s:a:${i}`, `title=${a.title}`, `-disposition:a:${i}`, i === index ? 'default' : '0'))
+      `-disposition:a:${i}`, i === index ? 'default' : '0'))
     subtitles.forEach((s, i) => args.push(`-metadata:s:s:${i}`, `language=${s.language}`,
       `-metadata:s:s:${i}`, `title=${s.title}`, `-disposition:s:${i}`, i === subtitleIndex ? 'default' : '0'))
     args.push('-n', output)

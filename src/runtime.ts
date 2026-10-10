@@ -42,6 +42,7 @@ import {
 } from './lib/jobs.ts'
 import { moviePlayables, probeOptions, qualityChoiceLabel, youkuEditionsFromDetail, youkuMoviePick, tencentPlayQualityInput} from './lib/quality.ts'
 import { selectedTencentQuality } from './lib/tencent-quality-selection.ts'
+import { selectedIQCNQuality } from './lib/iqcn-quality-selection.ts'
 import { runTunnel } from './lib/tunnel.ts'
 import {
   hostIsLocal,
@@ -1631,6 +1632,7 @@ export class Runtime {
         t.quality = q.stream || q.id
         t.caption = q.caption
         if (t.provider === 'tencent') t.tencentQuality = selectedTencentQuality(q)
+        if (t.provider === 'iqcn') t.iqcnQuality = selectedIQCNQuality(q, this.pending[0]!.vid)
         t.group = this.cfg.releaseGroup
         if (q.height > 0) t.height = q.tier || ((t.provider === 'hongguo' || t.provider === 'huangguo') && q.width > 0 && q.height > q.width
           ? tierHeight(q.height, q.width) : tierHeight(q.width, q.height))
@@ -1704,7 +1706,7 @@ export class Runtime {
       this.setTitleKind(h.kind)
       for (const t of this.pending) {
         t.tmdbId = h.id
-        t.year = h.year
+        t.year = h.year || t.year
         t.nameDots = dots(h.name)
         t.plot = h.overview ?? ''
         if (h.name) t.series = h.name
@@ -2223,7 +2225,7 @@ export class Runtime {
     const movie = this.isMovie()
     return {
       provider: this.detailProv,
-      namingVersion: ['youku', 'tencent', 'iq'].includes(this.detailProv) ? 1 : undefined,
+      namingVersion: ['youku', 'tencent', 'iq', 'iqcn'].includes(this.detailProv) ? 1 : undefined,
       includeEpisodeTitle: this.cfg.includeEpisodeTitle !== false,
       title: ep.title,
       series: movie ? this.detailTitle : parseSeriesTitle(this.detailTitle).title,

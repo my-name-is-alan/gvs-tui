@@ -1,7 +1,8 @@
 // 桌面端替身：tui/src/lib/proxy.ts
-// 网关 / TMDB 走 Chromium 网络栈（net.fetch），自动跟随系统代理（Clash 等）；
-// CDN 与默认上游用 Node fetch 直连；IQ 认证域名的系统代理例外在 env.ts 注册。
+// 网关 / TMDB 走 Chromium 网络栈，优先桌面代理配置，留空跟随系统代理（Clash 等）；
+// CDN 与默认上游用 Node fetch 直连；IQ 海外版登录/取流接口的系统代理例外在 env.ts 注册。
 import { net } from 'electron'
+import { fetchDesktopService } from '../desktop-network'
 
 /** Probe through the same system proxy used by the native media downloader. */
 export function fetchMediaProbe(url: string, init: RequestInit): Promise<Response> {
@@ -46,17 +47,18 @@ export function envWithoutProxy(env: NodeJS.Dict<string> = process.env, proxy: s
 }
 
 export async function fetchRemote(url: string, init: RequestInit = {}): Promise<Response> {
-  return net.fetch(url, init as Parameters<typeof net.fetch>[1])
+  return fetchDesktopService(url, init)
 }
 
-/** Like desktop TMDB search, use Chromium's system proxy rather than Bun options. */
+/** TMDB shares the desktop service route, independent of TUI-only proxy options. */
 export function fetchTmdb(url: string, init: RequestInit & { proxy?: string } = {}): Promise<Response> {
-  return fetchRemote(url, init)
+  const { proxy: _tuiProxy, ...request } = init
+  return fetchRemote(url, request)
 }
 
-/** 桌面端网关请求走系统代理。tui.json 里的 gatewayProxy 只给终端版用。 */
+/** gatewayProxy remains TUI-only; desktopProxy controls desktop service requests. */
 export async function fetchGateway(url: string, init: RequestInit, _savedProxy = ''): Promise<Response> {
-  return net.fetch(url, init as Parameters<typeof net.fetch>[1])
+  return fetchDesktopService(url, init)
 }
 
 export async function reexecWithoutProxy(): Promise<void> {}

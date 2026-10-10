@@ -71,18 +71,18 @@ test('TUI episode-title toggle applies to new IQ tasks and previews while existi
   expect(jobNaming(restored, x.cfg).episodeTitle).toBeUndefined()
 })
 
-test('IQ-only scope exposes TMDB settings and matching corrects a movie title, year, folder and filename', async () => {
+test.each(['iq', 'iqcn'] as const)('%s-only scope exposes TMDB settings and matching corrects a movie title, year, folder and filename', async (provider) => {
   const r = await start()
   const x = r as any
-  x.keyInfo = { all: false, scope: ['iq'] }
+  x.keyInfo = { all: false, scope: [provider] }
   x.cli.invoke = async () => ({ title: '平台片名', year: 2026,
     episodes: [{ vid: 'iq-movie', title: '平台片名', number: 1 }] })
   x.detailProv = 'tencent'
   x.scene = 'search'
-  x.query = 'https://www.iq.com/album/test-movie'
+  x.query = provider === 'iqcn' ? 'https://www.iqiyi.com/v_abc123.html' : 'https://www.iq.com/album/test-movie'
   r.handleKey('enter')
   await Bun.sleep(1)
-  expect(x.detailProv).toBe('iq')
+  expect(x.detailProv).toBe(provider)
   expect(x.detailId).toBe(x.query)
   expect(r.snapshot.detail?.kind).toBe('show')
   r.handleKey('m')
@@ -107,22 +107,22 @@ test('IQ-only scope exposes TMDB settings and matching corrects a movie title, y
     expect(r.snapshot.tmdbHits).toEqual([hit])
     r.handleKey('enter')
     expect(r.snapshot.scene).toBe('confirm')
-    expect(x.pending[0]).toMatchObject({ provider: 'iq', kind: 'movie', series: '正式片名', year: 2025, tmdbId: 900001,
+    expect(x.pending[0]).toMatchObject({ provider, namingVersion: 1, kind: 'movie', series: '正式片名', year: 2025, tmdbId: 900001,
       season: 0, episode: 0 })
     expect(r.snapshot.confirmation?.name).toStartWith('正式片名.2025.')
-    expect(r.snapshot.confirmation?.name).toContain('.IQ.WEB-DL.')
+    expect(r.snapshot.confirmation?.name).toContain(`.${provider === 'iqcn' ? 'IQIYI' : 'IQ'}.WEB-DL.`)
     expect(r.snapshot.confirmation?.name).not.toContain('S01E01')
     expect(r.snapshot.confirmation?.directory).toEndWith('正式片名 (2025) {tmdb-900001}')
     expect(r.snapshot.jobs).toHaveLength(0)
   } finally { x.simulated = true }
 })
 
-test('IQ series TMDB matching keeps the platform season and episode numbers across a batch', async () => {
+test.each(['iq', 'iqcn'] as const)('%s series TMDB matching keeps the platform season and episode numbers across a batch', async (provider) => {
   const r = await start()
   const x = r as any
   x.cli.invoke = async () => ({ title: '平台剧名 第2季', year: 2026,
     episodes: [{ vid: 'iq-one', title: '雨夜重逢', number: 1 }, { vid: 'iq-two', title: '携手同行', number: 2 }] })
-  await x.detail('iq', 'series')
+  await x.detail(provider, 'series')
   r.handleKey('a')
   r.handleKey('enter')
   x.cfg.tmdbKey = 'local-test-key'
@@ -143,14 +143,14 @@ test('IQ series TMDB matching keeps the platform season and episode numbers acro
   } finally { x.simulated = true }
 })
 
-test('a matched final season can use TMDB S04 for the batch while retaining all platform episode IDs and numbers', async () => {
+test.each(['tencent', 'iqcn'] as const)('%s matched final season can use TMDB S04 for the batch while retaining all platform episode IDs and numbers', async (provider) => {
   const r = await start()
   const x = r as any
   x.cli.invoke = async () => ({ title: '诛仙 最终季', year: 2026, episodes: [
     { vid: 'ep10', title: '诛仙 最终季 第10话', number: 10 },
     { vid: 'ep11', title: '诛仙 最终季 第11话', number: 11 },
   ] })
-  await x.detail('tencent', 'final-season')
+  await x.detail(provider, 'final-season')
   x.pending = x.eps.map((_: unknown, i: number) => x.taskFromEp(i))
   x.scene = 'tmdb'
   x.tmdbHits = [{ id: 206484, name: '诛仙', year: 2022, title: '', kind: 'show' }]
@@ -214,11 +214,11 @@ test('TMDB season failures and cancelled requests keep the matched title and pre
   expect(x.pending[0].season).toBe(4)
 })
 
-test('IQ without a TMDB key proceeds normally and a lookup failure remains skippable', async () => {
+test.each(['iq', 'iqcn'] as const)('%s without a TMDB key proceeds normally and a lookup failure remains skippable', async (provider) => {
   const r = await start()
   const x = r as any
   x.cli.invoke = async () => ({ title: '平台片名', year: 2026, episodes: [{ vid: 'iq-one', title: '第1集', number: 1 }] })
-  await x.detail('iq', 'album')
+  await x.detail(provider, 'album')
   r.handleKey('enter')
   x.simulated = false
   x.work = () => { throw new Error('TMDB lookup should require a key') }
@@ -773,6 +773,25 @@ test('TMDB movie selection fixes a Tencent detail without category and removes e
   expect(folder(task, '/downloads')).not.toContain('Season ')
   r.handleKey('enter')
   expect(r.snapshot.jobs?.[0]?.title).not.toContain('E01')
+})
+
+test('binding a newly added TMDB movie without a release date preserves the platform year in its name and folder', async () => {
+  const r = await start()
+  const internal = r as any
+  internal.detailProv = 'tencent'
+  internal.cli.invoke = async () => ({ title: '捉妖天师', year: 2026, category: '电影',
+    episodes: [{ vid: 'fixture', title: '捉妖天师', number: '1', kind: '正片' }] })
+  await internal.detail('tencent', 'movie')
+  r.handleKey('enter')
+  internal.scene = 'tmdb'
+  internal.tmdbHits = [{ id: 1793262, name: '捉妖天师', title: '捉妖天师', year: 0, kind: 'movie' }]
+  r.handleKey('enter')
+  expect(r.snapshot.scene).toBe('confirm')
+  expect(internal.pending[0].tmdbId).toBe(1793262)
+  expect(internal.pending[0].year).toBe(2026)
+  expect(r.snapshot.confirmation?.name).toStartWith('捉妖天师.2026.')
+  expect(r.snapshot.confirmation?.directory).toEndWith('捉妖天师 (2026) {tmdb-1793262}')
+  expect(r.snapshot.confirmation?.name).not.toContain('S01E01')
 })
 
 test('manual type switch works without TMDB and returning to TV restores the real episode', async () => {

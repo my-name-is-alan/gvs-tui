@@ -124,6 +124,31 @@ describe('download directory', () => {
   })
 })
 
+test('desktop proxy defaults to system routing and persists independently of TUI proxy settings', () => {
+  const appdata = mkdtempSync(join(tmpdir(), 'gvs-desktop-proxy-'))
+  const previous = process.env.APPDATA
+  process.env.APPDATA = appdata
+  try {
+    expect(defaultConfig().desktopProxy).toBe('')
+    const file = join(appdata, 'gvs', 'tui.json')
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify({ outDir: join(appdata, 'library'), gatewayProxy: 'http://localhost:7897', tmdbProxy: 'http://localhost:7898' }))
+    const old = loadConfig()
+    expect(old.desktopProxy).toBe('')
+    saveConfig({ ...old, desktopProxy: 'http://127.0.0.1:8899' })
+    const restored = loadConfig()
+    expect(restored.desktopProxy).toBe('http://127.0.0.1:8899')
+    expect(restored.gatewayProxy).toBe('http://localhost:7897')
+    expect(restored.tmdbProxy).toBe('http://localhost:7898')
+    saveConfig({ ...restored, desktopProxy: '' })
+    expect(loadConfig().desktopProxy).toBe('')
+  } finally {
+    if (previous === undefined) delete process.env.APPDATA
+    else process.env.APPDATA = previous
+    rmSync(appdata, { recursive: true, force: true })
+  }
+})
+
 test('episode-title naming defaults on in old configs and persists an explicit off/on choice', () => {
   const appdata = mkdtempSync(join(tmpdir(), 'gvs-name-setting-'))
   const previous = process.env.APPDATA

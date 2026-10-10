@@ -7,16 +7,30 @@ import type { TmdbDetails } from './tmdb.ts'
 
 const domestic: TmdbDetails = { id: 123, kind: 'movie', countries: ['CN'], originalLanguage: 'zh' }
 
-test('only a matched mainland production enables the Chinese fallback', () => {
+test('Chinese original language enables the fallback, while country alone requires a mainland production', () => {
   expect(mainlandAudioLanguage(domestic)).toBe('zh')
   expect(mainlandAudioLanguage({ ...domestic, kind: 'show' })).toBe('zh')
   expect(mainlandAudioLanguage({ ...domestic, originalLanguage: '' })).toBe('zh')
   expect(mainlandAudioLanguage({ ...domestic, countries: ['CN', 'HK'] })).toBe('zh')
   for (const countries of [[], ['US'], ['JP'], ['HK'], ['TW']]) {
-    expect(mainlandAudioLanguage({ ...domestic, countries })).toBe('')
+    expect(mainlandAudioLanguage({ ...domestic, countries })).toBe('zh')
+    expect(mainlandAudioLanguage({ ...domestic, countries, originalLanguage: '' })).toBe('')
   }
   expect(mainlandAudioLanguage({ ...domestic, countries: ['CN', 'US'], originalLanguage: 'en' })).toBe('')
   expect(mainlandAudioLanguage()).toBe('')
+})
+
+test('the newly added movie retains its Chinese original language even without production countries', async () => {
+  const metadata: TmdbDetails = { id: 1793262, kind: 'movie', countries: [], originalLanguage: 'zh' }
+  const task = { tmdbId: 1793262, kind: 'movie', tmdbMetadata: metadata,
+    audioTracks: [{ id: '326013', lang: '原声', isDefault: true }, { id: '327059', lang: '原声', isDefault: false }] } as DlTask
+  const lookup = async () => { throw new Error('saved matching metadata must be reused') }
+  const fallback = await prepareAudioLanguage({ tmdbKey: '' }, task, undefined, lookup)
+  expect(fallback).toBe('zh')
+  expect(resolveAudioLanguage('原声', 'und', fallback)).toBe('zh')
+  expect(resolveAudioLanguage('原声', 'eng', fallback)).toBe('eng')
+  expect(resolveAudioLanguage('粤语', 'und', fallback)).toBe('粤语')
+  expect(task.audioTracks!.map(a => a.isDefault)).toEqual([true, false])
 })
 
 test('fallback fills unknown audio languages while retaining explicit and source languages', () => {

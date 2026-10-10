@@ -321,7 +321,7 @@ export async function probeOptions(
   opts: { skipSign?: boolean; languages?: Array<{ vid: string; lang: string }>; tencentPlayParams?: TencentPlayParams } = {},
 ): Promise<StreamOptions> {
   switch (provider) {
-    case 'iqcn': return iqcnOptions(await cli.invoke('iqcn', 'probe', { tvid: vid }, {}, { timeoutMs: 150000 }))
+    case 'iqcn': return iqcnOptions(await cli.invoke('iqcn', 'probe', { tvid: vid }, {}, { timeoutMs: 150000 }), vid)
     case 'iq': return iqOptions(await cli.invoke('iq','probe',{vid},cli.extra(cfg,'iq'),{timeoutMs:150000}))
     case 'mewatch': case 'hamivideo': return probeManifest(cli, cfg, provider, vid)
     case 'hongguo': return probeHongguo(cli, vid)
@@ -461,10 +461,12 @@ export function tencentFormatHDR(raw: Record<string, unknown>): string {
   return ''
 }
 
-/** 画质表「字幕」列：软字幕 / 硬字幕。 */
-export function qualityCaptionText(caption?: string): string {
+/** Display the confirmed subtitle mode, falling back to the catalog's requested mode. */
+export function qualityCaptionText(caption?: string, captionProbe?: string): string {
   if (caption === 'soft') return '软字幕'
   if (caption === 'hard') return '硬字幕'
+  if (captionProbe === 'soft') return '软字幕'
+  if (captionProbe === 'hard') return '硬字幕'
   return ''
 }
 
@@ -489,11 +491,11 @@ export function qualityFpsText(fps?: number): string {
 }
 
 /** 确认页和状态行：档位名后面带上动态范围、帧率和软硬字幕。名字里已经写了的不再重复。 */
-export function qualityChoiceLabel(q: Pick<Quality, 'label' | 'title' | 'caption' | 'hdr' | 'fps'>): string {
+export function qualityChoiceLabel(q: Pick<Quality, 'label' | 'title' | 'caption' | 'captionProbe' | 'hdr' | 'fps'>): string {
   const base = (q.label || q.title || '').trim()
   const hdr = qualityHdrText(q.hdr)
   const fps = qualityFpsText(q.fps)
-  const cap = qualityCaptionText(q.caption)
+  const cap = qualityCaptionText(q.caption, q.captionProbe)
   const parts = [base]
   if (hdr && !base.toUpperCase().includes(hdr.toUpperCase())) parts.push(hdr)
   if (fps && !base.toLowerCase().includes(fps.toLowerCase())) parts.push(fps)
@@ -594,6 +596,7 @@ export function qualitiesFromTencentFormats(formats: unknown): Quality[] {
       drm: asString(raw.drm) || (anyInt(raw.lmt) > 0 ? 'DRM' : ''),
       tier: height || tencentDefnRank(name),
       caption: caption || undefined,
+      captionProbe: captionProbe === 'soft' || captionProbe === 'hard' ? captionProbe : undefined,
       hdr: hdr || undefined,
       fps: fps > 0 ? fps : undefined,
       stream: name,

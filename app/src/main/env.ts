@@ -4,8 +4,8 @@
 // 必须直连（家宽 IP）。Bun 版靠去掉代理环境变量后重启自身实现；这里：
 //   - 记下代理地址，仅供隧道 WebSocket 使用；
 //   - 删掉 HTTP(S)_PROXY，子进程（ffmpeg / N_m3u8DL-RE）和 Node fetch 都直连；
-//   - 网关 HTTP 走 net.fetch（见 shims/proxy.ts），天然跟随系统代理。
-//   - IQ 账号认证读取系统/PAC 代理，显式 CONNECT；登录可分流而不必开启 TUN。
+//   - 网关 / TMDB 优先桌面端代理配置，留空跟随系统代理（见 desktop-network.ts）。
+//   - IQ 海外版登录和取流接口读取同一配置或系统/PAC 代理，显式 CONNECT。
 import { session } from 'electron'
 import { dirname, join } from 'node:path'
 import { HttpsProxyAgent } from 'https-proxy-agent'
@@ -13,17 +13,20 @@ import WsSocket from 'ws'
 import { configPath } from '@tui/config.ts'
 import { runLog } from '@tui/runlog.ts'
 import { setTunnelFetchRoute } from '@tui/tunnel.ts'
-import { createIQAuthRoute } from './iq-auth-proxy'
+import { createIQSourceRoute } from './iq-auth-proxy'
 import { fetchIQAuthProxy } from './iq-auth-transport'
 import { isProxyEnvKey } from './shims/proxy'
+import { desktopProxy } from './desktop-network'
+import { resolveDesktopTunnelProxy } from './desktop-proxy'
 
 let envProxy = ''
 
-/** IQ login follows system/PAC routing even when Clash TUN is disabled. */
-export function installIQAuthProxy(): void {
-  setTunnelFetchRoute(createIQAuthRoute({
+/** IQ login and playback requests follow system/PAC routing without Clash TUN. */
+export function installIQSourceProxy(): void {
+  setTunnelFetchRoute(createIQSourceRoute({
     fetch: fetchIQAuthProxy,
     resolveProxy: url => session.defaultSession.resolveProxy(url),
+    configuredProxy: desktopProxy,
     log: runLog,
   }))
 }
@@ -45,30 +48,16 @@ export function captureProxyEnv(): void {
 
 /** 系统代理（PAC / 手动）或环境变量里的 HTTP 代理，给隧道 WebSocket 用。 */
 async function proxyFor(url: string): Promise<string> {
-  if (envProxy) return envProxy
-  try {
-    const rule = await session.defaultSession.resolveProxy(url)
-    const m = /^(?:PROXY|HTTPS)\s+([^\s;]+)/i.exec(rule.trim())
-    if (m) return `http://${m[1]}`
-  } catch {
-    /* direct */
-  }
-  return ''
+  return resolveDesktopTunnelProxy(url, desktopProxy(), envProxy, target => session.defaultSession.resolveProxy(target))
 }
 
 let agentFor: (url: string) => HttpsProxyAgent<string> | undefined = () => undefined
 
-export async function installTunnelWebSocket(gatewayHost: string): Promise<void> {
-  let host = ''
-  try {
-    host = new URL(gatewayHost).hostname
-  } catch {
-    host = ''
-  }
-  const local = host === '127.0.0.1' || host === 'localhost' || host === '::1'
-  const proxy = local ? '' : await proxyFor(gatewayHost)
+export async function installTunnelWebSocket(gatewayHost: string): Promise<string> {
+  const proxy = await proxyFor(gatewayHost)
   const agent = proxy ? new HttpsProxyAgent(proxy) : undefined
   agentFor = () => agent
+  return proxy
 }
 
 /** tunnel.ts 用 `new WebSocket(url, { headers })`（Bun 语义）。换成 ws 实现并挂代理。 */

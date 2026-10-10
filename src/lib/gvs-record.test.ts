@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { tencentActualVersion } from './actual-version.ts'
-import { fileFingerprint, finishedVersionRecord, mediaSpecsFromProbe, probeFinishedMedia, saveVersionRecord } from './gvs-record.ts'
+import { fileFingerprint, finishedMediaRecord, finishedVersionRecord, mediaSpecsFromProbe, probeFinishedMedia, saveVersionRecord } from './gvs-record.ts'
 import { readMp4Tracks } from './mp4box.ts'
 
 test('fingerprint survives rename, detects content changes and agrees with the Python reader', () => {
@@ -73,6 +73,25 @@ test('missing ffprobe is nonfatal and no download is attempted', async () => {
     process.env.PATH = ''
     expect(await probeFinishedMedia('/nonexistent/video.mkv')).toEqual({ status: 'unavailable' })
   } finally { process.env.PATH = previous }
+})
+
+test('completed media reuses naming specs and records size even if a legacy probe fails', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gvs-completed-media-'))
+  try {
+    const path = join(dir, 'video.mkv')
+    writeFileSync(path, Buffer.alloc(4096))
+    const media = { status: 'probed' as const, width: 1920, height: 1080, codec: 'h264', fps: 25 }
+    let calls = 0
+    const probe = async () => { calls++; throw new Error('ffprobe unavailable') }
+    expect(await finishedMediaRecord(path, undefined, media, probe)).toEqual({ media, file: { size: 4096 } })
+    expect(calls).toBe(0)
+    expect(await finishedMediaRecord(path, undefined, undefined, probe))
+      .toEqual({ media: { status: 'unavailable' }, file: { size: 4096 } })
+    expect(calls).toBe(1)
+    const controller = new AbortController()
+    controller.abort(new Error('paused'))
+    await expect(finishedMediaRecord(path, controller.signal, media, probe)).rejects.toThrow('paused')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('default audio selection follows container/mux evidence instead of highest codec', () => {

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { tencentActualVersion, type MediaSpecs } from './actual-version.ts'
-import { finalizeCompletedName, renameCompletedFile, reserveOutputPath, tencentNamingEvidence, usesMeasuredNaming, youkuNamingEvidence } from './completed-naming.ts'
+import { finalizeCompletedName, iqcnNamingEvidence, renameCompletedFile, reserveOutputPath, tencentNamingEvidence, usesMeasuredNaming, youkuNamingEvidence } from './completed-naming.ts'
 import { completedFilename, filename, folder, sourceTag, type Naming } from './name.ts'
 import { finishedVersionRecord, saveVersionRecord } from './gvs-record.ts'
 
@@ -55,6 +55,20 @@ test('IQ movies and episodes use the platform tag and actual default audio witho
     .toBe('节目.S02E12.团圆.2026.2160p.IQ.WEB-DL.HEVC.AAC.2.0-WF.mkv')
 })
 
+test('domestic IQ uses IQIYI and actual video/default audio specs for movies and specials', () => {
+  const source = sourceTag('iqcn')
+  expect(source).toBe('IQIYI')
+  expect(completedFilename(naming({ source, season: 0, episode: 298, episodeTitle: '特别篇' }), media({
+    width: 1920, height: 808, codec: 'h264', fps: 25, audio: { status: 'confirmed', codec: 'aac', channels: 2 },
+  }))).toBe('节目.S00E298.特别篇.2026.1080p.IQIYI.WEB-DL.AVC.AAC.2.0-WF.mkv')
+  expect(completedFilename(naming({ source, kind: 'movie', title: '电影', container: 'mp4' }), media({
+    fps: 60000 / 1001, dynamicRange: 'DV', audio: { status: 'confirmed', codec: 'eac3', channels: 6 },
+  }))).toBe('电影.2026.2160p.IQIYI.WEB-DL.DV.60fps.HEVC.DDP.5.1-WF.mp4')
+  expect(completedFilename(naming({ source }), media({ audio: { status: 'ambiguous' } })))
+    .toBe('节目.S01E01.2026.2160p.IQIYI.WEB-DL.HEVC-WF.mkv')
+  expect(sourceTag('iq')).toBe('IQ')
+})
+
 test('long Chinese subtitles retain the measured suffix without creating directories', () => {
   const n = naming({ title: '超长片名'.repeat(40), episodeTitle: '标题/含反斜线\\和精彩内容'.repeat(70), container: 'mp4' })
   const result = completedFilename(n, media({ audio: { status: 'confirmed', codec: 'dts', channels: 6 } }))
@@ -65,12 +79,49 @@ test('long Chinese subtitles retain the measured suffix without creating directo
   expect(result).not.toContain('�')
 })
 
+test('domestic EDR and EDR 10bit follow the actual download-plan video ID and occupy the premium marker position', () => {
+  const edr = { id: '800|200|60|edrVideo', vid: 'edrVideo', bid: 800, br: 200, fr: 60,
+    name: '帧绮映画 4K · 高码率 · EDR 10bit', dynamic_range_code: 8 }
+  const sdr = { ...edr, id: '800|200|60|sdrVideo', vid: 'sdrVideo', name: '4K · 高码率 · SDR 10bit', dynamic_range_code: 7 }
+  const video = { bid: 800, br: 200, fr: 60, vid: 'edrVideo', segments: [{ url: 'https://cdn.example/video?SECRET' }] }
+  for (const code of [4, 8, '8']) {
+    const evidence = iqcnNamingEvidence({ video, formats: [sdr, { ...edr, dynamic_range_code: code }] })
+    expect(evidence).toEqual({ marker: 'EDR', stream: edr.id, evidence: 'download_plan' })
+    expect(JSON.stringify(evidence)).not.toContain('SECRET')
+    expect(completedFilename(naming({ source: sourceTag('iqcn') }), media({ fps: 60 }), evidence.marker))
+      .toBe('节目.S01E01.2026.2160p.IQIYI.WEB-DL.EDR.60fps.HEVC.AAC.2.0-WF.mkv')
+    expect(completedFilename(naming({ source: sourceTag('iqcn'), kind: 'movie', title: '电影', container: 'mp4' }),
+      media({ dynamicRange: 'HDR', fps: 25, audio: { status: 'confirmed', codec: 'eac3', channels: 6 } }), evidence.marker))
+      .toBe('电影.2026.2160p.IQIYI.WEB-DL.EDR.HDR.HEVC.DDP.5.1-WF.mp4')
+  }
+  expect(iqcnNamingEvidence({ video, formats: [{ ...edr, dynamic_range_code: undefined }] }).marker).toBe('EDR')
+  const downgraded = iqcnNamingEvidence({ video: { ...video, vid: 'sdrVideo' }, formats: [edr, sdr] })
+  expect(downgraded).toEqual({ stream: sdr.id, evidence: 'download_plan' })
+  expect(completedFilename(naming({ source: sourceTag('iqcn') }), media(), downgraded.marker)).not.toContain('.EDR.')
+})
+
+test('domestic EDR is omitted for catalog-only, ambiguous, conflicting or unknown video identity', () => {
+  const edr = { id: '800|200|60|edrVideo', vid: 'edrVideo', bid: 800, br: 200, fr: 60, dynamic_range_code: 8, selected: true }
+  const video = { vid: 'edrVideo', bid: 800, br: 200, fr: 60 }
+  expect(iqcnNamingEvidence({ formats: [edr] })).toEqual({})
+  expect(iqcnNamingEvidence({ video: { bid: 800, br: 200, fr: 60 }, formats: [edr] })).toEqual({})
+  expect(iqcnNamingEvidence({ video: { ...video, vid: 'unknown' }, formats: [edr] })).toEqual({})
+  expect(iqcnNamingEvidence({ video: { ...video, br: 100 }, formats: [edr] })).toEqual({})
+  expect(iqcnNamingEvidence({ video, formats: [edr, { ...edr, dynamic_range_code: 7 }] })).toEqual({})
+  expect(iqcnNamingEvidence({ video, formats: [{ ...edr, vid: 'conflicting' }] })).toEqual({})
+  expect(iqcnNamingEvidence({ video, formats: [{ ...edr, id: '800|200|60|conflicting' }] })).toEqual({})
+  expect(iqcnNamingEvidence({ video: { ...video, vid: 'https://cdn.example/SECRET' }, formats: [edr] })).toEqual({})
+  expect(iqcnNamingEvidence({ video, formats: [{ ...edr, dynamic_range_code: [8] }] }).marker).toBeUndefined()
+})
+
 test('S00 folder is preserved; old tasks and other platforms do not opt into new naming', () => {
   expect(folder(naming({ season: 0 }), '/library')).toBe(join('/library', '节目 (2026)', 'Season 00'))
   expect(usesMeasuredNaming({ provider: 'tencent' })).toBe(false)
   expect(usesMeasuredNaming({ provider: 'youku', namingVersion: 1 })).toBe(true)
   expect(usesMeasuredNaming({ provider: 'iq', namingVersion: 1 })).toBe(true)
   expect(usesMeasuredNaming({ provider: 'iq' })).toBe(false)
+  expect(usesMeasuredNaming({ provider: 'iqcn', namingVersion: 1 })).toBe(true)
+  expect(usesMeasuredNaming({ provider: 'iqcn' })).toBe(false)
   expect(usesMeasuredNaming({ provider: 'mewatch', namingVersion: 1 })).toBe(false)
   expect(filename(naming())).toBe('节目.S01E01.2026.2160p.TX.WEB-DL.H265-WF.mkv')
 })

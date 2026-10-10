@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process'
 import { existsSync, renameSync, unlinkSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
+import { isCodecProbeDiagnostic } from './media-timing.ts'
 
 export type IQAudioInput = { path: string; id: string; title: string; codec: string; parts: string[] }
 
-export function runIQFFmpeg(bin: string, args: string[], context: string, signal?: AbortSignal): Promise<void> {
+export function runIQFFmpeg(bin: string, args: string[], context: string, signal?: AbortSignal,
+  options: { onCodecDiagnostic?: (diagnostic: string) => void } = {}): Promise<void> {
   signal?.throwIfAborted()
   return new Promise((resolve, reject) => {
     const child = spawn(bin, ['-nostdin', '-hide_banner', '-loglevel', 'error', '-nostats', ...args], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], signal })
@@ -18,6 +20,13 @@ export function runIQFFmpeg(bin: string, args: string[], context: string, signal
     child.once('close', code => {
       if (signal?.aborted) { reject(signal.reason); return }
       if (code === 0 && !first.trim()) { resolve(); return }
+      // A successful domestic stream-copy can emit recoverable codec probe hints.
+      // Retain only bounded codec diagnostics; truncated output or mux errors fail.
+      if (code === 0 && first.length < 2000 && options.onCodecDiagnostic && isCodecProbeDiagnostic(first)) {
+        options.onCodecDiagnostic(first)
+        resolve()
+        return
+      }
       const detail = first.length < 2000 ? first : `${first}\n…\n${last}`
       reject(new Error(`${context} (${code}): ${detail.trim()}`))
     })

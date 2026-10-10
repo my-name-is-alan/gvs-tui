@@ -16,7 +16,7 @@ test('domestic quality keeps source names, exact selectors and returned dimensio
   const cli = { invoke: async (p: string, a: string, input: unknown) => {
     expect([p, a, input]).toEqual(['iqcn', 'probe', { tvid: '6334402890585900' }]); return data
   } } as unknown as GwClient
-  expect((await probeOptions(cli, defaultConfig(), 'iqcn', '6334402890585900')).qualities).toEqual(options.qualities)
+  expect((await probeOptions(cli, defaultConfig(), 'iqcn', '6334402890585900')).qualities).toEqual(iqcnOptions(data, '6334402890585900').qualities)
 })
 
 test('domestic selection rejects guessed or incomplete selectors', () => {
@@ -27,6 +27,17 @@ test('domestic selection rejects guessed or incomplete selectors', () => {
 
 test('domestic same-tier renditions preserve explicit vid to avoid ambiguous selection', () => {
   expect(iqcnSelection('600|100|25|abcd1234')).toEqual({ bid: '600', br: '100', fr: '25', vid: 'abcd1234' })
+})
+
+test('legacy domestic quality names distinguish EDR from EDR 10bit without assuming HDR', () => {
+  const options = iqcnOptions({ formats: [
+    { id: '800|200|25|edr', bid: 800, br: 200, fr: 25, dynamic_range_code: 4 },
+    { id: '800|200|25|edr10', bid: 800, br: 200, fr: 25, dynamic_range_code: 8 },
+    { id: '800|200|25|sdr10', bid: 800, br: 200, fr: 25, dynamic_range_code: 7 },
+  ] })
+  expect(options.qualities.map(q => q.label)).toEqual([
+    '超高清 4K · 高码率 · EDR', '超高清 4K · 高码率 · EDR 10bit', '超高清 4K · 高码率 · SDR 10bit',
+  ])
 })
 
 test('domestic coverage rejects previews, missing audio and mismatched track durations', () => {

@@ -87,6 +87,14 @@ const sub = (j: JobView) =>
   : j.state === 'paused' ? '已暂停 · 继续后从断点接着下'
   : j.log || j.status
 const subTitle = (j: JobView) => (j.state === 'done' ? j.output : sub(j))
+const mediaSummary = (j: JobView) => {
+  const record = j.completedMedia || j.actualVersion
+  return record ? actualVersionSummary(record) : ''
+}
+const mediaDetail = (j: JobView) => {
+  const record = j.completedMedia || j.actualVersion
+  return record ? actualVersionDetail(record) : ''
+}
 
 const isFolded = (g: { id: string; jobs: JobView[] }) =>
   folds[g.id] ?? (filter.value === 'all' && g.jobs.every((j) => j.state === 'done'))
@@ -203,7 +211,7 @@ function removeGroup(ids: number[], deleteFiles: boolean) {
                 <span v-if="j.state === 'done'" class="muted completed-at">· {{ ago(j.finishedAt) || '刚刚' }}</span>
               </div>
               <span v-if="sub(j)" class="muted sub" :title="subTitle(j)">{{ sub(j) }}</span>
-              <span v-if="j.actualVersion && actualVersionSummary(j.actualVersion)" class="muted sub" :title="actualVersionDetail(j.actualVersion)">{{ actualVersionSummary(j.actualVersion) }}</span>
+              <span v-if="mediaSummary(j)" class="muted sub" :title="mediaDetail(j)">{{ mediaSummary(j) }}</span>
               <span v-if="j.state === 'done' && j.note" class="sub job-note" :title="j.note">{{ j.note }}</span>
             </div>
             <div class="bar">

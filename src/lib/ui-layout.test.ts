@@ -3,6 +3,7 @@ import { demoSnapshot } from './demo'
 import { displayWidth } from './text'
 import { confirmationLines, episodeRanges, fitHints, qualityColumns, selectedAudioText, viewMetrics } from './ui-layout'
 import { patchJob } from './jobs'
+import { qualitiesFromTencentFormats, qualityCaptionText } from './quality'
 
 test('responsive quality columns reserve readable labels and stay within the pane', () => {
   const rows = demoSnapshot('quality-tencent').qualities!
@@ -15,6 +16,17 @@ test('responsive quality columns reserve readable labels and stay within the pan
     expect(2 + cols.reduce((n, c) => n + c.width, 0) + (cols.length - 1) * 2).toBeLessThanOrEqual(pane.main)
   }
   expect(qualityColumns(58, rows).length).toBeLessThan(qualityColumns(98, rows).length)
+})
+
+test('requested subtitle modes have a visible column with enough room for their labels', () => {
+  const rows = qualitiesFromTencentFormats(['软', '硬'].map(caption_probe => ({
+    name: 'fhd', id: '3', caption_probe, persona: `default_${caption_probe}`,
+  })))
+  const cols = qualityColumns(98, rows)
+  const caption = cols.find(col => col.key === 'caption')!
+  expect(caption).toBeDefined()
+  for (const row of rows) expect(displayWidth(qualityCaptionText(row.caption, row.captionProbe))).toBeLessThanOrEqual(caption.width)
+  expect(2 + cols.reduce((n, c) => n + c.width, 0) + (cols.length - 1) * 2).toBeLessThanOrEqual(98)
 })
 
 test('confirmed file paths wrap without losing characters, selected audio ignores the cursor', () => {

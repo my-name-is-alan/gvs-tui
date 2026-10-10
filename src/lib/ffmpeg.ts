@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { truncate } from './util.ts'
 import { tuiBinDir } from './tool-paths.ts'
 import { toolRuns } from './tools.ts'
+import { orderedMuxAudios } from './audio-selection.ts'
 
 function existsFile(p: string): string {
   if (!p || p === 'ffmpeg' || p === 'ffmpeg.exe') return ''
@@ -134,7 +135,7 @@ export function ffmpegDecryptCopy(
 ): Promise<void> {
   const args = ['-hide_banner', '-loglevel', 'error', '-y']
   if (keyHex) args.push('-decryption_key', keyHex.toLowerCase().trim())
-  args.push('-i', inPath, '-c', 'copy', outPath)
+  args.push('-i', inPath, '-c', 'copy', '-metadata:s:a', 'title=', '-metadata:s:a', 'handler_name=', outPath)
   return run(ffmpeg, args, { out: outPath, inputs: [inPath], cb: onProgress }, signal)
 }
 
@@ -145,7 +146,7 @@ export function ffmpegRemux(
   onProgress?: (n: number, total: number) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  return run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-i', inPath, '-c', 'copy', outPath],
+  return run(ffmpeg, ['-hide_banner', '-loglevel', 'error', '-y', '-i', inPath, '-c', 'copy', '-metadata:s:a', 'title=', '-metadata:s:a', 'handler_name=', outPath],
     { out: outPath, inputs: [inPath], cb: onProgress }, signal)
 }
 
@@ -227,28 +228,27 @@ export function validateVideoDecode(ffmpeg: string, path: string, signal?: Abort
 
 /**
  * Mux one or more audio tracks into the video file. Each selected track becomes
- * its own stream in the mkv, tagged with title/language so players can tell an
- * AAC track from a Dolby one.
+ * its own stream in the mkv, with its language tag and no track title.
  */
 export function ffmpegMux(
   ffmpeg: string,
   videoPath: string,
-  audios: Array<{ path: string; title?: string; lang?: string }>,
+  audios: Array<{ path: string; title?: string; lang?: string; isDefault?: boolean }>,
   outPath: string,
   onProgress?: (n: number, total: number) => void,
 ): Promise<void> {
+  audios = orderedMuxAudios(audios)
   // Preserve cross-input timestamps; any shift needed for negative DTS must
   // be global. -start_at_zero would normalize each input independently.
   const args = ['-hide_banner', '-loglevel', 'error', '-y', '-copyts', '-i', videoPath]
   for (const a of audios) args.push('-i', a.path)
   args.push('-map', '0:v:0')
   audios.forEach((_, i) => args.push('-map', `${i + 1}:a:0`))
-  args.push('-c', 'copy')
+  args.push('-c', 'copy', '-metadata:s:a', 'title=', '-metadata:s:a', 'handler_name=')
   audios.forEach((a, i) => {
-    if (a.title) args.push(`-metadata:s:a:${i}`, `title=${a.title}`)
     if (a.lang) args.push(`-metadata:s:a:${i}`, `language=${a.lang}`)
+    args.push(`-disposition:a:${i}`, i === 0 ? 'default' : '0')
   })
-  args.push('-disposition:a:0', 'default')
   args.push('-avoid_negative_ts', 'make_non_negative')
   args.push(outPath)
   return run(ffmpeg, args, { out: outPath, inputs: [videoPath, ...audios.map((a) => a.path)], cb: onProgress })

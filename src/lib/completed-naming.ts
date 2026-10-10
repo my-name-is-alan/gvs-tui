@@ -7,14 +7,14 @@ import { asString, isObj } from './util.ts'
 
 /** Only non-secret identifiers persist with a task; never a URL or raw play payload. */
 export type NamingEvidence = {
-  marker?: 'HQ' | 'MAXPLUS'
+  marker?: 'HQ' | 'MAXPLUS' | 'EDR'
   stream?: string
-  evidence?: 'stream_url' | 'format_url' | 'video_metadata' | 'format_filename'
+  evidence?: 'stream_url' | 'format_url' | 'video_metadata' | 'format_filename' | 'download_plan'
   muxAudio?: ProbeAudioOptions['muxAudio']
 }
 
 export function usesMeasuredNaming(task: { provider: string; namingVersion?: number }): boolean {
-  return task.namingVersion === 1 && ['youku', 'tencent', 'iq'].includes(task.provider)
+  return task.namingVersion === 1 && ['youku', 'tencent', 'iq', 'iqcn'].includes(task.provider)
 }
 
 export function youkuNamingEvidence(data: Record<string, unknown>, downloadedURL: string): NamingEvidence {
@@ -34,6 +34,35 @@ export function tencentNamingEvidence(record: ActualVersion): NamingEvidence {
   const stream = record.actual?.stream
   if (!stream || record.evidence === 'ambiguous' || record.evidence === 'unknown') return {}
   return { stream, evidence: record.evidence, ...(stream.toLowerCase() === 'maxplus' ? { marker: 'MAXPLUS' as const } : {}) }
+}
+
+/** Bind IQCN's EDR label to the video in the returned download plan, not the requested tier. */
+export function iqcnNamingEvidence(plan: Record<string, unknown>): NamingEvidence {
+  if (!isObj(plan.video)) return {}
+  const video = plan.video
+  const vid = asString(video.vid)
+  const keys = ['bid', 'br', 'fr'] as const
+  const selectors = keys.map(key => asString(video[key]))
+  if (!/^[A-Za-z0-9]{1,96}$/.test(vid) || !selectors.every(value => /^[1-9]\d{0,8}$/.test(value))) return {}
+  const stream = [...selectors, vid].join('|')
+  const rows = (Array.isArray(plan.formats) ? plan.formats.filter(isObj) : [])
+    .filter(row => row.vid === vid || asString(row.id).split('|')[3] === vid)
+  if (!rows.length) return {}
+  // The same BID/bitrate/fps can describe SDR, EDR, HDR and DV. Require the
+  // returned video ID and reject conflicting IDs/selectors even in one row.
+  if (rows.some(row => {
+    const id = asString(row.id), parts = id.split('|')
+    return (row.vid != null && asString(row.vid) !== vid) || (id && id !== stream)
+      || keys.some((key, index) => asString(row[key] ?? parts[index]) !== selectors[index])
+  })) return {}
+  const edr = rows.map(row => {
+    // Current source codes: 4 = EDR, 8 = EDR 10bit. Legacy gateways may
+    // return only an explicit name; never infer EDR from 4K or high bitrate.
+    if (row.dynamic_range_code != null) return ['4', '8'].includes(asString(row.dynamic_range_code).trim())
+    return /(?:^|[^a-z0-9])edr(?:$|[^a-z0-9])/i.test(asString(row.name))
+  })
+  if (new Set(edr).size !== 1) return {}
+  return { stream, evidence: 'download_plan', ...(edr[0] ? { marker: 'EDR' as const } : {}) }
 }
 
 /** Claim a provisional name before muxing; retries/new tasks never replace an existing library file. */

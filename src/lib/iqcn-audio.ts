@@ -4,6 +4,8 @@ import type { Audio } from '../types.ts'
 import type { GwClient } from './client.ts'
 import { asString, isObj } from './util.ts'
 import { orderedDownload } from './ordered-download.ts'
+import { runLog } from './runlog.ts'
+import { selectAudioTracks } from './audio-selection.ts'
 
 const LIMIT = 32 << 20
 export const iqcnLanguage = (id: number): string => id === 1 ? 'zho' : 'und'
@@ -43,13 +45,13 @@ export function iqcnAudios(data: Record<string, unknown>): Audio[] {
     const name = asString(row.name) || `语言 ${Number(row.language_id)}`
     const quality = Number(row.ct) === 5 ? '高码率' : Number(row.ct) === 1 ? '标准 · 随视频' : ''
     return { id, vid: asString(row.aid), label: [name, codec, quality].filter(Boolean).join(' · '), lang: name,
-      codec, isDefault: id === preferred, selected: id === preferred }
+      codec, isDefault: id === preferred, selected: true }
   })
 }
 
 export function selectIQCNAudios(data: Record<string, unknown>, requested?: ReadonlyArray<{ id: string; isDefault?: boolean }>): Audio[] {
   const available = iqcnAudios(data)
-  if (!requested?.length) return available.filter(audio => audio.selected)
+  if (!requested?.length) return selectAudioTracks(available, available.filter(audio => audio.selected).map(audio => audio.id))
   const selected = new Map<string, Audio>()
   for (const wanted of requested) {
     let matches = available.filter(audio => audio.id === wanted.id)
@@ -62,18 +64,43 @@ export function selectIQCNAudios(data: Record<string, unknown>, requested?: Read
     selected.set(match.id, { ...match, selected: true, isDefault: !!wanted.isDefault || !!previous?.isDefault })
   }
   const result = [...selected.values()]
-  const defaultIndex = Math.max(0, result.findIndex(audio => audio.isDefault))
-  return result.map((audio, index) => ({ ...audio, isDefault: index === defaultIndex }))
+  return selectAudioTracks(result, result.map(audio => audio.id), result.find(audio => audio.isDefault)?.id)
 }
 
 type Fetcher = (url: string, init: RequestInit) => Promise<Response>
+const sourceCode = (value: unknown): string => {
+  const code = typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+  return /^[A-Za-z0-9_.-]{1,24}$/.test(code) ? code : ''
+}
+class AudioFetchFailure extends Error {
+  constructor(message: string, readonly httpStatus = 0, readonly sourceCode = '') { super(message) }
+}
+/** Read only a bounded error object and retain its code, never the signed address or response text. */
+async function responseCode(res: Response): Promise<string> {
+  const reader = res.body?.getReader()
+  const chunks: Buffer[] = []
+  let size = 0
+  try {
+    while (reader) {
+      const part = await reader.read()
+      if (part.done) break
+      size += part.value.length
+      if (size > 4096) return ''
+      chunks.push(Buffer.from(part.value))
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString())
+    return sourceCode(body.code ?? body.e)
+  } catch { return '' }
+  finally { await reader?.cancel().catch(() => {}); reader?.releaseLock() }
+}
 async function boundedFetch(url: string, fetcher: Fetcher, signal?: AbortSignal): Promise<Buffer> {
   const timeout = AbortSignal.timeout(60000)
   const active = signal ? AbortSignal.any([signal, timeout]) : timeout
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   try {
     const res = await fetcher(url, { signal: active, redirect: 'manual' })
-    if (res.status !== 200 || !res.body) { await res.body?.cancel(); throw new Error(`音轨 HTTP ${res.status}`) }
+    if (res.status !== 200) throw new AudioFetchFailure(`音轨 HTTP ${res.status}`, res.status, await responseCode(res))
+    if (!res.body) throw new AudioFetchFailure('音轨对象为空', res.status)
     reader = res.body.getReader()
     const chunks: Buffer[] = []
     let size = 0
@@ -82,20 +109,19 @@ async function boundedFetch(url: string, fetcher: Fetcher, signal?: AbortSignal)
       const item = await reader.read()
       if (item.done) break
       size += item.value.length
-      if (size > LIMIT) throw new Error('音轨对象超过大小限制')
+      if (size > LIMIT) throw new AudioFetchFailure('音轨对象超过大小限制')
       chunks.push(Buffer.from(item.value))
     }
-    if (!size) throw new Error('音轨对象为空')
+    if (!size) throw new AudioFetchFailure('音轨对象为空')
     return Buffer.concat(chunks)
   } catch (error) {
     signal?.throwIfAborted()
-    if (timeout.aborted) throw new Error('音轨直连超时')
-    const message = error instanceof Error ? error.message : ''
-    throw new Error(/^音轨 HTTP \d{3}$/.test(message) || ['音轨对象超过大小限制', '音轨对象为空'].includes(message) ? message : '爱奇艺音轨直连下载失败')
+    if (error instanceof AudioFetchFailure) throw error
+    throw new AudioFetchFailure(timeout.aborted ? '爱奇艺音轨直连超时' : '爱奇艺音轨直连下载失败')
   } finally { await reader?.cancel().catch(() => {}); reader?.releaseLock() }
 }
 
-export type IQCNAudioPlan = { planId: string; audioId: string; info: { language: string; title: string }; embedded: boolean; parts: URL[] }
+export type IQCNAudioPlan = { planId: string; audioId: string; info: { language: string; title: string }; embedded: boolean; parts: URL[]; codec?: string }
 
 export async function prepareIQCNAudio(cli: GwClient, planId: string, audioId: string, signal?: AbortSignal): Promise<IQCNAudioPlan> {
   signal?.throwIfAborted()
@@ -103,7 +129,7 @@ export async function prepareIQCNAudio(cli: GwClient, planId: string, audioId: s
   signal?.throwIfAborted()
   if (result.transport !== 'local-audio-v1' || result.audioId !== audioId) throw new Error('网关未返回所选音轨，请同步更新网关和 App')
   const info = { language: iqcnLanguage(Number(result.language_id)), title: [asString(result.name), asString(result.codec).toUpperCase()].filter(Boolean).join(' · ') || '独立音轨' }
-  if (result.embedded === true) return { planId, audioId, info, embedded: true, parts: [] }
+  if (result.embedded === true) return { planId, audioId, info, embedded: true, parts: [], codec: asString(result.codec) }
   if (!Array.isArray(result.parts) || !result.parts.length) throw new Error('所选独立音轨没有文件')
   const parts = result.parts.map((value, index) => {
     if (!isObj(value) || value.index !== index) throw new Error('音轨分段顺序无效')
@@ -112,7 +138,7 @@ export async function prepareIQCNAudio(cli: GwClient, planId: string, audioId: s
     if (!url.pathname.toLowerCase().endsWith('.amp4')) throw new Error('所选独立音轨未返回可下载的 AMP4 文件，请刷新音轨列表或更新网关')
     return url
   })
-  return { planId, audioId, info, embedded: false, parts }
+  return { planId, audioId, info, embedded: false, parts, codec: asString(result.codec) }
 }
 
 export async function downloadIQCNAudio(cli: GwClient, planId: string, audioId: string, destination: string, threads: number, signal?: AbortSignal, fetcher: Fetcher = fetch, extractEmbedded?: () => Promise<void>, prepared?: IQCNAudioPlan): Promise<{ language: string; title: string }> {
@@ -139,19 +165,25 @@ export async function downloadIQCNAudio(cli: GwClient, planId: string, audioId: 
             const body = await boundedFetch(dispatch.href, fetcher, abort)
             if (body.length > 65536) throw new Error('音轨调度响应过大')
             const data = JSON.parse(body.toString())
-            if (String(data.e) !== '0') throw new Error('音轨调度失败')
+            if (String(data.e) !== '0') throw new AudioFetchFailure('音轨调度失败', 200, sourceCode(data.e ?? data.code))
             const url = new URL(asString(data.l))
             if (url.protocol !== 'https:' || !url.hostname.endsWith('.ptqy.gitv.tv') || url.username || url.password || url.port || url.hash || url.pathname !== dispatch.pathname) throw new Error('音轨调度返回了其他文件')
-            stage = 'media'
+            stage = 'cdn'
             const raw = await boundedFetch(url.href, fetcher, abort)
             stage = 'decompress'
             const bytes = raw[0] === 0x1f && raw[1] === 0x8b ? gunzipSync(raw, { maxOutputLength: LIMIT }) : raw
             if (!bytes.length) throw new Error('音轨对象为空')
             return bytes
-          } catch (error) { abort.throwIfAborted(); last = error }
+          } catch (error) {
+            abort.throwIfAborted()
+            last = error
+            const detail = error instanceof AudioFetchFailure ? error : undefined
+            const codec = /^[A-Za-z0-9_.-]{1,24}$/.test(asString(plan.codec)) ? asString(plan.codec) : '-'
+            runLog(`iqcn_audio_part_failed codec=${codec} index=${index} stage=${stage} attempt=${attempt + 1}/2 http=${detail?.httpStatus || '-'} source_code=${detail?.sourceCode || '-'}`)
+          }
         }
         const message = last instanceof Error ? last.message : ''
-        const safe = /^音轨 HTTP \d{3}$/.test(message) || ['音轨直连超时', '音轨对象超过大小限制', '音轨对象为空', '音轨调度失败', '音轨调度返回了其他文件', '音轨调度响应过大'].includes(message) ? message : `${stage} 失败`
+        const safe = /^音轨 HTTP \d{3}$/.test(message) || ['爱奇艺音轨直连超时', '爱奇艺音轨直连下载失败', '音轨对象超过大小限制', '音轨对象为空', '音轨调度失败', '音轨调度返回了其他文件', '音轨调度响应过大'].includes(message) ? message : `${stage} 失败`
         throw new Error(`所选音轨分段下载失败（第 ${index + 1}/${parts.length} 段，${safe}）`)
       },
       write: bytes => { appendFileSync(destination, bytes) },

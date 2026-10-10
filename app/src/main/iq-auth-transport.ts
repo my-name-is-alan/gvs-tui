@@ -3,7 +3,7 @@ import { request as httpsRequest } from 'node:https'
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 
-/** Explicit CONNECT preserves manual redirects and gateway-supplied account headers. */
+/** IQ login/playback CONNECT preserves manual redirects and gateway-supplied headers. */
 export function fetchIQAuthProxy(input: string, init: RequestInit, proxy: string): Promise<Response> {
   return new Promise((resolve, reject) => {
     const url = new URL(input)
@@ -34,7 +34,7 @@ export function fetchIQAuthProxy(input: string, init: RequestInit, proxy: string
         for await (const chunk of stream) {
           const bytes = Buffer.from(chunk)
           size += bytes.length
-          if (size > 6 << 20) throw new Error('IQ 认证响应超过隧道大小限制')
+          if (size > 6 << 20) throw new Error('IQ 接口响应超过隧道大小限制')
           chunks.push(bytes)
         }
         const status = incoming.statusCode || 502
@@ -48,6 +48,6 @@ export function fetchIQAuthProxy(input: string, init: RequestInit, proxy: string
     if (init.body instanceof Uint8Array) req.end(init.body)
     else if (typeof init.body === 'string') req.end(init.body)
     else if (init.body == null) req.end()
-    else { req.destroy(); agent.destroy(); reject(new Error('IQ 认证请求正文类型不支持')) }
+    else { req.destroy(); agent.destroy(); reject(new Error('IQ 接口请求正文类型不支持')) }
   })
 }

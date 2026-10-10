@@ -178,7 +178,10 @@ onBeforeUnmount(() => io?.disconnect())
       </button>
     </div>
 
-    <div v-if="error" class="error-box">{{ error }}</div>
+    <div v-if="error" class="error-box browse-error">
+      <span>{{ error }}</span>
+      <button type="button" class="btn" :disabled="loading" @click="section ? choose(section) : pick(provider)"><Icon name="retry" :size="15" />重试</button>
+    </div>
     <template v-else-if="loading">
       <ol v-if="rankSkeleton" class="ranklist">
         <li v-for="i in 8" :key="i" class="card rl rl-sk">
@@ -210,7 +213,7 @@ onBeforeUnmount(() => io?.disconnect())
     <section v-else class="grid">
       <button v-for="(c, i) in cards" :key="c.id || c.title" type="button" class="item" :disabled="c.target === 'unavailable'" :title="c.reason || c.title" @click="openCard(c)">
         <div class="pwrap">
-          <Poster class="p" :url="c.poster" :provider="c.provider" :title="c.title" :title-size="17" />
+          <Poster class="p" :url="c.poster" :provider="c.provider" :title="c.title" :title-size="17" :loading="i < 6 ? 'eager' : 'lazy'" />
           <span class="veil"><span class="tag">{{ c.target === 'search' ? '搜索' : c.target === 'unavailable' ? '暂不可用' : '查看详情' }}<Icon name="arrow" :size="14" /></span></span>
           <span v-if="isRank" class="rank">{{ i + 1 }}</span>
           <span v-if="c.vip" class="vip">VIP</span>
@@ -233,6 +236,8 @@ onBeforeUnmount(() => io?.disconnect())
 <style scoped>
 .head { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
 .tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+.browse-error { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.browse-error .btn { flex-shrink: 0; }
 .live {
   display: flex; align-items: center; gap: 12px; width: 100%; height: 40px; padding: 0 14px; border-radius: 8px;
   border: 1px solid var(--line); background: var(--card); cursor: pointer; text-align: left;

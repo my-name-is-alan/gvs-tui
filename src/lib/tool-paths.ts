@@ -15,3 +15,8 @@ export function toolDirectoryFrom(modulePath: string): string {
 export function tuiBinDir(): string {
   return toolDirectoryFrom(fileURLToPath(import.meta.url))
 }
+
+/** Read-only helper bundled with the app; separate from writable media wrappers. */
+export function iqcnLocalPath(): string {
+  return join(tuiBinDir(), process.platform === 'win32' ? 'iqcn-local.exe' : 'iqcn-local')
+}

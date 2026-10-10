@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { GwClient } from './client'
@@ -171,12 +171,14 @@ test('a fresh process loads the saved gateway proxy without any proxy environmen
       import { GwClient } from './src/lib/client.ts';
       const cfg = loadConfig();
       const client = new GwClient(cfg.host, cfg.key, () => cfg.gatewayProxy);
-      console.log((await client.keyInfo()).id);
+      // Persist the proof independently of child stdout flushing at exit.
+      const { writeFileSync } = await import('node:fs');
+      writeFileSync(${JSON.stringify(join(dir, 'result.txt'))}, (await client.keyInfo()).id);
     `], { cwd: join(import.meta.dir, '../..'), env: { ...env, XDG_CONFIG_HOME: dir }, stdout: 'pipe', stderr: 'pipe' })
-    const [output, error, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    const [, error, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     expect(error).toBe('')
     expect(status).toBe(0)
-    expect(output.trim()).toBe('persisted-proxy')
+    expect(readFileSync(join(dir, 'result.txt'), 'utf8')).toBe('persisted-proxy')
     expect(requests).toEqual(['http://gateway.invalid/v1/key'])
   } finally {
     proxy.stop(true)

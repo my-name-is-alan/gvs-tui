@@ -128,29 +128,49 @@ export function relativePresentationStarts(videoMs: number, audioMs: number[], d
   return starts.map(v => v - origin)
 }
 
-/** Uses bundled ffmpeg, without decoding/re-encoding or depending on ffprobe. */
-export async function inspectMediaTiming(ffmpeg: string, path: string, signal?: AbortSignal): Promise<TrackTiming[]> {
+/** Codec probes can emit recoverable diagnostics even during stream copy.
+ * Demuxer/container errors are deliberately excluded. */
+export function isCodecProbeDiagnostic(text: string): boolean {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean)
+  return lines.length > 0 && lines.every(line => /^\[(?:aac|eac3|ac3|h264|hevc|av1|dav1d) @ [^\]]+\] /i.test(line.trim()))
+}
+
+/** Uses bundled ffmpeg, without decoding/re-encoding or depending on ffprobe.
+ * A caller that already sampled readability may retain codec-only probe messages. */
+export async function inspectMediaTiming(ffmpeg: string, path: string, signal?: AbortSignal,
+  options: { onCodecDiagnostic?: (diagnostic: string) => void } = {}): Promise<TrackTiming[]> {
   return new Promise((resolve, reject) => {
     const parser = frameCrcTiming()
     const child = spawn(ffmpeg, ['-nostdin', '-hide_banner', '-v', 'error', '-copyts', '-i', path,
       '-map', '0:v?', '-map', '0:a?', '-c', 'copy', '-avoid_negative_ts', 'disabled', '-f', 'framecrc', 'pipe:1'],
     { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], signal })
-    let errors = ''
+    let errors = '', diagnosticTail = '', codecOnly = true
     let parseError: unknown
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
       try { parser.feed(chunk) } catch (e) { parseError = e; child.kill() }
     })
-    child.stderr.on('data', (b: Buffer) => { errors = (errors + b.toString()).slice(-4000) })
+    child.stderr.on('data', (b: Buffer) => {
+      const text = b.toString()
+      errors = (errors + text).slice(-4000)
+      const lines = (diagnosticTail + text).split(/\r?\n/)
+      diagnosticTail = lines.pop() ?? ''
+      for (const line of lines) if (line.trim() && !isCodecProbeDiagnostic(line)) codecOnly = false
+      // Never let a discarded earlier demuxer error be hidden by later codec hints.
+      if (diagnosticTail.length > 4000) { codecOnly = false; diagnosticTail = diagnosticTail.slice(-4000) }
+    })
     child.once('error', (e) => reject(signal?.aborted ? (signal.reason ?? e) : e))
     child.once('close', (code) => {
       try {
         if (signal?.aborted) throw signal.reason ?? new Error('已停止')
         if (parseError) throw parseError
         // FFmpeg may return 0 even after "File ended prematurely".
-        if (code !== 0 || errors.trim()) throw new Error(`媒体包校验失败 (${code}): ${errors.trim()}`)
+        if (diagnosticTail.trim() && !isCodecProbeDiagnostic(diagnosticTail)) codecOnly = false
+        const recoverable = code === 0 && options.onCodecDiagnostic && codecOnly && !!errors.trim()
+        if (code !== 0 || (errors.trim() && !recoverable)) throw new Error(`媒体包校验失败 (${code}): ${errors.trim()}`)
         const tracks = parser.finish()
         if (!tracks.length || tracks.some(t => !t.packets)) throw new Error('媒体轨道为空')
+        if (recoverable) options.onCodecDiagnostic!(errors)
         resolve(tracks)
       } catch (e) { reject(e) }
     })

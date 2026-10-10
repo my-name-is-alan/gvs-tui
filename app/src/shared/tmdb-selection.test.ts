@@ -19,9 +19,28 @@ test('a final season matches the base series despite its later release year, wit
   expect(defaultTmdbHit([show, { ...show, id: 2, year: 2026 }], '诛仙 最终季', 2026, 'show')).toBe(null)
 })
 
+test('annual animation matches the base TV title despite a later year and avoids remake ambiguity', () => {
+  const show: TmdbHit = { id: 235643, name: '逆天邪神', title: '', year: 2023, overview: '', kind: 'show' }
+  const comic = { ...show, id: 250894, name: '逆天邪神 动态漫画', year: 2021 }
+  for (const title of ['逆天邪神年番', '逆天邪神 年番']) {
+    expect(defaultTmdbHit([comic, show], title, 2026, 'show')).toEqual(show)
+    expect(defaultTmdbHit([show, { ...show, id: 2, year: 2026 }], title, 2026, 'show')).toBe(null)
+  }
+})
+
 test('an exact movie match survives an unknown/default-TV platform type', () => {
   expect(defaultTmdbHit([movie], '爸爸是外星人', 0, 'show')).toEqual(movie)
   expect(defaultTmdbHit([movie], '爸爸是外星人', 2024, 'show')?.kind).toBe('movie')
+})
+
+test('an exact newly added movie without a date beats unrelated older search results', () => {
+  const older: TmdbHit = { id: 3053, name: '天师捉妖', title: '天师捉妖', year: 1967, overview: '', kind: 'movie' }
+  const current: TmdbHit = { id: 1793262, name: '捉妖天师', title: '捉妖天师', year: 0, overview: '', kind: 'movie' }
+  const tv: TmdbHit = { ...older, id: 235078, name: '天师斗妖姬', kind: 'show' }
+  expect(defaultTmdbHit([older, current, tv], '捉妖天师', 2026, 'movie')).toEqual(current)
+  expect(defaultTmdbHit([older, current, tv], '捉妖天师', 2026, 'show')).toEqual(current)
+  expect(defaultTmdbHit([current, { ...current, id: 2 }], '捉妖天师', 2026, 'movie')).toBe(null)
+  expect(defaultTmdbHit([{ ...current, year: 2025 }], '捉妖天师', 2026, 'show')).toBe(null)
 })
 
 test('an exact TV match similarly corrects a default movie type', () => {

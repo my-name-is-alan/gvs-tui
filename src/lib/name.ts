@@ -33,7 +33,7 @@ export function sourceTag(provider: string): string {
     case 'hongguo': return 'HG'
     case 'huangguo': return 'HGO'
     case 'douyin': return 'DY'
-    case 'iqcn': return 'IQ'
+    case 'iqcn': return 'IQIYI'
     case 'mewatch': return 'MEWATCH'
     case 'hamivideo': return 'HAMI'
     default: return provider ? provider.slice(0, 3).toUpperCase() : 'WEB'
@@ -173,8 +173,8 @@ export function filename(n: Naming): string {
   return sanitizePath(parts.join('.')) + suffix
 }
 
-/** New Youku/Tencent/IQ outputs use measured specs; the legacy filename remains the failure fallback. */
-export function completedFilename(n: Naming, media: MediaSpecs, marker?: 'HQ' | 'MAXPLUS'): string {
+/** New measured outputs use finished specs; the legacy filename remains the failure fallback. */
+export function completedFilename(n: Naming, media: MediaSpecs, marker?: 'HQ' | 'MAXPLUS' | 'EDR'): string {
   const parts = [dots(n.title || n.nameDots)]
   const subtitle = episodeTitle(n.episodeTitle || '', n.title, n.nameDots)
   let subtitleIndex = -1

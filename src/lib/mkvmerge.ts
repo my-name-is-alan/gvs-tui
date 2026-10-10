@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { defaultAudioIndex } from './audio-selection.ts'
+import { defaultAudioIndex, orderedMuxAudios } from './audio-selection.ts'
 import { statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { truncate } from './util.ts'
@@ -77,11 +77,10 @@ export async function mkvmergeRemux(
   audioLanguageFallback = '',
 ): Promise<void> {
   const args = ['-o', outPath]
-  if (audioLanguageFallback) {
-    const info = await identify(mkvmerge, inPath, signal)
-    for (const track of info.tracks.filter(t => t.type === 'audio')) {
-      if (isUnknownAudioLanguage(trackLanguage(track))) args.push('--language', `${track.id}:${audioLanguageFallback}`)
-    }
+  const info = await identify(mkvmerge, inPath, signal)
+  for (const track of info.tracks.filter(t => t.type === 'audio')) {
+    args.push('--track-name', `${track.id}:`)
+    if (audioLanguageFallback && isUnknownAudioLanguage(trackLanguage(track))) args.push('--language', `${track.id}:${audioLanguageFallback}`)
   }
   args.push(inPath)
   return run(mkvmerge, args, { out: outPath, inputs: [inPath], cb: onProgress }, signal)
@@ -89,21 +88,22 @@ export async function mkvmergeRemux(
 
 /**
  * Mux one or more audio tracks into the video file. Video's own audio is
- * dropped (`--no-audio`) so only the selected tracks remain, tagged with
- * title/language. delayMs is an optional ADDITION to the source A/V offset.
+ * dropped (`--no-audio`) so only the selected tracks remain, with language and
+ * default flags and no track titles. delayMs adds to the source A/V offset.
  * The actual mux below measures PTS before and after mkvmerge; these arguments
  * alone do not preserve cross-file offsets normalized by the MP4 reader.
  */
 export type MuxAudio = { path: string; title?: string; lang?: string; delayMs?: number; isDefault?: boolean }
 
 export function mkvmergeMuxArgs(outPath: string, videoPath: string, audios: MuxAudio[]): string[] {
+  audios = orderedMuxAudios(audios)
   const args = ['-o', outPath, '--no-audio', '--compression', '0:none', videoPath]
   const defaultIndex = defaultAudioIndex(audios)
   audios.forEach((a, i) => {
     const delay = a.delayMs ?? 0
     if (!Number.isFinite(delay)) throw new Error('音轨偏移必须是有限毫秒数')
     args.push('--language', `0:${mkvLang(a.lang ?? '')}`)
-    if (a.title) args.push('--track-name', `0:${a.title}`)
+    args.push('--track-name', '0:')
     args.push('--default-track', `0:${i === defaultIndex ? '1' : '0'}`)
     args.push('--compression', '0:none')
     if (delay) args.push('--sync', `0:${Math.round(delay)}`)
@@ -122,12 +122,12 @@ export async function mkvmergeMux(
   onWarning?: (message: string) => void,
   audioLanguageFallback = '',
 ): Promise<void> {
+  audios = orderedMuxAudios(audios)
   const ffmpeg = await ensureFFmpeg()
   const report: Record<string, unknown> = { version: 1, video: videoPath, audio: audios.map(a => ({ path: a.path, delayMs: a.delayMs ?? 0 })) }
   let work = ''
   try {
     work = scratchDir(outPath, 'gvs-mux-')
-    audios = audios.map(a => ({ ...a }))
     // Catalog "原声" is not a language. Preserve meaningful input tags before
     // applying the TMDB fallback, and do this before any damaged-frame repair.
     await Promise.all(audios.map(async a => {

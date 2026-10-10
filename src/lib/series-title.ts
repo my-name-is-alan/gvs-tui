@@ -32,12 +32,13 @@ export function seriesSeason(season: number | undefined, title: string): number 
   return season !== undefined && Number.isSafeInteger(season) && season >= 0 ? season : parseSeriesTitle(title).season ?? 1
 }
 
-/** Search the full title first. Non-numeric season labels are only a fallback,
+/** Search the full title first. Non-numeric season/release labels are only a fallback,
  * and never imply a season number or change an unmatched output title. */
 export function tmdbTitleQueries(value: string): string[] {
   const title = parseSeriesTitle(value).title
   const normalized = title.normalize('NFKC')
   const match = normalized.match(/(?:[\s·•:：\-–—]+|\s*[(\[【]\s*)(?:最终季|最終季|完结季|完結季|final\s+season)\s*[)\]】]?$/i)
+    ?? normalized.match(/[\s·•:：\-–—]*[([【]?\s*年番\s*[)\]】]?$/)
   const base = match?.index === undefined ? '' : normalized.slice(0, match.index).trim()
   return base ? [title, base] : [title]
 }

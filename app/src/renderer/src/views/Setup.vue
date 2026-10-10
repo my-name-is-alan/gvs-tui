@@ -7,6 +7,7 @@ import { errText, gvs, store } from '../store'
 
 const host = ref(store.state?.settings.host || 'https://')
 const key = ref('')
+const desktopProxy = ref(store.state?.settings.desktopProxy || '')
 const outDir = ref(store.state?.settings.outDir || '')
 const busy = ref(false)
 const error = ref(store.state?.keyError ?? '')
@@ -29,7 +30,7 @@ async function connect() {
     if (outDir.value && outDir.value !== store.state?.settings.outDir) {
       store.state = await gvs('saveSettings', { outDir: outDir.value })
     }
-    store.state = await gvs('setup', host.value, key.value)
+    store.state = await gvs('setup', host.value, key.value, desktopProxy.value)
   } catch (e) {
     error.value = errText(e)
   } finally {
@@ -71,7 +72,12 @@ const plats = [
           <input v-model="host" class="input strong mono" placeholder="https://your-gateway.example" autocomplete="off" required />
         </label>
         <label class="field strong-label">API Key
-          <input v-model="key" class="input strong mono" placeholder="sk_live_…" autocomplete="off" required />
+          <span v-if="store.state?.settings.hasKey" class="dim">已保存 Key，留空继续使用。</span>
+          <input v-model="key" class="input strong mono" :placeholder="store.state?.settings.keyMasked || 'sk_live_…'" autocomplete="off" :required="!store.state?.settings.hasKey" />
+        </label>
+        <label class="field strong-label">代理地址
+          <span class="dim">填写 HTTP/HTTPS 代理地址和端口；留空使用系统代理。</span>
+          <input v-model="desktopProxy" class="input strong mono" placeholder="http://127.0.0.1:7890" autocomplete="off" spellcheck="false" />
         </label>
         <label class="field strong-label">下载目录
           <span class="dim">文件保存在这台电脑上。默认避开系统盘，也可以改到别的文件夹。</span>
@@ -102,12 +108,12 @@ const plats = [
 .plats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 18px; }
 .plat { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 500; }
 .right {
-  flex-grow: 1; display: flex; align-items: center; justify-content: center; padding: 48px;
+  flex-grow: 1; min-width: 0; display: flex; align-items: center; justify-content: center; padding: 48px; overflow-y: auto;
   background-color: var(--paper);
   background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
   background-size: 32px 32px;
 }
-.form { width: 480px; padding: 36px; border-radius: 12px; box-shadow: 8px 8px 0 var(--ink); display: flex; flex-direction: column; gap: 22px; }
+.form { width: 480px; max-width: 100%; margin: auto 0; flex-shrink: 0; padding: 36px; border-radius: 12px; box-shadow: 8px 8px 0 var(--ink); display: flex; flex-direction: column; gap: 22px; }
 .steps { display: flex; gap: 18px; }
 .step { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-3); }
 .step .n { width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--line); font-size: 13px; display: flex; align-items: center; justify-content: center; }

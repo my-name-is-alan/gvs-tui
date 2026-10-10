@@ -32,6 +32,18 @@ test('final-season labels provide a search fallback without guessing a season or
   expect(seriesSeason(undefined, '诛仙 最终季')).toBe(1)
 })
 
+test('annual animation labels provide a base-title search without guessing seasons or changing platform titles', () => {
+  for (const title of ['逆天邪神年番', '逆天邪神 年番', '逆天邪神（年番）', '逆天邪神【年番】', '逆天邪神 · 年番']) {
+    expect(tmdbTitleQueries(title)).toEqual([title, '逆天邪神'])
+    expect(parseSeriesTitle(title)).toEqual({ title })
+    expect(seriesSeason(undefined, title)).toBe(1)
+    expect(seriesSeason(2, title)).toBe(2)
+  }
+  expect(tmdbTitleQueries('逆天邪神年番 第2季')).toEqual(['逆天邪神年番', '逆天邪神'])
+  for (const title of ['年番', '年番的故事', '逆天邪神年番预告', '逆天邪神 动态漫画'])
+    expect(tmdbTitleQueries(title)).toEqual([title])
+})
+
 test('a TMDB-bound output season accepts special season zero, rejects invalid or unbound overrides', () => {
   const match = { id: 206484, kind: 'show' as const }
   expect(tmdbSeasonOverride(undefined, null)).toBeUndefined()

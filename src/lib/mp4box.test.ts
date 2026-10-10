@@ -38,13 +38,14 @@ mediaTest('MP4Box preserves positive and negative relative offsets and multi-aud
     generate(['-f', 'lavfi', '-i', 'sine=sample_rate=48000:duration=2', '-c:a', 'aac', '-output_ts_offset', '3.5', late])
     generate(['-f', 'lavfi', '-i', 'sine=sample_rate=48000:duration=2', '-c:a', 'aac', early])
     const out = join(dir, 'multi.mp4')
-    await mp4boxMux(box, video, [{ path: late, title: 'DTS:X', lang: '普通话' }, { path: early, title: 'AAC', lang: 'eng' }], out)
+    await mp4boxMux(box, video, [{ path: late, title: 'DTS:X', lang: '普通话' }, { path: early, title: 'AAC', lang: 'eng', isDefault: true }], out)
     const report = JSON.parse(readFileSync(`${out}.timing.json`, 'utf8'))
     expect(report.verified).toBe(true)
     const tracks = await inspectMp4(box, out)
-    expect(tracks.map(t => t.language)).toEqual(['und', 'zho', 'eng'])
-    expect(tracks.slice(1).map(t => t.name)).toEqual(['DTS:X', 'AAC'])
-    for (const [i, path] of [video, late, early].entries()) {
+    expect(tracks.map(t => t.language)).toEqual(['und', 'eng', 'zho'])
+    expect(tracks.slice(1).map(t => t.enabled)).toEqual([true, false])
+    expect(tracks.slice(1).map(t => t.name)).toEqual(['', ''])
+    for (const [i, path] of [video, early, late].entries()) {
       const type = i ? 'a:0' : 'v:0', stream = i ? `a:${i - 1}` : 'v:0'
       const before = await firstPresentationMs(ff, path, type)
       const after = await firstPresentationMs(ff, out, stream)

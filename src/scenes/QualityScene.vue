@@ -199,7 +199,7 @@ function qualityTable(header: boolean, row?: Quality, selected = false): StyledT
     const value = !row ? '' : col.key === 'codec' ? encodeOf(row)
       : col.key === 'size' ? row.size > 0 ? human(row.size) : '—'
       : col.key === 'resolution' ? qualityResolution(row.width, row.height)
-      : col.key === 'caption' ? qualityCaptionText(row.caption) || '—'
+      : col.key === 'caption' ? qualityCaptionText(row.caption, row.captionProbe) || '—'
       : col.key === 'hdr' ? qualityHdrText(row.hdr) || '—'
       : col.key === 'fps' ? qualityFpsText(row.fps) || '—'
       : row.drm && row.drm !== 'none' ? 'DRM' : '—'

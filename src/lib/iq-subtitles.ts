@@ -94,7 +94,7 @@ export async function prepareIQSubtitles(
     const path = join(work, `iq-sub-opencc-${script}${extension}`)
     writeFileSync(path, result, { mode: 0o600 })
     const ai = isIQSubtitleAI(source)
-    selected.push({ path, language: 'zho', title: `${label} (${ai ? 'AI · ' : ''}OpenCC 转换)`, ai })
+    selected.push({ path, language: 'zho', title: ai ? `${label} (AI)` : label, ai })
     return { subtitles: orderedIQSubtitles(selected) }
   } catch {
     signal?.throwIfAborted()

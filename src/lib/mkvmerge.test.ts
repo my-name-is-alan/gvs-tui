@@ -42,6 +42,8 @@ test('a fragment decode time cannot establish an audio presentation delay', () =
   writeFileSync(audio, fmp4(60, 479))
   const args = mkvmergeMuxArgs(join(dir, 'out.mkv'), video, [{ path: audio, title: 'AAC', lang: 'chi' }])
   expect(args).toContain('--compression')
+  expect(args[args.indexOf('--track-name') + 1]).toBe('0:')
+  expect(args).not.toContain('0:AAC')
   expect(args).not.toContain('--sync')
   expect(mkvmergeMuxArgs('out.mkv', video, [{ path: audio, delayMs: 0 }])).not.toContain('--sync')
 })
@@ -68,13 +70,14 @@ test('codec names are not ISO languages', () => {
   expect(mkvLang('普通话')).toBe('chi')
 })
 
-test('the chosen audio gets the only MKV default flag even when it is not first', () => {
+test('the chosen audio moves to the first MKV audio with the only default flag', () => {
   const args = mkvmergeMuxArgs('out.mkv', 'v.mp4', [
     { path: 'mandarin.mp4', isDefault: false },
     { path: 'minnan.mp4', isDefault: true },
     { path: 'other.mp4', isDefault: false },
   ])
-  expect(args.flatMap((a, i) => a === '--default-track' ? [args[i + 1]] : [])).toEqual(['0:0', '0:1', '0:0'])
+  expect(args.filter(a => a.endsWith('.mp4'))).toEqual(['v.mp4', 'minnan.mp4', 'mandarin.mp4', 'other.mp4'])
+  expect(args.flatMap((a, i) => a === '--default-track' ? [args[i + 1]] : [])).toEqual(['0:1', '0:0', '0:0'])
   const fallback = mkvmergeMuxArgs('out.mkv', 'v.mp4', [{ path: 'a.mp4', isDefault: false }])
   expect(fallback[fallback.indexOf('--default-track') + 1]).toBe('0:1')
 })

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, extname, join } from 'node:path'
-import type { ActualVersion, GVSActualRecord, MediaSpecs } from './actual-version.ts'
+import type { ActualVersion, CompletedMedia, GVSActualRecord, MediaSpecs } from './actual-version.ts'
 import { readMp4Tracks } from './mp4box.ts'
 import { lookMP4Box, tuiBinDir } from './tools.ts'
 
@@ -133,6 +133,20 @@ export async function finishedVersionRecord(path: string, actual: ActualVersion,
   const media = probed || await probeFinishedMedia(path, signal)
   signal?.throwIfAborted()
   return { ...actual, file: fileFingerprint(path), media }
+}
+
+/** Reuse the naming probe; older queued tasks can read specs without changing their filename. */
+export async function finishedMediaRecord(path: string, signal?: AbortSignal, probed?: MediaSpecs,
+  probe = probeFinishedMedia): Promise<CompletedMedia> {
+  let media = probed
+  if (!media) {
+    try { media = await probe(path, signal) } catch {
+      signal?.throwIfAborted()
+      media = { status: 'unavailable' }
+    }
+  }
+  signal?.throwIfAborted()
+  return { media, file: { size: statSync(path).size } }
 }
 
 /** Shared by desktop and TUI; kept outside all video directories and task-list cleanup. */

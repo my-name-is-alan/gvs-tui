@@ -37,6 +37,7 @@ import { completedFilename, filename, folder, tierHeight, dots } from '@tui/name
 import { usesMeasuredNaming } from '@tui/completed-naming.ts'
 import { moviePlayables, probeOptions, qualityChoiceLabel, youkuEditionsFromDetail, youkuMoviePick } from '@tui/quality.ts'
 import { selectedTencentQuality } from '@tui/tencent-quality-selection.ts'
+import { selectedIQCNQuality, restoreIQCNSourceHints } from '@tui/iqcn-quality-selection.ts'
 import { runLog } from '@tui/runlog.ts'
 import { applyTencentLogin, pollTencentDualQR, tencentTVLoginInput } from '@tui/tencent-qr.ts'
 import { fetchTencentAccount, txAccountSummary, type TxAccount } from '@tui/tencent-account.ts'
@@ -84,6 +85,8 @@ import {
   type Tone,
 } from '@shared/api'
 import { installTunnelWebSocket } from './env'
+import { desktopProxy, setDesktopProxy } from './desktop-network'
+import { normalizeDesktopProxy } from './desktop-proxy'
 import { detailPoster, posterOf, toCards } from './cards'
 import { clearPosterCache, posterCacheSize } from './posters'
 
@@ -314,6 +317,13 @@ export class Core {
 
   async boot(): Promise<void> {
     void this.checkTools()
+    try {
+      setDesktopProxy(this.cfg.desktopProxy ?? '')
+    } catch (error) {
+      this.keyError = errText(error)
+      this.emit.state()
+      return
+    }
     if (this.cfg.key.trim()) await this.connect()
     else this.emit.state()
   }
@@ -388,6 +398,8 @@ export class Core {
       this.jobs.set(id, { view, task: rec.task as DlTask, pin: rec.pin as Pin })
       if (id > max) max = id
     }
+    // Only recover a source hint; download-time matching verifies the original VID.
+    if (restoreIQCNSourceHints([...this.jobs.values()].sort((a, b) => a.view.id - b.view.id).map(rec => rec.task))) changed = true
     // 加载的任务不发 toast、不自动续跑（客户端可能都还没连上网关）。
     seedJobID(max)
     // 转换过的状态立刻落盘，免得文件里一直留着「运行中」误导后面的启动。
@@ -504,7 +516,7 @@ export class Core {
       this.emit.state()
       throw e
     }
-    await this.startTunnel()
+    await this.startTunnel(revision)
     if (revision !== this.connectionRevision) return
     this.emit.state()
     await this.migrateVaultOnce()
@@ -567,7 +579,7 @@ export class Core {
     void this.providerSession({ provider: 'iq', op: 'status' }).catch(() => {})
   }
 
-  private async startTunnel(): Promise<void> {
+  private async startTunnel(revision: number): Promise<void> {
     this.tunnelAbort?.abort()
     this.tunnelAbort = null
     this.tunnelOk = false
@@ -575,7 +587,8 @@ export class Core {
     if (!needsTunnel(p => this.has(p as Provider))) return
     // 开发调试：同一 Key 只能有一条隧道，别顶掉正在用的那一个
     if (process.env.GVS_NO_TUNNEL) return
-    await installTunnelWebSocket(this.cfg.host)
+    const proxy = await installTunnelWebSocket(this.cfg.host)
+    if (revision !== this.connectionRevision) return
     const abort = new AbortController()
     this.tunnelAbort = abort
     runTunnel(
@@ -593,6 +606,7 @@ export class Core {
         this.emit.state()
       },
       abort.signal,
+      () => proxy,
     )
   }
 
@@ -645,6 +659,7 @@ export class Core {
     const c = this.cfg
     return {
       host: c.host,
+      desktopProxy: c.desktopProxy ?? '',
       keyMasked: mask(c.key),
       hasKey: !!c.key,
       outDir: c.outDir,
@@ -715,22 +730,29 @@ export class Core {
 
   // ---------------------------------------------------------------- 配置
 
-  async setup(host: string, key: string): Promise<AppState> {
+  async setup(host: string, key: string, proxyAddress = this.cfg.desktopProxy ?? ''): Promise<AppState> {
     const h = host.trim().replace(/\/+$/, '')
-    const k = key.trim()
+    const k = key.trim() || this.cfg.key.trim()
     if (!/^https?:\/\//.test(h)) throw new Error('网关地址要以 http:// 或 https:// 开头')
     if (!k) throw new Error('请填写 API Key')
-    const prev = { host: this.cfg.host, key: this.cfg.key }
+    const proxy = normalizeDesktopProxy(proxyAddress)
+    const prev = { host: this.cfg.host, key: this.cfg.key, desktopProxy: this.cfg.desktopProxy, route: desktopProxy(), connected: !!this.keyInfo }
     this.providerAccounts.clear()
     this.cfg.host = h
     this.cfg.key = k
+    this.cfg.desktopProxy = proxy
+    setDesktopProxy(proxy)
     try {
       await this.connect()
     } catch (e) {
       this.cfg.host = prev.host
       this.cfg.key = prev.key
+      this.cfg.desktopProxy = prev.desktopProxy
+      setDesktopProxy(prev.route)
       this.connectionRevision++
       this.providerSessions.setScope(this.cfg.host + String.fromCharCode(0) + this.cfg.key)
+      if (prev.connected) void this.connect().catch(() => {})
+      else this.emit.state()
       throw new Error(`连接失败：${errText(e)}`)
     }
     saveConfig(this.cfg)
@@ -740,10 +762,12 @@ export class Core {
 
   async saveSettings(patch: SettingsPatch): Promise<AppState> {
     const c = this.cfg
+    const proxy = patch.desktopProxy === undefined ? c.desktopProxy ?? '' : normalizeDesktopProxy(patch.desktopProxy)
     const reconnect =
       (patch.host !== undefined && patch.host.trim().replace(/\/+$/, '') !== c.host) ||
-      (patch.key !== undefined && patch.key.trim() !== '' && patch.key.trim() !== c.key)
-    if (reconnect) return this.setup(patch.host ?? c.host, patch.key?.trim() || c.key)
+      (patch.key !== undefined && patch.key.trim() !== '' && patch.key.trim() !== c.key) ||
+      proxy !== (c.desktopProxy ?? '')
+    if (reconnect) return this.setup(patch.host ?? c.host, patch.key?.trim() || c.key, proxy)
     if (patch.outDir !== undefined) c.outDir = normalizeOutDir(patch.outDir) || c.outDir
     if (patch.tmpDir !== undefined) c.tmpDir = normalizeTmpDir(patch.tmpDir)
     if (patch.releaseGroup !== undefined) c.releaseGroup = patch.releaseGroup.trim()
@@ -1245,7 +1269,7 @@ export class Core {
     const tasks = req.episodes.map((ep, i): DlTask => {
       const t: DlTask = {
         provider: req.detail.provider,
-        namingVersion: ['youku', 'tencent', 'iq'].includes(req.detail.provider) ? 1 : undefined,
+        namingVersion: ['youku', 'tencent', 'iq', 'iqcn'].includes(req.detail.provider) ? 1 : undefined,
         includeEpisodeTitle: this.cfg.includeEpisodeTitle !== false,
         title: ep.title,
         series: movie ? req.detail.title : parseSeriesTitle(req.detail.title).title,
@@ -1259,6 +1283,7 @@ export class Core {
         quality: q.stream || q.id,
         caption: q.caption,
         tencentQuality: req.detail.provider === 'tencent' ? selectedTencentQuality(q) : undefined,
+        iqcnQuality: req.detail.provider === 'iqcn' ? selectedIQCNQuality(q, req.episodes[0]!.vid) : undefined,
         group: this.cfg.releaseGroup,
         codec: q.codec || '',
         tmdbId: 0,
@@ -1278,7 +1303,7 @@ export class Core {
       t.audioTracks = t.provider === 'youku' ? bindYoukuAudioTracksToTask(tracks, t) : tracks.map((a) => ({ ...a }))
       if (req.tmdb) {
         t.tmdbId = req.tmdb.id
-        t.year = req.tmdb.year
+        t.year = req.tmdb.year || t.year
         t.nameDots = dots(req.tmdb.name)
         t.plot = req.tmdb.overview
         if (req.tmdb.name) t.series = req.tmdb.name
@@ -1344,6 +1369,7 @@ export class Core {
     // 暂停/取消的收尾事件只带状态，不要把进度和日志清掉。
     if (!e.done) {
       v.actualVersion = undefined
+      v.completedMedia = undefined
       v.status = e.status
       v.pct = e.pct
       v.log = e.log
@@ -1369,6 +1395,7 @@ export class Core {
       if (!e.err) {
         v.output = e.log
         v.actualVersion = e.actualVersion
+        v.completedMedia = e.completedMedia
       }
       if (!e.err) this.emit.toast(`${v.groupTitle} ${v.label} 下载完成${v.note ? `：${v.note}` : ''}`, v.note ? 'warn' : 'ok')
     }

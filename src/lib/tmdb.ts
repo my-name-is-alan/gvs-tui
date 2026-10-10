@@ -73,7 +73,11 @@ function createTmdbRequest(fetcher: TmdbFetch, timeoutMs: number) {
       const timer = setTimeout(() => ac.abort(), timeoutMs)
       const started = Date.now()
       try {
-        const res = await fetcher(url.href, { headers, signal: ac.signal, ...(proxy ? { proxy } : {}) })
+        const res = await fetcher(url.href, { headers, signal: ac.signal,
+          // Chromium can reuse an older search response when the user retries
+          // a newly added title. Search must ask TMDB for the current index.
+          ...(path.startsWith('search/') ? { cache: 'no-store' as const } : {}),
+          ...(proxy ? { proxy } : {}) })
         if (!res.ok) {
           await res.body?.cancel()
           throw new TmdbHttpError(res.status)
@@ -102,9 +106,10 @@ export function createTmdbSearch(fetcher: TmdbFetch = fetchTmdb, timeoutMs = 10_
   const request = createTmdbRequest(fetcher, timeoutMs)
   return async (apiKey: string, lang: string, query: string, options: TmdbOptions = {}): Promise<TmdbResult[]> => {
     if (!query.trim()) throw new Error('缺少用于 TMDB 搜索的片名')
+    const language = lang || 'zh-CN'
     // Missing platform categories must not lock a movie into the TV endpoint.
     for (const title of tmdbTitleQueries(query)) {
-      const hits = await request(apiKey, 'search/multi', { language: lang || 'zh-CN', query: title, include_adult: 'false' }, out => {
+      const hits = await request(apiKey, 'search/multi', { language, query: title, include_adult: 'false' }, out => {
         if (!isObj(out) || !Array.isArray(out.results)) throw new Error('invalid TMDB response')
         const rows = (out as SearchResponse).results!.filter(h => h.media_type === 'movie' || h.media_type === 'tv').slice(0, 8)
         return rows.map((h): TmdbResult => {
@@ -115,6 +120,28 @@ export function createTmdbSearch(fetcher: TmdbFetch = fetchTmdb, timeoutMs = 10_
             overview: h.overview || '', englishDots: dots(h.original_name || h.original_title || name), kind: movie ? 'movie' : 'show' }
         })
       }, options)
+      // New entries can have a date in regional movie search before multi search
+      // or details are updated. Enrich by movie ID only; keep the mixed results.
+      if (hits.some(h => h.kind === 'movie' && !h.year)) {
+        try {
+          const region = language.match(/-([a-z]{2})$/i)?.[1]?.toUpperCase() || 'CN'
+          const years = await request(apiKey, 'search/movie', { language, query: title, include_adult: 'false', region }, out => {
+            if (!isObj(out) || !Array.isArray(out.results)) throw new Error('invalid TMDB movie response')
+            const dates = new Map<number, number>()
+            for (const row of out.results) {
+              if (!isObj(row) || !Number.isSafeInteger(row.id) || Number(row.id) <= 0 || typeof row.release_date !== 'string'
+                || !/^\d{4}-\d{2}-\d{2}$/.test(row.release_date)) continue
+              const year = Number(row.release_date.slice(0, 4))
+              if (year > 0) dates.set(Number(row.id), year)
+            }
+            return dates
+          }, options)
+          for (const hit of hits) if (hit.kind === 'movie' && !hit.year) hit.year = years.get(hit.id) || 0
+        } catch {
+          // Optional enrichment must not discard usable search results.
+          runLog('tmdb movie year enrichment unavailable; keeping search results')
+        }
+      }
       if (hits.length) return hits
     }
     return []
@@ -228,11 +255,11 @@ export function createTmdbDetails(fetcher: TmdbFetch = fetchTmdb, timeoutMs = 10
     if (hit && hit.expires > Date.now()) return waitForDetails(hit.promise, options.signal)
     const promise = request(apiKey, `${kind === 'movie' ? 'movie' : 'tv'}/${id}`, {}, out => {
       if (!isObj(out) || out.id !== id) throw new Error('invalid TMDB details')
-      // TV origin_country describes where the show originated; production countries
-      // are the fallback for older/incomplete TV records and the movie API.
+      // TV prefers origin_country; movies prefer production countries. New movie
+      // records can have only origin_country, which is still title metadata.
       const origin = Array.isArray(out.origin_country) ? out.origin_country : []
       const production = Array.isArray(out.production_countries) ? out.production_countries.filter(isObj).map(c => c.iso_3166_1) : []
-      const countries = (kind === 'show' && origin.length ? origin : production)
+      const countries = (kind === 'show' && origin.length ? origin : production.length ? production : origin)
         .filter((c): c is string => typeof c === 'string' && /^[a-z]{2}$/i.test(c)).map(c => c.toUpperCase())
       return { id, kind, countries: [...new Set(countries)], originalLanguage: typeof out.original_language === 'string' ? out.original_language.toLowerCase() : '' }
     }, options).then(value => {

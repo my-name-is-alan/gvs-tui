@@ -1,18 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
-const props = withDefaults(defineProps<{ url?: string; provider?: string; title?: string; titleSize?: number }>(), {
+const props = withDefaults(defineProps<{ url?: string; provider?: string; title?: string; titleSize?: number; loading?: 'eager' | 'lazy' }>(), {
   url: '',
   provider: '',
   title: '',
   titleSize: 18,
+  loading: 'eager',
 })
 
 const COLORS = ['#2b3a55', '#7a2e2e', '#3e5c3a', '#5b4a7a', '#8a5a1f', '#2f5f66', '#4a4a4a', '#6b2e4f']
 const failed = ref(false)
 const loaded = ref(false)
 watch(
-  () => props.url,
+  () => [props.url, props.provider],
   () => {
     failed.value = false
     loaded.value = false
@@ -31,7 +32,7 @@ const color = computed(() => {
 <template>
   <div class="poster" :style="{ background: src ? 'var(--paper-2)' : color }" role="img" :aria-label="title ? `${title} 海报` : '海报'">
     <span v-if="src && !loaded" class="sk wash" aria-hidden="true" />
-    <img v-if="src" :src="src" alt="" decoding="async" :class="{ on: loaded }" @load="loaded = true" @error="failed = true" />
+    <img v-if="src" :src="src" alt="" :loading="loading" decoding="async" :class="{ on: loaded }" @load="loaded = true" @error="failed = true" />
     <span v-else-if="title" class="t" :style="{ fontSize: titleSize + 'px' }">{{ title }}</span>
   </div>
 </template>

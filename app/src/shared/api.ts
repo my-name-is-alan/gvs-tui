@@ -1,5 +1,5 @@
 import type { TencentDiagnostic } from '../../../src/lib/diagnostic-types'
-import type { ActualVersion } from '../../../src/lib/actual-version'
+import type { ActualVersion, CompletedMedia } from '../../../src/lib/actual-version'
 export type { TencentDiagnostic } from '../../../src/lib/diagnostic-types'
 import { PROVIDER_IDS, PROVIDER_LABELS } from '../../../src/lib/providers'
 // 主进程 ↔ 界面之间的契约。只放可序列化的纯数据。
@@ -26,6 +26,7 @@ export type AccountView = {
 
 export type SettingsView = {
   host: string
+  desktopProxy: string
   keyMasked: string
   hasKey: boolean
   outDir: string
@@ -194,6 +195,7 @@ export type JobView = {
   label: string
   quality: string
   actualVersion?: ActualVersion
+  completedMedia?: CompletedMedia
   status: string
   pct: number
   log: string
@@ -234,7 +236,7 @@ export interface GvsApi {
   tencentDiagnostics(jobID?: number): Promise<TencentDiagnostic[]>
   providerSession(command: SessionCommand): Promise<ProviderSessionView>
   state(): Promise<AppState>
-  setup(host: string, key: string): Promise<AppState>
+  setup(host: string, key: string, desktopProxy?: string): Promise<AppState>
   saveSettings(patch: SettingsPatch): Promise<AppState>
   catalog(provider: Provider): Promise<Section[]>
   browse(provider: Provider, section: Section, cursor?: string): Promise<BrowseResult>

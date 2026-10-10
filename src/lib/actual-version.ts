@@ -28,6 +28,9 @@ export type MediaSpecs = {
     evidence?: 'container' | 'mp4_enabled' | 'mux_order' | 'single_track'
   }
 }
+/** Measured file information shared by providers, without Tencent rendition identity. */
+export type CompletedMedia = { media: MediaSpecs; file: { size: number } }
+type FileMedia = { media?: MediaSpecs; file?: { size: number } }
 export type GVSActualRecord = ActualVersion & {
   file: { size: number; fingerprint: { algorithm: 'sha256-samples-v1'; value: string } }
   media: MediaSpecs
@@ -145,7 +148,7 @@ export function actualVersionText(record: ActualVersion): string {
 }
 
 /** Download rows show measured file specs; rendition identity stays in the diagnostic record. */
-export function actualVersionSummary(record: ActualVersion): string {
+export function actualVersionSummary<T extends FileMedia>(record: T): string {
   const media = record.media
   const specs = media?.status === 'probed' ? [media.width && media.height ? `${media.width}×${media.height}` : '',
     media.codec?.toUpperCase(), media.fps ? `${Number(media.fps.toFixed(2))}fps` : '', media.dynamicRange,
@@ -154,7 +157,7 @@ export function actualVersionSummary(record: ActualVersion): string {
   return specs.filter(Boolean).join(' · ')
 }
 
-export function actualVersionDetail(record: ActualVersion): string {
+export function actualVersionDetail<T extends FileMedia>(record: T): string {
   const details = [actualVersionSummary(record)]
   if (record.media?.status === 'probed') details.push('视频规格由本机读取。')
   if (record.file && Number.isFinite(record.file.size) && record.file.size > 0) details.push('大小为封装完成后的文件大小，包含已保留的音轨和字幕。')

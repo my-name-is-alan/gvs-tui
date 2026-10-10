@@ -20,6 +20,7 @@ const TABS: Array<{ key: SettingsTab; label: string }> = [
 const s = computed(() => store.state!.settings)
 const form = reactive({
   host: '',
+  desktopProxy: '',
   key: '',
   outDir: '',
   tmpDir: '',
@@ -316,6 +317,10 @@ const plat = (p: Provider) => hasProvider(p)
             <div class="sl"><span class="st">API Key</span><span class="sd">换 Key 时填新的，留空则保持不变。</span></div>
             <div class="field-full"><input v-model="form.key" class="input mono" :placeholder="s.keyMasked || 'sk_live_…'" autocomplete="off" /></div>
           </div>
+          <div class="srow wrap">
+            <div class="sl"><label class="st" for="desktop-proxy">代理地址</label><span class="sd">填写 HTTP/HTTPS 代理地址和端口，留空使用系统代理。用于网关、隧道、TMDB 和 IQ 海外版登录与取流。</span></div>
+            <div class="field-full"><input id="desktop-proxy" v-model="form.desktopProxy" class="input mono" placeholder="http://127.0.0.1:7890（留空使用系统代理）" autocomplete="off" spellcheck="false" /></div>
+          </div>
           <div class="srow">
             <div class="sl">
               <span class="st">状态</span>
@@ -324,7 +329,7 @@ const plat = (p: Provider) => hasProvider(p)
             <div class="sc">
               <span class="chip ok">{{ store.state!.keyName || '已连接' }}</span>
               <span class="chip" :class="tunnelText.cls">{{ tunnelText.text }}</span>
-              <button type="button" class="btn sm outline" :disabled="saving === 'gw' || (form.host === s.host && !form.key)" @click="save({ host: form.host, key: form.key || undefined }, 'gw')">
+              <button type="button" class="btn sm outline" :disabled="saving === 'gw' || (form.host === s.host && form.desktopProxy === s.desktopProxy && !form.key)" @click="save({ host: form.host, key: form.key || undefined, desktopProxy: form.desktopProxy }, 'gw')">
                 <span v-if="saving === 'gw'" class="spin" />保存并重连
               </button>
             </div>

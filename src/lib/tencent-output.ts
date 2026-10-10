@@ -18,7 +18,8 @@ export function tencentSpecsFromFFmpeg(text: string): TencentSpecs | null {
     hdr: /\b(?:smpte2084|arib-std-b67)\b/i.test(line) || /\b(?:dovi|dolby vision)\b/i.test(sideData) }
 }
 
-export function assertTencentSpecs(actual: TencentSpecs | null, selected: TencentQualitySelection, fallbackHeight = 0): void {
+/** Resolution and fps mismatches fail; catalog HDR differences remain a completion warning. */
+export function assertTencentSpecs(actual: TencentSpecs | null, selected: TencentQualitySelection, fallbackHeight = 0): string {
   if (!actual) throw new Error('腾讯实际视频规格无法确认，未生成成品')
   const width = selected.width || 0, height = selected.height || 0
   const long = Math.max(actual.width, actual.height), short = Math.min(actual.width, actual.height)
@@ -32,11 +33,12 @@ export function assertTencentSpecs(actual: TencentSpecs | null, selected: Tencen
   const reasons: string[] = []
   if (tooSmall) reasons.push(`分辨率实际 ${actual.width}×${actual.height}，要求 ${width && height ? `${width}×${height}` : width ? `长边 ${width}` : height ? `短边 ${height}` : `${fallbackHeight}p`}`)
   if (selected.fps && actual.fps + 2 < selected.fps) reasons.push(`帧率实际 ${actual.fps}fps，要求 ${selected.fps}fps`)
-  if (selected.hdr && selected.hdr.toLowerCase() !== 'sdr' && !actual.hdr) reasons.push(`所选 ${selected.hdr.toUpperCase()} 未在实际视频中确认`)
   if (reasons.length) throw new Error(`腾讯返回视频与所选画质不符：${reasons.join('；')}；已停止，未生成成品`)
+  return selected.hdr && selected.hdr.toLowerCase() !== 'sdr' && !actual.hdr
+    ? `所选 ${selected.hdr.toUpperCase()} 未在实际视频中确认，已保留下载结果，文件名按实际规格生成` : ''
 }
 
-export async function verifyTencentSpecs(ffmpeg: string, path: string, selected: TencentQualitySelection, fallbackHeight = 0, signal?: AbortSignal): Promise<TencentSpecs> {
+export async function verifyTencentSpecs(ffmpeg: string, path: string, selected: TencentQualitySelection, fallbackHeight = 0, signal?: AbortSignal): Promise<TencentSpecs & { note?: string }> {
   const specs = await new Promise<TencentSpecs | null>((resolve, reject) => {
     const child = spawn(ffmpeg, ['-nostdin', '-hide_banner', '-i', path], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], signal })
     let output = ''
@@ -45,8 +47,8 @@ export async function verifyTencentSpecs(ffmpeg: string, path: string, selected:
     child.once('error', e => { clearTimeout(timer); reject(e) })
     child.once('close', () => { clearTimeout(timer); signal?.aborted ? reject(signal.reason) : resolve(tencentSpecsFromFFmpeg(output)) })
   })
-  assertTencentSpecs(specs, selected, fallbackHeight)
-  return specs!
+  const note = assertTencentSpecs(specs, selected, fallbackHeight)
+  return { ...specs!, ...(note ? { note } : {}) }
 }
 
 /** Packet coverage, rather than MKV duration (which may come from a longer audio track). */

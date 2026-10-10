@@ -3,7 +3,7 @@ import { closeSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:f
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { GwClient } from './client.ts'
-import { tuiBinDir } from './tool-paths.ts'
+import { iqcnLocalPath } from './tool-paths.ts'
 import { asString, isObj } from './util.ts'
 import { iqcnSegmentDescriptor } from './iqcn-control.ts'
 
@@ -93,7 +93,7 @@ async function fetchSegment(url: string, destination: string, size: number, fetc
 
 export function restoreIQCNLocal(source: string, destination: string, material: IQCNProcessing, signal?: AbortSignal): Promise<LocalResult> {
   signal?.throwIfAborted()
-  const binary = process.env.GVS_IQCN_LOCAL || join(tuiBinDir(), process.platform === 'win32' ? 'iqcn-local.exe' : 'iqcn-local')
+  const binary = process.env.GVS_IQCN_LOCAL || iqcnLocalPath()
   return new Promise((resolve, reject) => {
     const child = spawn(binary, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
     let output = '', diagnostic = '', done = false

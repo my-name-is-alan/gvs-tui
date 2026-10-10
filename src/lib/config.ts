@@ -9,6 +9,8 @@ export type FileConfig = {
   key: string
   /** Optional HTTP(S) proxy for gateway API requests. */
   gatewayProxy?: string
+  /** Desktop service proxy override; empty follows the system proxy. Independent of TUI routing. */
+  desktopProxy?: string
   outDir: string
   releaseGroup: string
   /** Include the platform's episode title in new task filenames; omitted legacy configs default on. */
@@ -181,6 +183,7 @@ export function defaultConfig(): FileConfig {
     host: 'http://127.0.0.1:8080',
     key: '',
     gatewayProxy: '',
+    desktopProxy: '',
     outDir: '',
     releaseGroup: 'ADWeb',
     includeEpisodeTitle: true,

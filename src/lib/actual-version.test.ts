@@ -6,6 +6,16 @@ const url = 'https://cdn.example/video.m3u8?token=SECRET'
 const selected = { stream: 'suhd', caption: 'hard', formatId: '322157', persona: '2741517771455_硬' }
 const row = { id: '322157', name: 'suhd', caption: '硬', persona: selected.persona, width: 3840, height: 1636, fs: 1128670539 }
 
+test('IQ completed media displays measured specs and size without a Tencent rendition record', () => {
+  const completed = { media: { status: 'probed' as const, width: 3840, height: 1608, codec: 'hevc', fps: 25,
+    dynamicRange: 'SDR', videoBitrate: 3930000 }, file: { size: 692060160 } }
+  const restored = JSON.parse(JSON.stringify(completed))
+  expect(actualVersionSummary(restored)).toBe('3840×1608 · HEVC · 25fps · SDR · 视频 3.93 Mbps · 660.0 MB')
+  expect(actualVersionDetail(restored)).toContain('视频规格由本机读取')
+  expect(actualVersionDetail(restored)).toContain('封装完成后的文件大小')
+  expect(actualVersionSummary({ ...completed, media: { status: 'unavailable' } })).toBe('660.0 MB')
+})
+
 test('unknown rendition identity still displays verified 1080p file specs instead of the selected 4K catalog', () => {
   const record = tencentActualVersion({ video: { url }, formats: [row] }, url, 'default', selected, 'vid')
   record.media = { status: 'probed', width: 1920, height: 1080, codec: 'hevc', fps: 25, videoBitrate: 458784 }
