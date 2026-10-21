@@ -1006,6 +1006,7 @@ async function dlYouku(
     const declaredDuration = Number(selectedVideo.duration_ms) / 1000
     if (declaredDuration > 0) assertYoukuDuration(declaredDuration, t.duration)
     const separateAudio = youkuUsesSeparateAudio(payload, t.quality)
+    const probeBox = await ensureMP4Box()
     // A missing CMAF audio catalogue is not evidence that the video contains audio.
     // Stop before downloading a large silent video instead of failing at the final mux.
     if (separateAudio && !youkuAudioPlaylist(payload, '')) {
@@ -1029,7 +1030,24 @@ async function dlYouku(
     )
     if (!videoAlreadyDownloaded && usesMeasuredNaming(t)) t.namingEvidence = youkuNamingEvidence(payload, playlist)
     if (!separateAudio) {
-      // soft-skip：不强制独立音轨，避免缺 URL 失败或误复用 HQ 音轨。
+      // 上游可能把音轨从视频 m3u8 里拆走：先探测实际轨道，缺音频就退回独立音轨，
+      // 否则会在校验阶段报「下载的文件中没有音频轨道」。
+      // 探测失败（例如容器不是 MP4）时保持原行为，不误判成"没有音轨"。
+      let info: Awaited<ReturnType<typeof readMp4Tracks>> | null = null
+      try { info = await readMp4Tracks(probeBox, videoPath, signal) } catch { info = null }
+      if (!info || info.some(t => t.type === 'soun')) return
+      const fallback = youkuAudioPlaylist(payload, '')
+      if (!fallback) {
+        throw new Error('音轨缺失：视频流里没有音频，源站也没有返回可用的独立音轨，已在封装前停止')
+      }
+      const fallbackDrm = youkuDRM(payload)
+      const fallbackPath = join(work, `.${t.vid}.audio-default.mp4`)
+      temps.add(fallbackPath)
+      temps.add(`${fallbackPath}.transport.json`)
+      temps.add(`${fallbackPath}.download-error.log`)
+      await pull(fallback, fallbackPath, fallbackDrm.audioEnc ? fallbackDrm.reKey : undefined, '音轨 默认', 0.67, 0.18, 'audio', '')
+      muxInputs.push({ path: fallbackPath, title: '默认音轨', lang: youkuAudioLanguage('', audioLanguageFallback), isDefault: true })
+      muxDts.push(false)
       return
     }
     for (const [i, track] of tracks.entries()) {
@@ -1063,6 +1081,20 @@ async function dlYouku(
       muxInputs.push({ path: audioPath, title: track.label,
         lang: youkuAudioLanguage(track.lang, audioLanguageFallback), isDefault: track.isDefault })
       muxDts.push(isDtsAudio(track))
+    }
+    // 所选音轨全部被 soft-skip（URL 缺失）时，退回平台默认音轨；一条都没有就在封装前停下，
+    // 不要等到校验阶段才报「没有音频轨道」。
+    if (muxInputs.length === 0) {
+      const fallback = youkuAudioPlaylist(payload, '')
+      if (!fallback) throw new Error('音轨缺失：所选音轨没有可下载的播放列表，且没有默认音轨可用')
+      const fallbackDrm = youkuDRM(payload)
+      const fallbackPath = join(work, `.${t.vid}.audio-default.mp4`)
+      temps.add(fallbackPath)
+      temps.add(`${fallbackPath}.transport.json`)
+      temps.add(`${fallbackPath}.download-error.log`)
+      await pull(fallback, fallbackPath, fallbackDrm.audioEnc ? fallbackDrm.reKey : undefined, '音轨 默认', 0.67, 0.18, 'audio', '')
+      muxInputs.push({ path: fallbackPath, title: '默认音轨', lang: youkuAudioLanguage('', audioLanguageFallback), isDefault: true })
+      muxDts.push(false)
     }
   }
 
