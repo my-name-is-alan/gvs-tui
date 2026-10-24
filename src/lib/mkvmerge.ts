@@ -268,7 +268,11 @@ export async function mkvmergeTrackFiles(bin: string, inputs: string[], out: str
       // MGTV's original-only TS may be tagged English by the downloader. Only
       // correct that generic tag when the original language was confirmed;
       // retain multilingual tracks and other explicit languages.
-      if (track.type==='audio' && singleAudio && originalAudioLanguage
+      // 视频轨跟着主语言打标签（与 IQ/其他平台成品一致）；只在 und/未知时补，
+      // 已有显式语言的视频轨不动。
+      if (track.type==='video' && originalAudioLanguage && isUnknownAudioLanguage(language)) {
+        args.push('--language',`${track.id}:${originalAudioLanguage}`)
+      } else if (track.type==='audio' && singleAudio && originalAudioLanguage
         && (isUnknownAudioLanguage(language) || /^(en|eng)(?:[-_]|$)/i.test(language))) {
         args.push('--language',`${track.id}:${originalAudioLanguage}`)
       } else if (match && isUnknownAudioLanguage(language)) args.push('--language',`${track.id}:${match[1]}`)

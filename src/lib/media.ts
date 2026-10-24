@@ -10,6 +10,7 @@ import { asString, combinedSignal, human, isObj, sleep } from './util.ts'
 import { mkvmergeRemux, mkvmergeTrackFiles } from './mkvmerge.ts'
 import { ensureFFmpeg, ensureM3u8dl, ensureMkvmerge, ensurePackager } from './tools.ts'
 import { createHlsRelay, type RelayEvent } from './hls-relay.ts'
+import { normalizeHttpProxy } from './proxy.ts'
 import { moveFileSync } from './file-move.ts'
 import { runLog } from './runlog.ts'
 import { assertCencMp4Output, isMpegTsFile } from './media-output.ts'
@@ -696,10 +697,13 @@ export function reDownloadedSegments(dir: string, listedTotal?: number): { done:
     let done = 0, bytes = 0
     for (const name of readdirSync(root, { recursive: true }) as string[]) {
       const leaf = basename(name)
-      if (!/^(?:\d+|_init)\.(?:ts|m4s|mp4|m4a|clip|webm)(?:\.tmp)?$/.test(leaf)) continue
+      // Crunchyroll 这类 DASH 是「一个 rendition 一个整文件」：RE 在写盘时把文件命名为
+      // `<n>.mp4.tmp.downloading`（另有同名 `.meta`），整段下完才改成 `<n>.mp4`。
+      // 旧规则只认 `.tmp`，于是整段下载期间「已完成字节」恒为 0，界面只能显示 0 B/s。
+      if (!/^(?:\d+|_init)\.(?:ts|m4s|mp4|m4a|clip|webm)(?:\.tmp(?:\.downloading)?)?$/.test(leaf)) continue
       const size = fileSize(join(root, name))
       bytes += size
-      if (size > 0 && !leaf.endsWith('.tmp')) done++
+      if (size > 0 && !/\.tmp(?:\.downloading)?$/.test(leaf)) done++
     }
     return { done: Math.min(done, total), total, bytes }
   } catch { /* RE has not created its fragment folder yet */ }
@@ -942,11 +946,13 @@ export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: Pro
     if (next !== phase) decryptAt = next === 'decrypt' ? Date.now() : 0
     phase = next
   }
+  /** 控制台百分比：单文件大分段时它是唯一可用的整体进度。 */
+  let consoleFrac = 0
   const emitSidecar = () => {
     if (!cb || !cwd) return
     if (phase === 'download') {
       const segments = reDownloadedSegments(cwd, listedTotal)
-      if (segments) cb(Math.min(0.99, segments.done / segments.total), 1, {
+      if (segments) cb(segments.done > 0 ? Math.min(0.99, segments.done / segments.total) : Math.max(0, consoleFrac), 1, {
         phase, segments: { done: segments.done, total: segments.total }, transfer: measureTransfer(segments.bytes),
       })
       return
@@ -960,8 +966,11 @@ export function runM3u8dl(bin: string, args: string[], logFile: string, cb?: Pro
   }
   const progress = reProgress((n, total, segments) => {
     // 多流（Apple TV：视频 + 多条配音 + 字幕）时 RE 的控制台行会先被最短的流
-    // 顶到 100%；文件系统分段计数才是整体进度，拿得到就不用控制台的值。
-    if (cwd && reDownloadedSegments(cwd, listedTotal)) return
+    // 顶到 100%；一旦有分段落盘就只认文件系统计数。但整文件型 DASH（CR）在下载期间
+    // 没有任何已完成分段，此时仍用控制台百分比，避免进度条一直停在 0%。
+    consoleFrac = total > 1 ? n / total : n
+    const onDisk = cwd ? reDownloadedSegments(cwd, listedTotal) : undefined
+    if (onDisk && onDisk.done > 0) return
     cb?.(n, total, { phase: 'download', segments })
   })
   // Take the resume baseline before any newly downloaded bytes are reported.
@@ -1120,6 +1129,8 @@ export async function downloadPlaylist(opts: {
   /** Only set when the gateway explicitly says the selected track is clear. */
   clear?: boolean
   threads?: number
+  /** Explicit HTTP proxy for RE (providers whose CDN requires a fixed exit IP). */
+  proxy?: string
   /** Download/decrypt each selected stream concurrently (`-mt`); N_m3u8DL-RE is
    *  sequential by default, so audio waits for the whole video track. */
   concurrentStreams?: boolean
@@ -1259,6 +1270,7 @@ export async function downloadPlaylist(opts: {
     }
     if (ffmpeg) args.push('--ffmpeg-binary-path', ffmpeg)
     if (relay) args.push('--use-system-proxy', 'false')
+    else if (opts.proxy) args.push('--custom-proxy', normalizeHttpProxy(opts.proxy))
     if (opts.cipher) args.push('--custom-hls-method', opts.cipher.method, '--custom-hls-key', opts.cipher.key, '--custom-hls-iv', opts.cipher.iv)
     for (const [name, value] of Object.entries(headersFor(opts.ref, 0, opts.headers))) args.push('--header', `${name.toLowerCase()}: ${value}`)
     if (opts.key) {

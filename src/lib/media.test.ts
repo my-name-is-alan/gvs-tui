@@ -64,6 +64,24 @@ test('RE counts bytes in completed and in-flight fragments without counting unfi
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
+test('in-flight single-file DASH fragments still report bytes (no more 0 B/s)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gvs-re-inflight-'))
+  const stream = join(dir, 'download', '0_uuid_avc1.640028_7226948_')
+  mkdirSync(stream, { recursive: true })
+  try {
+    // 元数据被 --write-meta-json false 关掉时，总量退回 RE 控制台的清单数。
+    writeFileSync(join(stream, '0.mp4.tmp.downloading'), Buffer.alloc(400))
+    writeFileSync(join(stream, '0.mp4.tmp.downloading.meta'), Buffer.alloc(32))
+    expect(reDownloadedSegments(dir, 2)).toEqual({ done: 0, total: 2, bytes: 400 })
+    writeFileSync(join(stream, '0.mp4.tmp.downloading'), Buffer.alloc(900))
+    expect(reDownloadedSegments(dir, 2)).toEqual({ done: 0, total: 2, bytes: 900 })
+    // 整段下完：改名成 0.mp4 才算完成
+    rmSync(join(stream, '0.mp4.tmp.downloading')); rmSync(join(stream, '0.mp4.tmp.downloading.meta'))
+    writeFileSync(join(stream, '0.mp4'), Buffer.alloc(1000))
+    expect(reDownloadedSegments(dir, 2)).toEqual({ done: 1, total: 2, bytes: 1000 })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('pipe progress handles partial tokens, multiple redraws and never reports completion early', () => {
   const values: number[] = []
   const feed = reProgress((n) => values.push(n))

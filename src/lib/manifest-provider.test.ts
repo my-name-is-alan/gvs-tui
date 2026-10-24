@@ -101,10 +101,45 @@ describe('manifest provider client contracts', () => {
     // 配音：原声那条标出来，默认选中第一条
     expect(out.audios[0]).toMatchObject({ id: 'ja-JP', lang: 'ja-JP', label: '日语（原声）', selected: true })
     expect(out.audios[1]).toMatchObject({ id: 'en-US', label: '英语', selected: false })
-    // 字幕：中文优先选中
+    // 字幕：只有简体中文时勾它，并标为默认显示
     expect(out.subtitles?.map(s => s.id)).toEqual(['en-US', 'zh-Hans', 'de-DE'])
-    expect(out.subtitles?.find(s => s.id === 'zh-Hans')?.selected).toBe(true)
+    expect(out.subtitles?.find(s => s.id === 'zh-Hans')).toMatchObject({ selected: true, isDefault: true })
     expect(out.subtitles?.filter(s => s.selected)).toHaveLength(1)
+  })
+
+  test('crunchyroll ticks both simplified and traditional Chinese, simplified as default', async () => {
+    const cli = {invoke: async () => ({
+      qualities: [{ id: '1080p', label: '1080p', height: 1080, width: 1920, bitrateKbps: 7061, codec: 'avc1.640028' }],
+      audios: [{ id: 'ja-JP', lang: 'ja-JP', label: '日语', original: true, default: true }],
+      subtitles: [
+        { id: 'en-US', lang: 'en-US', label: '英语', format: 'ass', url: 'https://cdn.example/en.ass' },
+        { id: 'zh-Hant', lang: 'zh-Hant', label: '繁体中文', format: 'ass', url: 'https://cdn.example/zh-hant.ass' },
+        { id: 'zh-Hans', lang: 'zh-Hans', label: '简体中文', format: 'ass', url: 'https://cdn.example/zh-hans.ass' },
+      ],
+    })} as unknown as GwClient
+    const out = await probeManifest(cli, {} as FileConfig, 'crunchyroll', 'G69P9MD9Y')
+    expect(out.subtitles?.filter(s => s.selected).map(s => s.id)).toEqual(['zh-Hant', 'zh-Hans'])
+    expect(out.subtitles?.filter(s => s.isDefault).map(s => s.id)).toEqual(['zh-Hans'])
+  })
+
+  test('crunchyroll falls back to English only when the episode has no Chinese subtitles', async () => {
+    const cli = {invoke: async () => ({
+      qualities: [{ id: '1080p', label: '1080p', height: 1080, width: 1920, bitrateKbps: 7061, codec: 'avc1.640028' }],
+      audios: [{ id: 'ja-JP', lang: 'ja-JP', label: '日语', original: true, default: true }],
+      subtitles: [
+        { id: 'de-DE', lang: 'de-DE', label: '德语', format: 'ass', url: 'https://cdn.example/de.ass' },
+        { id: 'en-US', lang: 'en-US', label: '英语', format: 'ass', url: 'https://cdn.example/en.ass' },
+      ],
+    })} as unknown as GwClient
+    const out = await probeManifest(cli, {} as FileConfig, 'crunchyroll', 'G69P9MD9Y')
+    expect(out.subtitles?.filter(s => s.selected).map(s => s.id)).toEqual(['en-US'])
+    expect(out.subtitles?.find(s => s.id === 'en-US')?.isDefault).toBe(true)
+  })
+
+  test('crunchyroll surfaces the stream-limit error instead of an empty ladder', async () => {
+    const limit = Object.assign(new Error('该账号同时播放的会话数已达上限'), { errorCode: 'TOO_MANY_QUEUED_STREAMS', httpStatus: 429 })
+    const cli = {invoke: async () => { throw limit }} as unknown as GwClient
+    await expect(probeManifest(cli, {} as FileConfig, 'crunchyroll', 'G69P9MD9Y')).rejects.toThrow('会话数已达上限')
   })
 
   test('crunchyroll falls back to the single auto entry on old gateways', async () => {

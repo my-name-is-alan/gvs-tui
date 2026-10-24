@@ -3,7 +3,13 @@ import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
 import { asBool, isObj } from './util.ts'
 import { tierHeight } from './name.ts'
-import { onlineSubtitles, type OnlineSubtitle } from './online-subtitles.ts'
+import { mediaDownloadProxy } from './proxy.ts'
+import { chineseVariant, onlineSubtitles, type OnlineSubtitle } from './online-subtitles.ts'
+
+/** 需要固定出口的源（目前只有 Crunchyroll）把媒体请求也走配置的代理。 */
+export function manifestDownloadProxy(provider: string, cfg: Pick<FileConfig, 'gatewayProxy'>): string {
+  return provider === 'crunchyroll' ? mediaDownloadProxy(cfg.gatewayProxy) : ''
+}
 
 export type ManifestSource = { url: string; headers: Record<string, string>; format: string; height: number; quality: string; clear: boolean; drm: string; live: boolean; contentKeys: string[]; manifest?: string; subtitles?: OnlineSubtitle[] }
 const str = (v: unknown): string => typeof v === 'string' ? v : ''
@@ -148,7 +154,8 @@ export async function probeCrunchyroll(cli: Pick<GwClient, 'invoke'>, id: string
         selected: asBool(a.default) || i === 0,
       }
     })
-    // 字幕：源站给的是独立签名直链，中文/英语优先选中。
+    // 字幕：源站给的是独立签名直链。默认勾选简体中文 + 繁体中文（都勾上），
+    // 并把简体标为默认显示；没有中文字幕时才退回英语。
     const subRows = onlineSubtitles(data)
     const subtitles: Subtitle[] = subRows.map(s => ({
       id: s.id,
@@ -159,13 +166,25 @@ export async function probeCrunchyroll(cli: Pick<GwClient, 'invoke'>, id: string
       selected: false,
       isDefault: false,
     }))
-    for (const want of [/^zh/i, /^en/i]) {
-      const pick = subtitles.find(s => want.test(s.lang) && !s.selected)
-      if (pick) { pick.selected = true; break }
+    const hans = subtitles.filter(s => chineseVariant(s.lang, s.label, s.id) === 'hans')
+    const hant = subtitles.filter(s => chineseVariant(s.lang, s.label, s.id) === 'hant')
+    const chinese = [...hans, ...hant]
+    if (chinese.length) {
+      for (const s of chinese) s.selected = true
+      const preferred = hans[0] ?? hant[0]!
+      preferred.isDefault = true
+    } else {
+      const english = subtitles.find(s => /^en\b/i.test(s.lang))
+      if (english) { english.selected = true; english.isDefault = true }
     }
     return { qualities, audios, ...(subtitles.length ? { subtitles } : {}) }
-  } catch {
+  } catch (e) {
     // 旧网关 / 探测失败：保留原来的单入口，下载照旧走最佳画质。
+    // 但「账号并发播放会话已满」必须让用户看见——否则画质页只剩一条「自动」，
+    // 看起来像"不显示画质列表"，实际是 CR 上游返回 420（网关转成 429）。
+    const code = (e as { errorCode?: string } | null)?.errorCode || ''
+    const status = (e as { httpStatus?: number } | null)?.httpStatus
+    if (code === 'TOO_MANY_QUEUED_STREAMS' || status === 429) throw e
   }
   return { qualities: [{ id: 'auto', label: '自动（最佳画质）', title: 'DASH · 本机直连 CDN', size: 0, width: 0, height: 0, codec: '', drm: 'widevine', stream: 'auto', tier: 0 }], audios: [] }
 }

@@ -16,6 +16,11 @@ export function fetchMediaSegment(url: string, init: RequestInit): Promise<Respo
   return fetchNativeMediaSegment(url, init, target => session.defaultSession.resolveProxy(target))
 }
 
+/** Side media files (CR subtitles) ride the same native route; the explicit proxy is unused here. */
+export function fetchMediaPart(url: string, init: RequestInit, _proxy = ''): Promise<Response> {
+  return fetchNativeMediaSegment(url, init, target => session.defaultSession.resolveProxy(target))
+}
+
 const PROXY_KEYS: Record<string, true> = { http_proxy: true, https_proxy: true, all_proxy: true }
 
 export function isProxyEnvKey(key: string): boolean {

@@ -15,6 +15,11 @@ export function fetchMediaSegment(url: string, init: RequestInit): Promise<Respo
   return fetch(url, init)
 }
 
+/** Side media files (e.g. Crunchyroll subtitles) follow the same route as the media itself. */
+export function fetchMediaPart(url: string, init: RequestInit, proxy = ''): Promise<Response> {
+  return proxy ? fetch(url, { ...init, proxy } as RequestInit & { proxy: string }) : fetch(url, init)
+}
+
 const PROXY_KEYS: Record<string, true> = {
   http_proxy: true,
   https_proxy: true,
@@ -35,6 +40,11 @@ export function normalizeHttpProxy(value: string): string {
   } catch {
     throw new Error('请填写 HTTP/HTTPS 代理地址，如 http://127.0.0.1:7897；留空使用默认网络')
   }
+}
+
+/** Explicit media exception for providers that require the service's exit IP. */
+export function mediaDownloadProxy(savedProxy = ''): string {
+  return normalizeHttpProxy(process.env.GVS_PROXY?.trim() || savedProxy)
 }
 
 /** Saved gateway routing is separate from TMDB and media downloads. The tunnel reads the same proxy itself. */

@@ -9,7 +9,7 @@ import { mkvmergeMux, mkvmergeRemux } from './mkvmerge'
 import { mgtvCapabilities, miguCapabilities, selectedBilibiliMedia, webTracks, audioChoice, type WebTrack } from './web-video-providers'
 import { probeFinishedMedia } from './gvs-record'
 import { verifyMiguManifest } from './migu-manifest'
-import { mgtvDurationCovers, mgtvExpectedDuration, verifyMgtvManifest } from './mgtv-manifest'
+import { mgtvDurationCovers, mgtvExpectedDuration, mgtvRequestHeaders, verifyMgtvManifest } from './mgtv-manifest'
 import { releaseGroup } from './release-group.ts'
 
 type Emit = (status: string, pct: number, log: string) => void
@@ -19,6 +19,32 @@ async function verifyCoverage(path: string, expected: number | undefined, signal
   if (media.status !== 'probed' || !media.durationSeconds) throw new Error('未能验证媒体时长，已保留下载文件，请检查媒体工具')
   if (expected && (strict ? !mgtvDurationCovers(media.durationSeconds, expected) : expected > 30 && media.durationSeconds < expected - Math.max(10,expected*.05))) throw new Error('实际视频明显短于分集时长，可能是试看；已停止生成成品')
 }
+/**
+ * 芒果 CDN 对本机出口成段拒绝（IP 节点 405 / 域名节点 403）。换节点也救不回来时，
+ * 说明是出口 IP 被限流，只能等冷却或换网络；用专门的错误让上层给出准确提示。
+ */
+let mgtvBlockedUntil = 0
+
+/** 记录"芒果正在拒绝本机出口"，让队列里的其它芒果任务先等一会儿，别再一起撞。 */
+export function markMgtvBlocked(windowMs = 10 * 60_000): void {
+  mgtvBlockedUntil = Math.max(mgtvBlockedUntil, Date.now() + windowMs)
+}
+
+/** 剩余冷却毫秒数（0 = 可以继续）。 */
+export function mgtvBlockedFor(now = Date.now()): number {
+  return Math.max(0, mgtvBlockedUntil - now)
+}
+
+export class MgtvCdnBlocked extends Error {
+  readonly provider = 'mgtv'
+  constructor(detail: string, options?: ErrorOptions) {
+    super('芒果 CDN 正在拒绝本机出口（HTTP 403/405），通常是同一 IP 短时间下载过多被临时限流；请等 10–30 分钟，或更换网络/IP 后重试', options)
+    this.name = 'MgtvCdnBlocked'
+    this.detail = detail
+  }
+  readonly detail: string
+}
+
 export async function downloadWebVideo(cli: Pick<GwClient,'invoke'>, cfg: FileConfig, task: DlTask, dest: string, work: string, emit: Emit, signal?: AbortSignal, audioLanguageFallback = ''): Promise<void> {
   signal?.throwIfAborted()
   if (task.provider === 'migu') {
@@ -47,11 +73,36 @@ export async function downloadWebVideo(cli: Pick<GwClient,'invoke'>, cfg: FileCo
     if (!source) throw new Error('芒果没有返回可用播放地址')
     emit('校验', .03, data.preview === true || Number(data.preview) === 1 ? '核对芒果播放清单是否为完整内容' : '核对芒果播放清单')
     const expected = mgtvExpectedDuration(task.duration, data.duration, source.source.duration)
-    // Some TV CDN endpoints reject a web Referer with HTTP 405. Keep only
-    // provider-supplied Referer/UA and use identical headers for probe and RE.
-    const headers = headersFor('', 0, source.headers)
-    const checked = await verifyMgtvManifest(source.url, headers, expected, signal)
-    await downloadPlaylist({src:checked.url,dest,ref:'',headers,threads:cfg.threads,select:'muxed',muxTracks:true,releaseGroup:releaseGroup(task,cfg),
+    // 芒果的签名在 URL 里，不需要 UA/Referer；实测带 UA 会被 IP 直连节点回 405、
+    // 带 Referer 会被域名节点回 403，所以清单与分片都不带这两个头（清单仍保留兜底重试）。
+    const headers = mgtvRequestHeaders(headersFor('', 0, source.headers))
+    // 芒果的 CDN 节点会整段时间拒绝（IP 节点回 405、域名节点回 403），批量下载时尤其明显。
+    // 死磕同一个 URL 没用，重新取流往往换到另一个节点，所以校验失败就重取再试。
+    let checked: Awaited<ReturnType<typeof verifyMgtvManifest>>
+    let current = source
+    for (let attempt = 1; ; attempt++) {
+      try {
+        checked = await verifyMgtvManifest(current.url, headers, expected, signal)
+        break
+      } catch (error) {
+        signal?.throwIfAborted()
+        const message = error instanceof Error ? error.message : ''
+        if (attempt >= 3 || !/HTTP (?:403|405|408|429|5\d\d)/.test(message)) {
+          if (/HTTP (?:403|405)/.test(message)) {
+            markMgtvBlocked()
+            throw new MgtvCdnBlocked(message, { cause: error })
+          }
+          throw error
+        }
+        emit('校验', .03, `芒果清单被 CDN 拒绝，重新取流（第 ${attempt} 次）`)
+        const fresh = await cli.invoke('mgtv', 'play', { vid: task.vid, quality: task.quality, ...mgtvCapabilities })
+        const next = webTracks(fresh).find(t => t.type === 'video')
+        if (!next) throw error
+        current = next
+      }
+    }
+    // 芒果对同一出口 IP 的并发很敏感：线程数收敛到 4，减少被限流的几率。
+    await downloadPlaylist({src:checked.url,dest,ref:'',headers,threads:Math.min(cfg.threads || 8, 4),select:'muxed',muxTracks:true,releaseGroup:releaseGroup(task,cfg),
       // RE can synthesize an English language tag for an unlabeled TS audio
       // stream. A matched original language must be applied during our mux.
       muxOriginalAudioLanguage: audioLanguageFallback,transport:'re',workDir:work,workTag:'mgtv',signal,cb:(n,total,info)=>emit(playlistStatus('下载',info?.phase || 'download'),.05+.85*(total>1?n/total:n),info?.log || '芒果 CDN → 本机')})

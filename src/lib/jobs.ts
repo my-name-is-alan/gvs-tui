@@ -1,6 +1,7 @@
-import { pickSubtitles, downloadSubtitles, attachSubtitles } from './online-subtitles.ts'
-import { DSNP_VIDEO_CODECS, resolveManifestDownload } from './manifest-provider.ts'
-import { downloadWebVideo } from './web-video-download'
+import { pickSubtitles, orderSubtitles, downloadSubtitles, attachSubtitles } from './online-subtitles.ts'
+import { fetchMediaPart } from './proxy.ts'
+import { DSNP_VIDEO_CODECS, manifestDownloadProxy, resolveManifestDownload } from './manifest-provider.ts'
+import { downloadWebVideo, mgtvBlockedFor } from './web-video-download'
 import { userMessage, errorCode } from './user-message.ts'
 import { youkuMediaError } from './media-output.ts'
 import { decryptYoukuTs } from './youku-ts.ts'
@@ -116,6 +117,13 @@ export type JobEvt = {
 export type StopReason = 'pause' | 'cancel'
 
 /** Lets the hub release per-provider resources as soon as downloading is done. */
+/**
+ * 下载页的「实测规格」行（分辨率 · 编码 · 帧率 · 动态范围 · 视频码率 · 大小）
+ * 只读成片本身。这里列出完成后会做本机探测的 provider；
+ * 腾讯虽然不在列表里，它的规格来自 actualVersion 版本档案。
+ */
+export const MEDIA_PROBE_PROVIDERS: readonly string[] = ['youku', 'iq', 'iqcn', 'mgtv', 'bilibili', 'migu', 'crunchyroll', 'appletvplus', 'dsnp']
+
 export type JobHooks = { downloaded?: () => void }
 
 type JobRunner = (
@@ -185,6 +193,7 @@ export class JobHub {
   private active = 0
   private youkuActive = 0
   private readonly running = new Map<number, { ctrl: AbortController; settled: Promise<void> }>()
+  private mgtvActive = 0
 
   constructor(
     private readonly onEvt: (e: JobEvt) => void,
@@ -250,9 +259,21 @@ export class JobHub {
         i++
         continue
       }
+      // 芒果批量下载时同一出口 IP 并发太多会整段 405/403；同一时间只跑一条，
+      // 换取清单与分片读取的成功率。
+      if (item.provider === 'mgtv' && this.mgtvActive > 0) {
+        i++
+        continue
+      }
+      // 出口已经被芒果拒了的话，先让芒果任务在队列里等冷却结束，别再一起撞。
+      if (item.provider === 'mgtv' && mgtvBlockedFor() > 0) {
+        i++
+        continue
+      }
       this.q.splice(i, 1)
       this.active += 1
       if (item.provider === 'youku') this.youkuActive += 1
+      if (item.provider === 'mgtv') this.mgtvActive += 1
       const ctrl = new AbortController()
       // The Youku slot guards download/decrypt only: mixed RE/Shaka temp names
       // and mixed CENC keys exist while downloading, not while muxing the
@@ -275,6 +296,7 @@ export class JobHub {
           youkuHeld = false
           this.youkuActive -= 1
         }
+        if (item.provider === 'mgtv') this.mgtvActive = Math.max(0, this.mgtvActive - 1)
         this.active -= 1
         this.running.delete(item.id)
         settled.resolve()
@@ -442,7 +464,7 @@ export async function runTask(
         log('版本档案未能保存')
       }
     }
-    if (['youku', 'iq', 'iqcn', 'mgtv', 'bilibili', 'migu'].includes(t.provider)) {
+    if (MEDIA_PROBE_PROVIDERS.includes(t.provider)) {
       try {
         completedMedia = await finishedMediaRecord(out, signal, finishedMedia)
       } catch {
@@ -1390,21 +1412,44 @@ export function youkuAudioFetchPlan(
 }
 
 /**
+ * 是否需要给已封装的字幕轨回写「轨名 / 默认 / 强制」：
+ * Apple TV+ 的字幕由网关按序号裁进 master，轨名和默认标记只能我们自己写；
+ * Disney+ 只在勾了 forced 或默认档时才写（保持原有行为）。
+ */
+export function shouldMarkSubtitleFlags(
+  provider: string,
+  subs: NonNullable<DlTask['subtitleTracks']> | undefined,
+): boolean {
+  if (!subs?.length) return false
+  if (provider === 'appletvplus') return true
+  return provider === 'dsnp' && subs.some(s => s.forced || s.isDefault)
+}
+
+/**
  * Sets MKV default / forced-display flags on the muxed subtitle tracks (mkvmerge remux; no mkvpropedit is bundled).
  * RE muxes the selected renditions in playlist order, which is the order of `subs`; a count mismatch leaves the file untouched.
+ * `defaultFirst` 在没有任何一条标了默认时把第一条设为默认，避免播放器打开是空字幕。
  */
-async function markSubtitleFlags(dest: string, subs: NonNullable<DlTask['subtitleTracks']>, signal?: AbortSignal): Promise<void> {
+async function markSubtitleFlags(
+  dest: string,
+  subs: NonNullable<DlTask['subtitleTracks']>,
+  signal?: AbortSignal,
+  provider = 'dsnp',
+  defaultFirst = false,
+): Promise<void> {
   const { execFile } = await import('node:child_process')
   const { rename, rm } = await import('node:fs/promises')
   const run = (bin: string, args: string[]) => new Promise<string>((ok, fail) => execFile(bin, args, { maxBuffer: 64 << 20, signal, windowsHide: true }, (e, out) => e ? fail(e) : ok(String(out))))
   const mkvmerge = await ensureMkvmerge()
   const info = JSON.parse(await run(mkvmerge, ['-J', dest])) as { tracks?: Array<{ id: number; type: string; properties?: { track_name?: string } }> }
   const tracks = (info.tracks || []).filter(x => x.type === 'subtitles')
-  if (tracks.length !== subs.length) { runLog(`dsnp subtitle flags skipped: ${tracks.length} muxed vs ${subs.length} selected`); return }
+  if (tracks.length !== subs.length) { runLog(`${provider} subtitle flags skipped: ${tracks.length} muxed vs ${subs.length} selected`); return }
   const args = ['-o', `${dest}.flags.mkv`]
+  const firstDefault = defaultFirst && !subs.some(s => s.isDefault) ? 0 : -1
   tracks.forEach((x, i) => {
     const s = subs[i]!
-    args.push('--default-track-flag', `${x.id}:${s.isDefault ? 1 : 0}`, '--forced-display-flag', `${x.id}:${s.forced ? 1 : 0}`, '--track-name', `${x.id}:${s.label}`)
+    const isDefault = s.isDefault || i === firstDefault
+    args.push('--default-track-flag', `${x.id}:${isDefault ? 1 : 0}`, '--forced-display-flag', `${x.id}:${s.forced ? 1 : 0}`, '--track-name', `${x.id}:${s.label}`)
   })
   args.push(dest)
   try {
@@ -1412,11 +1457,18 @@ async function markSubtitleFlags(dest: string, subs: NonNullable<DlTask['subtitl
     await rename(`${dest}.flags.mkv`, dest)
   } catch (e) {
     await rm(`${dest}.flags.mkv`, { force: true })
-    runLog(`dsnp subtitle flags failed: ${e instanceof Error ? e.message : String(e)}`)
+    runLog(`${provider} subtitle flags failed: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
 
 /** Media is fetched on this client; gateway traffic is limited to resolve calls. */
+/** 源站把单条原声音轨错标成英文时，用任务里选中的 locale 纠正（返回空=不动）。 */
+export function originalAudioLanguage(t: Pick<DlTask, 'audioTracks'>): string {
+  const lang = (t.audioTracks?.[0]?.lang || '').trim()
+  if (!lang || /^(en|eng)(?:[-_]|$)/i.test(lang)) return ''
+  return lang
+}
+
 async function dlManifestProvider(cli: GwClient, cfg: FileConfig, t: DlTask, out: string, emit: (s: string, p: number, l: string) => void, work: string, signal?: AbortSignal): Promise<void> {
   // Apple TV：把 probe 里选中的音轨/字幕序号传回网关，由它裁剪 master。
   // Crunchyroll：配音是另一条 episode 版本，只传选中的那一档 locale；字幕由网关
@@ -1438,31 +1490,44 @@ async function dlManifestProvider(cli: GwClient, cfg: FileConfig, t: DlTask, out
   if (!['dash','hls'].includes(source.format.toLowerCase()) && !new URL(source.url).pathname.match(/[.](mpd|m3u8)$/i)) {
     throw new Error('该源不是已接入的 DASH/HLS 清单；拒绝伪装封装格式')
   }
-  emit('下载', 0.05, '源站 CDN → 本机；网关不转发视频')
+  // Crunchyroll 的媒体（清单/分片/字幕）必须走配置的代理出口，其它源直连。
+  const proxy = manifestDownloadProxy(t.provider, cfg)
+  emit('下载', 0.05, proxy ? '源站 CDN → 已配置代理 → 本机；网关不转发视频' : '源站 CDN → 本机；网关不转发视频')
   await writeFinal(out, async dest => {
     await downloadPlaylist({ src: source.url, dest, ref, headers: source.headers, contentKeys: source.contentKeys,
+      proxy,
       keepSubtitles: t.provider === 'appletvplus' || t.provider === 'dsnp',
       subtitleUris: t.provider === 'dsnp' && t.subtitleTracks ? t.subtitleTracks.map(s => s.id) : undefined,
       // appletvplus: 网关已按序号裁剪 master，不再用 url= 选择（所有配音同名）。
       manifestText: source.manifest, videoHeight: source.height || undefined, videoCodecs, audioUris, threads: cfg.threads,
       select: 'muxed', muxTracks: true, releaseGroup: releaseGroup(t,cfg), transport: 're', workDir: work, workTag: 'manifest', signal,
+      // CR 的 cbr 版把音轨在 MP4 里标成 eng（实测 init 段 mdhd=eng），MPD 里其实是
+      // AdaptationSet lang="ja-JP"。单音轨且被标成英文/未知时用任务里的原声 locale 纠正。
+      muxOriginalAudioLanguage: originalAudioLanguage(t),
       // DRM OTT 源：音轨往往要等整条视频下完才轮到（RE 默认逐流串行），
       // 打开 -mt 让视频/音轨并行下载与解密；网关/源站对这两家是常规并发。
       concurrentStreams: ['appletvplus', 'dsnp', 'crunchyroll'].includes(t.provider),
       cb: (n,total,info) => { const p = total > 1 ? n / total : n; emit(playlistStatus('下载', info?.phase || 'download'), 0.05 + 0.88 * p, info?.log || '本机直连 CDN') },
     })
-    if (t.provider === 'dsnp' && t.subtitleTracks?.some(s => s.forced || s.isDefault) && /\.mkv$/i.test(dest)) {
-      emit('封装', 0.995, '写入字幕默认 / 强制标记')
-      await markSubtitleFlags(dest, t.subtitleTracks, signal)
+    if (shouldMarkSubtitleFlags(t.provider, t.subtitleTracks) && /\.mkv$/i.test(dest)) {
+      emit('封装', 0.995, '写入字幕轨名与默认标记')
+      await markSubtitleFlags(dest, t.subtitleTracks!, signal, t.provider, t.provider === 'appletvplus')
     }
     if (t.provider === 'crunchyroll') {
       // CR 的字幕不在清单里：源站给的是独立签名直链（ass/vtt/srt），下完用 mkvmerge 挂轨。
-      const picked = pickSubtitles(source.subtitles ?? [], (t.subtitleTracks || []).map(s => s.id))
+      // 轨序按简体 → 繁体 → 其他排列；没有"默认显示"标记时把第一条勾选的标成默认，
+      // 保证播放器打开就有字幕（探针已把简体中文标为默认，这里只兜底）。
+      const picked = orderSubtitles(pickSubtitles(source.subtitles ?? [], (t.subtitleTracks || []).map(s => s.id)))
       if (picked.length) {
         const defaults = new Set((t.subtitleTracks || []).filter(s => s.isDefault).map(s => s.id))
+        if (!picked.some(sub => defaults.has(sub.id))) defaults.add(picked[0]!.id)
         emit('字幕', 0.99, `下载 ${picked.length} 条字幕`)
         try {
-          const files = await downloadSubtitles(picked, join(work, 'subs'), signal)
+          // 字幕 CDN 同样按地区封锁：和视频用同一条出口（桌面端为原生媒体传输）。
+          const files = await downloadSubtitles(picked, join(work, 'subs'), {
+            signal,
+            fetcher: (url, init) => fetchMediaPart(url, init, proxy),
+          })
           if (/\.mkv$/i.test(dest)) {
             const mkvmerge = await ensureMkvmerge()
             if (!mkvmerge) throw new Error('没有 mkvmerge')
@@ -1472,8 +1537,10 @@ async function dlManifestProvider(cli: GwClient, cfg: FileConfig, t: DlTask, out
             emit('字幕', 0.995, `${files.length} 条字幕已存到 ${join(work, 'subs')}`)
           }
         } catch (e) {
-          // 字幕失败不能毁掉已经下好的视频。
-          emit('字幕', 0.995, `字幕未写入：${e instanceof Error ? e.message : String(e)}`)
+          // 字幕失败不能毁掉已经下好的视频，但要在日志里留痕，方便排查地区封锁/网络问题。
+          const why = e instanceof Error ? e.message : String(e)
+          runLog(`crunchyroll subtitles failed vid=${t.vid}: ${why}`)
+          emit('字幕', 0.995, `字幕未写入：${why}`)
         }
       }
     }

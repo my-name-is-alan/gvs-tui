@@ -32,6 +32,34 @@ export function pickSubtitles(all: readonly OnlineSubtitle[], selected: readonly
   return all.filter(s => want.has(s.id))
 }
 
+/**
+ * 中文字幕的简繁判断（只看语言/标签，不猜内容）。
+ * CR 给的是 BCP 47：`zh-Hans` / `zh-Hant` / `zh-CN` / `zh-TW` ……，无区域的 `zh` 按简体处理。
+ */
+export function chineseVariant(...texts: Array<string | undefined>): 'hans' | 'hant' | '' {
+  for (const text of texts) {
+    const v = (text || '').trim().toLowerCase().replace(/_/g, '-')
+    if (!v) continue
+    if (/繁体|繁體/.test(v) || /^zh-(?:hant|tw|hk|mo)\b/.test(v)) return 'hant'
+    if (/简体|簡體/.test(v) || /^zh-(?:hans|cn|sg)\b/.test(v)) return 'hans'
+    if (/^zh\b/.test(v) || /中文/.test(v)) return 'hans'
+  }
+  return ''
+}
+
+/** 字幕轨顺序权重：简体 → 繁体 → 其他。 */
+export function subtitleRank(sub: OnlineSubtitle): number {
+  const variant = chineseVariant(sub.lang, sub.label, sub.id)
+  return variant === 'hans' ? 0 : variant === 'hant' ? 1 : 2
+}
+
+/** 简体在前、繁体其次、其他最后；同组内保持源站顺序（稳定排序）。 */
+export function orderSubtitles(subs: readonly OnlineSubtitle[]): OnlineSubtitle[] {
+  return subs.map((sub, i) => ({ sub, i }))
+    .sort((a, b) => subtitleRank(a.sub) - subtitleRank(b.sub) || a.i - b.i)
+    .map(x => x.sub)
+}
+
 const SUB_EXT: Record<string, string> = { ass: 'ass', ssa: 'ass', vtt: 'vtt', srt: 'srt', ttml: 'ttml' }
 
 /** 字幕文件名：`<语言>.<ext>`，去掉会破坏路径的字符。 */
@@ -41,18 +69,23 @@ export function subtitleFileName(sub: OnlineSubtitle): string {
   return `${base || sub.id}.${ext}`
 }
 
-/** 下载字幕到 work 目录。源站是签名直链，不带任何认证头。 */
+/**
+ * 下载字幕到 work 目录。源站是签名直链（不需要认证头），但 CDN 同样按地区封锁：
+ * 必须和视频走同一条出口，否则直连会 403。`fetcher` 由调用方注入（桌面端为原生媒体传输）。
+ */
 export async function downloadSubtitles(
   subs: readonly OnlineSubtitle[],
   dir: string,
-  signal?: AbortSignal,
+  options: { signal?: AbortSignal; fetcher?: (url: string, init: RequestInit) => Promise<Response> } = {},
 ): Promise<Array<{ path: string; sub: OnlineSubtitle }>> {
+  const { signal } = options
+  const fetcher = options.fetcher ?? ((url: string, init: RequestInit) => fetch(url, init))
   if (!subs.length) return []
   await mkdir(dir, { recursive: true })
   const out: Array<{ path: string; sub: OnlineSubtitle }> = []
   for (const sub of subs) {
     signal?.throwIfAborted()
-    const res = await fetch(sub.url, { signal: signal ?? AbortSignal.timeout(60_000) })
+    const res = await fetcher(sub.url, { signal: signal ?? AbortSignal.timeout(60_000) })
     if (!res.ok) throw new Error(`字幕下载失败 (${sub.label}): HTTP ${res.status}`)
     const body = new Uint8Array(await res.arrayBuffer())
     if (!body.length) throw new Error(`字幕为空 (${sub.label})`)
@@ -74,7 +107,10 @@ export function attachSubtitleArgs(
 ): string[] {
   const args = [video]
   for (const f of files) {
-    const lang = mkvLang(f.sub.lang || f.sub.id)
+    // 简繁用带脚本的 IETF 标签（zh-Hans / zh-Hant），播放器才能按语言自动选轨；
+    // 其它语言仍用 Matroska 的 ISO 639-2 代码。
+    const variant = chineseVariant(f.sub.lang, f.sub.label, f.sub.id)
+    const lang = variant === 'hans' ? 'zh-Hans' : variant === 'hant' ? 'zh-Hant' : mkvLang(f.sub.lang || f.sub.id)
     args.push('--language', `0:${lang}`, '--track-name', `0:${f.sub.label || f.sub.id}`)
     args.push('--default-track-flag', `0:${f.isDefault ? 1 : 0}`, '--forced-display-flag', '0:0')
     args.push('--sub-charset', '0:UTF-8', f.path)

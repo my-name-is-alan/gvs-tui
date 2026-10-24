@@ -68,3 +68,17 @@ mediaTest('matched original language corrects only single unknown or generic Eng
     }
   } finally {rmSync(root,{recursive:true,force:true})}
 },30000)
+
+mediaTest('original locale also tags the video track, matching other platforms',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'gvs-video-lang-'))
+  try {
+    const ff=await ensureFFmpeg(),mkv=await ensureMkvmerge()
+    const video=join(root,'download.mp4'),audio=join(root,'download.m4a'),out=join(root,'result.mkv')
+    const made=spawnSync(ff,['-nostdin','-v','error','-f','lavfi','-i','testsrc2=s=64x64:r=12:d=0.4','-f','lavfi','-i','sine=sample_rate=48000:duration=0.4','-map','0:v','-c:v','libx264',video,'-map','1:a','-c:a','aac',audio],{windowsHide:true,encoding:'utf8',timeout:10000})
+    if(made.status!==0)throw new Error(made.stderr)
+    await mkvmergeTrackFiles(mkv,[video,audio],out,undefined,undefined,'ja-JP')
+    const tracks=JSON.parse(spawnSync(mkv,['-J',out],{windowsHide:true,encoding:'utf8',timeout:10000}).stdout).tracks
+    expect(tracks.find((t:any)=>t.type==='video').properties.language_ietf).toBe('ja-JP')
+    expect(tracks.find((t:any)=>t.type==='audio').properties.language_ietf).toBe('ja-JP')
+  } finally {rmSync(root,{recursive:true,force:true})}
+},30000)

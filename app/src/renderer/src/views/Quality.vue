@@ -537,7 +537,7 @@ async function applyRule() {
                   </label>
                 </div>
               </div>
-              <span v-if="subtitles.length" class="muted small">已选 {{ subtitleIds.length }} / {{ subtitles.length }} 条字幕；转 SRT 封装进 MKV，默认显示与强制标记写入文件。</span>
+              <span v-if="subtitles.length" class="muted small">已选 {{ subtitleIds.length }} / {{ subtitles.length }} 条字幕；按源站原格式（ASS / VTT / SRT）挂成独立轨，写入语言、轨名与默认标记。默认勾选简体中文，没有则繁体、再没有则英语。</span>
               <div v-else class="agrid">
                 <div class="acard on sub-card">
                   <span class="achip dis"><span class="cbox"><Icon name="check" :size="12" :stroke="3" /></span><span class="alang">跟随视频</span><span class="alabel">平台内嵌 / 硬字幕</span></span>

@@ -77,6 +77,8 @@ test('domestic IQ uses IQIYI and actual video/default audio specs for movies and
   expect(completedFilename(naming({ source }), media({ audio: { status: 'ambiguous' } })))
     .toBe('节目.S01E01.2026.2160p.IQIYI.WEB-DL.HEVC-WF.mkv')
   expect(sourceTag('iq')).toBe('IQ')
+  // Apple TV+ 用行业惯用标签 ATVP，不能落到 default 的「前三字母」变成 APP
+  expect(sourceTag('appletvplus')).toBe('ATVP')
 })
 
 test('long Chinese subtitles retain the measured suffix without creating directories', () => {
