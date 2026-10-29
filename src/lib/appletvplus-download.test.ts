@@ -37,7 +37,8 @@ test('Apple TV probes without decrypt requests and preserves all official qualit
   const cli={invoke:async(_p:string,a:string,input:Record<string,unknown>)=>{expect(a).toBe('probe');expect(input.download).toBeUndefined();return {qualities:[{id:'2160|DV|PQ|24',height:2160,width:3840,codec:'DV',hdr:'PQ',fps:'24',label:'2160p DV PQ'},{id:'1080|H264|SDR|24',height:1080,width:1920,codec:'H264',hdr:'SDR',fps:'24',label:'1080p H264 SDR'}]}}} as unknown as GwClient
   const out=await probeManifest(cli,{} as FileConfig,'appletvplus',id)
   expect(out.qualities.map(q=>q.id)).toEqual(['2160|DV|PQ|24','1080|H264|SDR|24'])
-  expect(out.qualities[0]).toMatchObject({height:2160,codec:'DV',drm:'playready',fps:24,size:0})
+  expect(out.qualities[0]).toMatchObject({height:2160,codec:'DV',drm:'playready',fps:24,size:0,hdr:'PQ'})
+  expect(out.qualities[1]).toMatchObject({hdr:'SDR'})
 })
 
 test('Apple TV shows an identified size instead of leaving every rendition unknown', async () => {

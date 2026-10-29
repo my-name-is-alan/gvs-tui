@@ -70,7 +70,8 @@ export async function probeManifest(cli: GwClient, cfg: FileConfig, provider: st
     const qualities: Quality[] = rows.filter(q => str(q.id) && Number(q.height) > 0).map(q => {
       const sized = appleTVQualitySize(q, episodeDuration)
       const label = str(q.label)
-      return { id: str(q.id), label, title: sized.estimated ? `${label} · 体积按码率和时长估算` : label, size: sized.size, duration: positive(q.duration) || positive(episodeDuration) || undefined, width: Number(q.width) || 0, height: Number(q.height), codec: str(q.codec), drm: 'playready', stream: str(q.id), hdr: str(q.hdr), fps: Number(q.fps) || undefined, tier: tierHeight(Number(q.width) || 0, Number(q.height)) }
+      const range = str(q.hdr) || str(q.dynamicRange) || str(q.videoRange) || str(q.id).split('|')[2] || ''
+      return { id: str(q.id), label, title: sized.estimated ? `${label} · 体积按码率和时长估算` : label, size: sized.size, duration: positive(q.duration) || positive(episodeDuration) || undefined, width: Number(q.width) || 0, height: Number(q.height), codec: str(q.codec), drm: 'playready', stream: str(q.id), hdr: range, fps: Number(q.fps) || undefined, tier: tierHeight(Number(q.width) || 0, Number(q.height)) }
     })
     if (!qualities.length) throw new Error('Apple TV 没有返回可用画质')
     // Apple TV 一片多配音、多字幕；网关按 1-based 序号标识，下载时原样传回，

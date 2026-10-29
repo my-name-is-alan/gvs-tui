@@ -495,7 +495,7 @@ export function qualityHdrText(hdr?: string): string {
     case 'dolbyvision': case 'dolby vision': case 'dv': return '杜比视界'
     case 'hdr10':
       return 'HDR10'
-    case 'hdr':
+    case 'hdr': case 'pq': case 'hlg':
       return 'HDR'
     case 'sdr':
       return 'SDR'

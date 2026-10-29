@@ -26,7 +26,7 @@ export function hdrKind(...texts: Array<string | undefined>): string {
   if (/dolby\s*vision|dolbyvision|dvhe|dvh1|dovi|(^|[\s_|])dv([\s_|]|$)|杜比视界/.test(t)) return '杜比视界'
   if (/hdr10/.test(t)) return 'HDR10'
   if (/vivid|菁彩/.test(t)) return 'HDR Vivid'
-  if (/hdr/.test(t)) return 'HDR'
+  if (/hdr|(^|[\s_|])pq([\s_|]|$)|hlg/.test(t)) return 'HDR'
   return ''
 }
 
