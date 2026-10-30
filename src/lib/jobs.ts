@@ -731,12 +731,33 @@ async function validateHuangguo(ffmpeg: string, file: string, signal?: AbortSign
   if (errors.length) throw new HuangguoCorrupt(errors)
 }
 
+/** 腾讯 lts*.qq.com 媒体主机对部分出口返回 HTTP 200 的 "Forbidden" HTML（191 字节），
+ *  同一路径换到 gtimg.com 的任意镜像仍是正常 m3u8（实测 200 + 23KB playlist）。 */
+const TENCENT_CDN_GTIMG_MIRRORS = ['ltstyyy.gtimg.com', 'ltstysj.gtimg.com', 'ltsbdy.gtimg.com', 'ltsxmty.gtimg.com']
+
+function tencentMirrorHosts(url: string): string[] {
+  try {
+    const parsed = new URL(url)
+    if (!/^lts[a-z0-9-]*\.qq\.com$/i.test(parsed.hostname)) return []
+    return TENCENT_CDN_GTIMG_MIRRORS.map(host => {
+      const mirror = new URL(parsed.toString())
+      mirror.hostname = host
+      return mirror.toString()
+    })
+  } catch {
+    return []
+  }
+}
+
 /** The picked URL plus the gateway's other CDN mirrors of the same stream. */
 export function tencentMirrors(data: Record<string, unknown>, picked: string): string[] {
   const v = isObj(data.video) ? data.video : {}
   const urls = (Array.isArray(v.urls) ? v.urls : Array.isArray(data.urls) ? data.urls : []).map(asString)
   // A formats[] row of another quality must not fall back to the default stream.
-  return urls.includes(picked) ? [picked, ...urls.filter(u => u && u !== picked)] : [picked]
+  const primary = urls.includes(picked) ? [picked, ...urls.filter(u => u && u !== picked)] : [picked]
+  const all = [...primary]
+  for (const u of primary) all.push(...tencentMirrorHosts(u))
+  return [...new Set(all.filter(Boolean))]
 }
 
 function logTencentDownloadHost(cdn: string, t: DlTask): void {

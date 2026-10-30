@@ -65,6 +65,16 @@ test('Tencent mirrors keep the picked URL first and never cross streams', () => 
   expect(tencentMirrors({}, 'x')).toEqual(['x'])
 })
 
+test('Tencent lts*.qq.com picks fall back to the same path on gtimg mirrors', () => {
+  const picked = 'http://ltscsy.qq.com/svp_50112/x/gzc_1000102_abc.ts.m3u8?ver=4'
+  const mirrors = tencentMirrors({}, picked)
+  expect(mirrors[0]).toBe(picked)
+  expect(mirrors).toContain('http://ltstyyy.gtimg.com/svp_50112/x/gzc_1000102_abc.ts.m3u8?ver=4')
+  expect(mirrors).toHaveLength(5)
+  // gtimg hosts are already good: no extra candidates invented.
+  expect(tencentMirrors({}, 'http://ltstyyy.gtimg.com/svp/x.ts.m3u8')).toHaveLength(1)
+})
+
 test('movie job title uses 英语版 not E01', () => {
   expect(jobTitle(task({ kind: 'movie', edition: '英语版' }))).toBe('第九区 英语版 4K')
 })
