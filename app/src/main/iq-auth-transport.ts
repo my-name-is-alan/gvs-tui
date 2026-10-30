@@ -2,9 +2,14 @@ import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
 import { HttpsProxyAgent } from 'https-proxy-agent'
+import { fetchIQPlaybackHTTP2 } from './iq-playback-http2.ts'
 
 /** IQ login/playback CONNECT preserves manual redirects and gateway-supplied headers. */
 export function fetchIQAuthProxy(input: string, init: RequestInit, proxy: string): Promise<Response> {
+  const target = new URL(input)
+  if (target.protocol === 'https:' && target.hostname === 'cache-video.iq.com' && target.pathname === '/dash') {
+    return fetchIQPlaybackHTTP2(input, init, proxy)
+  }
   return new Promise((resolve, reject) => {
     const url = new URL(input)
     const request = url.protocol === 'https:' ? httpsRequest : httpRequest
