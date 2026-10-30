@@ -53,8 +53,10 @@ export type FileConfig = {
   tencentEncodeAll?: boolean
   /** Opt-in: catalog probe with source=1 / 原画 (默认关，易触发权益锁) */
   tencentProbeSource?: boolean
-  /** Opt-in: catalog probe with caption=all (默认关；默认只探 soft) */
+  /** Opt-in: catalog probe with caption=all (默认开；关掉才只探 soft) */
   tencentCaptionAll?: boolean
+  /** Opt-in: catalog probe with defn=full（逐档喷洒，多出 hdr10/suhd/dolby；请求数 1→9，风控敏感，默认关） */
+  tencentFullLadder?: boolean
   hongguoMerge: boolean
   hongguoNfo: boolean
   hongguoFmt: string

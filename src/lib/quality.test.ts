@@ -762,8 +762,12 @@ describe('tencent quality label disambiguation', () => {
 })
 
 describe('tencentCatalogProbeInput defaults', () => {
-  test('default probe is caption=soft without source/encode', () => {
+  test('default probe asks both caption ladders without source/encode', () => {
     expect(tencentCatalogProbeInput({} as FileConfig, 'x4102kqtje5')).toEqual({
+      vid: 'x4102kqtje5',
+      caption: 'all',
+    })
+    expect(tencentCatalogProbeInput({ tencentCaptionAll: false } as FileConfig, 'x4102kqtje5')).toEqual({
       vid: 'x4102kqtje5',
       caption: 'soft',
     })
@@ -782,6 +786,14 @@ describe('tencentCatalogProbeInput defaults', () => {
       encode: 'all',
     })
   })
+
+  test('opt-in full ladder adds defn=full for hdr10/suhd rows', () => {
+    expect(tencentCatalogProbeInput({ tencentFullLadder: true } as FileConfig, 'vid1')).toEqual({
+      vid: 'vid1',
+      caption: 'all',
+      defn: 'full',
+    })
+  })
 })
 
 describe('isTencentEm93', () => {
@@ -794,7 +806,7 @@ describe('isTencentEm93', () => {
   })
 })
 
-test('probeTencent returns audios from audio_tracks and uses soft probe', async () => {
+test('probeTencent returns audios from audio_tracks and probes both caption ladders', async () => {
   let seen: Record<string, string> | undefined
   const cli = {
     extra: () => ({}),
@@ -810,7 +822,7 @@ test('probeTencent returns audios from audio_tracks and uses soft probe', async 
     },
   } as unknown as GwClient
   const opts = await probeOptions(cli, {} as FileConfig, 'tencent', 'vid1')
-  expect(seen).toEqual({ vid: 'vid1', caption: 'soft' })
+  expect(seen).toEqual({ vid: 'vid1', caption: 'all' })
   expect(seen?.source).toBeUndefined()
   expect(seen?.encode).toBeUndefined()
   expect(opts.qualities.map((q) => q.stream)).toEqual(['maxplus'])
@@ -826,3 +838,5 @@ test('probeTencent surfaces em=93 Chinese status instead of empty/static ladder'
     TENCENT_EM93_STATUS,
   )
 })
+
+

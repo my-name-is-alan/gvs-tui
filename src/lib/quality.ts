@@ -839,14 +839,15 @@ export function isTencentEm93(data: Record<string, unknown>): boolean {
 
 /**
  * Default quality-page catalog probe: light getvinfo spray.
- * - caption=soft (not all) unless tencentCaptionAll
+ * - caption=all by default (soft+hard ladders, 5 → 10 rows); 关掉 tencentCaptionAll 才只探 soft
  * - no source=1 unless tencentProbeSource
  * - encode=all only if tencentEncodeAll (already opt-in)
+ * - defn=full only if tencentFullLadder (adds hdr10/suhd/dolby; 9x requests)
  */
 export function tencentCatalogProbeInput(cfg: FileConfig, vid: string, edition?: TencentPlayParams): Record<string, string> {
   const input: Record<string, string> = {
     vid,
-    caption: cfg.tencentCaptionAll ? 'all' : 'soft',
+    caption: cfg.tencentCaptionAll === false ? 'soft' : 'all',
     ...tencentPlayInput(cfg, edition),
   }
   // IMAX has its own source and device capabilities. The gateway explicitly
@@ -854,6 +855,7 @@ export function tencentCatalogProbeInput(cfg: FileConfig, vid: string, edition?:
   if (edition?.edition === 'imax') return input
   if (cfg.tencentProbeSource) input.source = '1'
   if (cfg.tencentEncodeAll) input.encode = 'all'
+  if (cfg.tencentFullLadder) input.defn = 'full'
   return input
 }
 
