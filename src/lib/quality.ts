@@ -324,18 +324,18 @@ export async function probeOptions(
   cfg: FileConfig,
   provider: string,
   vid: string,
-  opts: { title?: string; duration?: number; skipSign?: boolean; languages?: Array<{ vid: string; lang: string }>; tencentPlayParams?: TencentPlayParams } = {},
+  opts: { title?: string; duration?: number; skipSign?: boolean; languages?: Array<{ vid: string; lang: string }>; tencentPlayParams?: TencentPlayParams; signal?: AbortSignal } = {},
 ): Promise<StreamOptions> {
   switch (provider) {
-    case 'mgtv': case 'bilibili': case 'migu': return probeWebVideo((p,a,input) => cli.invoke(p,a,input),provider,vid,opts.duration)
-    case 'iqcn': return iqcnOptions(await cli.invoke('iqcn', 'probe', { tvid: vid }, {}, { timeoutMs: 150000 }), vid)
-    case 'iq': return iqOptions(await cli.invoke('iq','probe',{vid},cli.extra(cfg,'iq'),{timeoutMs:150000}), opts.title)
-    case 'mewatch': case 'hamivideo': case 'friday': case 'linetv': case 'appletvplus': case 'dsnp': case 'crunchyroll': return probeManifest(cli, cfg, provider, vid, provider === 'appletvplus' ? opts.duration : 0)
-    case 'hongguo': return probeHongguo(cli, vid)
-    case 'huangguo': return probeHuangguo(cli, vid)
+    case 'mgtv': case 'bilibili': case 'migu': return probeWebVideo((p,a,input) => cli.invoke(p,a,input,undefined,{signal:opts.signal}),provider,vid,opts.duration)
+    case 'iqcn': return iqcnOptions(await cli.invoke('iqcn', 'probe', { tvid: vid }, {}, { timeoutMs: 150000, signal: opts.signal }), vid)
+    case 'iq': return iqOptions(await cli.invoke('iq','probe',{vid},cli.extra(cfg,'iq'),{timeoutMs:150000,signal:opts.signal}), opts.title)
+    case 'mewatch': case 'hamivideo': case 'friday': case 'linetv': case 'appletvplus': case 'dsnp': case 'crunchyroll': return probeManifest(cli, cfg, provider, vid, provider === 'appletvplus' ? opts.duration : 0, opts.signal)
+    case 'hongguo': return probeHongguo(cli, vid, opts.signal)
+    case 'huangguo': return probeHuangguo(cli, vid, opts.signal)
     case 'youku': return probeYouku(cli, cfg, vid, opts)
-    case 'tencent': return probeTencent(cli, cfg, vid, opts.tencentPlayParams)
-    case 'douyin': return { qualities: await probeDouyin(cli, vid), audios: [] }
+    case 'tencent': return probeTencent(cli, cfg, vid, opts.tencentPlayParams, opts.signal)
+    case 'douyin': return { qualities: await probeDouyin(cli, vid, opts.signal), audios: [] }
     default: throw new Error('这个平台还没接画质列表')
   }
 }
@@ -815,8 +815,21 @@ export function sortTencentQualities(rows: Quality[]): Quality[] {
 export const TENCENT_EM93_STATUS =
   '该集触发权益风控(em=93)，已停止本次请求；恢复时间未知，请按官方提示处理，勿反复重试。'
 
+/** Official getvinfo em=80 / 80.1: the title has no license in the exit region. */
+export const TENCENT_EM80_STATUS =
+  '该视频在当前出口地区没有版权，暂时不能取流。请关闭 VPN 或切换到有版权的网络后重试，不要反复请求。'
+
+export function isTencentCopyrightRegion(data: Record<string, unknown>): boolean {
+  const em = asString(data.em).trim()
+  const code = asString(data.code).trim()
+  if (em === '80' || em.startsWith('80.') || code === '80' || code.startsWith('80.')) return true
+  const msg = asString(data.msg) || asString(data.message) || asString(data.error)
+  return /版权/.test(msg) && /区域|地区|VPN/.test(msg)
+}
+
 /** True when play payload looks like em=93 episode entitlement / 限制播放. */
 export function isTencentEm93(data: Record<string, unknown>): boolean {
+  if (isTencentCopyrightRegion(data)) return false
   const em = asString(data.em).trim()
   if (/^93(\.[0-9]+)?$/.test(em) || em.startsWith('93.') || em === '93') return true
   const code = asString(data.code).trim()
@@ -859,9 +872,14 @@ export function tencentCatalogProbeInput(cfg: FileConfig, vid: string, edition?:
   return input
 }
 
-async function probeTencent(cli: GwClient, cfg: FileConfig, vid: string, edition?: TencentPlayParams): Promise<StreamOptions> {
+async function probeTencent(cli: GwClient, cfg: FileConfig, vid: string, edition?: TencentPlayParams, signal?: AbortSignal): Promise<StreamOptions> {
   const input = tencentCatalogProbeInput(cfg, vid, edition)
-  const data = await cli.invoke('tencent', 'play', input, cli.extra(cfg, 'tencent'))
+  const data = await cli.invoke('tencent', 'play', input, cli.extra(cfg, 'tencent'), { signal })
+  if (isTencentCopyrightRegion(data)) {
+    const short = asString(data.msg) || asString(data.message) || asString(data.error)
+    runLog(`tencent probe em80 em=${asString(data.em) || asString(data.code) || '80'} msg=${short.slice(0, 80)}`)
+    throw new Error(TENCENT_EM80_STATUS)
+  }
   if (isTencentEm93(data)) {
     const em = asString(data.em) || asString(data.code) || '93'
     const short = asString(data.msg) || asString(data.error) || '限制播放'
@@ -916,17 +934,17 @@ export function hongguoStreamOptions(data: Record<string, unknown>, vid: string)
  return { qualities: ordered, audios: ordered[0]!.audios ?? [] }
 }
 
-async function probeHongguo(cli: GwClient, vid: string): Promise<StreamOptions> {
- return hongguoStreamOptions(await cli.invoke('hongguo', 'resolve', hongguoResolveInput(vid)), vid)
+async function probeHongguo(cli: GwClient, vid: string, signal?: AbortSignal): Promise<StreamOptions> {
+ return hongguoStreamOptions(await cli.invoke('hongguo', 'resolve', hongguoResolveInput(vid), undefined, { signal }), vid)
 }
 
 /** 黄果：一次 resolve 就带回档位、直链与 AES-128 key。 */
-async function probeHuangguo(cli: GwClient, vid: string): Promise<StreamOptions> {
- return huangguoStreamOptions(await cli.invoke('huangguo', 'resolve', huangguoResolveInput(vid)))
+async function probeHuangguo(cli: GwClient, vid: string, signal?: AbortSignal): Promise<StreamOptions> {
+ return huangguoStreamOptions(await cli.invoke('huangguo', 'resolve', huangguoResolveInput(vid), undefined, { signal }))
 }
 
-async function probeDouyin(cli: GwClient, vid: string): Promise<Quality[]> {
-  const data = await cli.invoke('douyin', 'resolve', { url: `https://www.douyin.com/video/${vid}` })
+async function probeDouyin(cli: GwClient, vid: string, signal?: AbortSignal): Promise<Quality[]> {
+  const data = await cli.invoke('douyin', 'resolve', { url: `https://www.douyin.com/video/${vid}` }, undefined, { signal })
   const media = Array.isArray(data.media) ? data.media : []
   const out: Quality[] = []
   for (const [i, it] of media.entries()) {
@@ -960,9 +978,9 @@ async function probeYouku(
   cli: GwClient,
   cfg: FileConfig,
   vid: string,
-  opts: { skipSign?: boolean; languages?: Array<{ vid: string; lang: string }> } = {},
+  opts: { skipSign?: boolean; languages?: Array<{ vid: string; lang: string }>; signal?: AbortSignal } = {},
 ): Promise<StreamOptions> {
-  const data = await cli.invoke('youku', 'play', { vid, tier: 'multi', expand: '0', fps: 'all' }, cli.extra(cfg, 'youku', opts.skipSign))
+  const data = await cli.invoke('youku', 'play', { vid, tier: 'multi', expand: '0', fps: 'all' }, cli.extra(cfg, 'youku', opts.skipSign), { signal: opts.signal })
   assertYoukuPlayback(data)
 
   const names = new Map<string, string>()
@@ -1118,7 +1136,7 @@ async function probeYouku(
     try {
       extras.push({
         vid: extraVid,
-        data: await cli.invoke('youku', 'play', { vid: extraVid, tier: 'multi', expand: '0', fps: 'all' }, cli.extra(cfg, 'youku', opts.skipSign)),
+        data: await cli.invoke('youku', 'play', { vid: extraVid, tier: 'multi', expand: '0', fps: 'all' }, cli.extra(cfg, 'youku', opts.skipSign), { signal: opts.signal }),
         lang: langByVid[extraVid],
       })
     } catch (e) {

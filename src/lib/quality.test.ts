@@ -323,6 +323,7 @@ import {
   audiosFromTencent,
   tencentAudioDownloadPlan,
   tencentAudioPlanNote,
+  isTencentCopyrightRegion,
   isTencentEm93,
   qualitiesFromTencentFormats,
   qualityFormatId,
@@ -803,6 +804,14 @@ describe('isTencentEm93', () => {
     expect(isTencentEm93({ code: '93.1' })).toBe(true)
     expect(isTencentEm93({ msg: '限制播放' })).toBe(true)
     expect(isTencentEm93({ em: '0', formats: [{ name: 'fhd' }] })).toBe(false)
+  })
+})
+
+describe('isTencentCopyrightRegion', () => {
+  test('em=80 is a region copyright refusal, not an entitlement lock', () => {
+    const data = { em: 80, code: '80.1', msg: '受版权限制该视频暂不可观看，可以看看其他内容哦', has_url: false }
+    expect(isTencentCopyrightRegion(data)).toBe(true)
+    expect(isTencentEm93(data)).toBe(false)
   })
 })
 

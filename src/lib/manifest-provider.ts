@@ -39,8 +39,8 @@ export function manifestInput(provider: string, cfg: Pick<FileConfig, 'hamiClien
   }
   return { ...(provider === 'appletvplus' && id.startsWith('https://') ? {url:id} : {id}), ...(provider === 'hamivideo' ? { client: cfg.hamiClient || 'tv', quality } : provider === 'friday' || provider === 'appletvplus' ? { quality } : {}) }
 }
-export async function resolveManifest(cli: Pick<GwClient, 'invoke'>, cfg: Pick<FileConfig, 'hamiClient'>, provider: string, id: string, quality = 'auto'): Promise<ManifestSource[]> {
-  const data = await cli.invoke(provider, 'resolve', manifestInput(provider, cfg, id, quality))
+export async function resolveManifest(cli: Pick<GwClient, 'invoke'>, cfg: Pick<FileConfig, 'hamiClient'>, provider: string, id: string, quality = 'auto', signal?: AbortSignal): Promise<ManifestSource[]> {
+  const data = await cli.invoke(provider, 'resolve', manifestInput(provider, cfg, id, quality), undefined, { signal })
   const sources = manifestSources(data)
   if (!sources.length) throw new Error('网关没有返回可用媒体清单')
   return sources
@@ -63,9 +63,9 @@ export function appleTVQualitySize(row: Record<string, unknown>, episodeDuration
   return { size: Math.round(estimated), estimated: true }
 }
 
-export async function probeManifest(cli: GwClient, cfg: FileConfig, provider: string, id: string, episodeDuration = 0): Promise<{ qualities: Quality[]; audios: Audio[]; subtitles?: Subtitle[] }> {
+export async function probeManifest(cli: GwClient, cfg: FileConfig, provider: string, id: string, episodeDuration = 0, signal?: AbortSignal): Promise<{ qualities: Quality[]; audios: Audio[]; subtitles?: Subtitle[] }> {
   if (provider === 'appletvplus') {
-    const data = await cli.invoke(provider, 'probe', manifestInput(provider, cfg, id))
+    const data = await cli.invoke(provider, 'probe', manifestInput(provider, cfg, id), undefined, { signal })
     const rows = Array.isArray(data.qualities) ? data.qualities.filter(isObj) : []
     const qualities: Quality[] = rows.filter(q => str(q.id) && Number(q.height) > 0).map(q => {
       const sized = appleTVQualitySize(q, episodeDuration)
@@ -98,9 +98,9 @@ export async function probeManifest(cli: GwClient, cfg: FileConfig, provider: st
     }))
     return { qualities, audios, subtitles }
   }
-  if (provider === 'crunchyroll') return probeCrunchyroll(cli, id)
-  if (provider === 'dsnp') return probeDsnp(cli, cfg, id)
-  const sources = await resolveManifest(cli, cfg, provider, id)
+  if (provider === 'crunchyroll') return probeCrunchyroll(cli, id, signal)
+  if (provider === 'dsnp') return probeDsnp(cli, cfg, id, signal)
+  const sources = await resolveManifest(cli, cfg, provider, id, 'auto', signal)
   return { qualities: sources.map(s => {
     const selectable = provider === 'friday' ? [1080,2160].includes(s.height) : provider === 'hamivideo' && cfg.hamiClient !== 'web' && [480,720,1080,2160].includes(s.height)
     return { id: selectable ? String(s.height) : 'auto', label: s.quality || (s.height ? `${s.height}p` : '自动'), title: s.clear ? '源站明确标记明文 · 本机直连下载' : ['hamivideo', 'friday', 'dsnp'].includes(provider) ? '网关授权取内容密钥 · 本机下载解密' : '受保护媒体 · 当前客户端尚未接入该 DRM 授权处理', size: 0, width: 0, height: s.height, codec: '', drm: s.clear ? 'none' : s.drm, stream: selectable ? String(s.height) : 'auto', tier: tierHeight(0, s.height) }
@@ -113,9 +113,9 @@ export async function probeManifest(cli: GwClient, cfg: FileConfig, provider: st
  * 旧网关没有这个动作，或本次探测失败时，退回单条「自动（最佳画质）」——
  * 下载本身由下载器在同一条清单里自选，不会因此下不了。
  */
-export async function probeCrunchyroll(cli: Pick<GwClient, 'invoke'>, id: string): Promise<{ qualities: Quality[]; audios: Audio[] }> {
+export async function probeCrunchyroll(cli: Pick<GwClient, 'invoke'>, id: string, signal?: AbortSignal): Promise<{ qualities: Quality[]; audios: Audio[] }> {
   try {
-    const data = await cli.invoke('crunchyroll', 'qualities', { id })
+    const data = await cli.invoke('crunchyroll', 'qualities', { id }, undefined, { signal })
     const rows = Array.isArray(data.qualities) ? data.qualities.filter(isObj) : []
     const qualities: Quality[] = rows.map(q => {
       const height = Number(q.height) || 0
@@ -339,10 +339,10 @@ async function hlsDurationSec(master: string, base: string, headers: Record<stri
   return total
 }
 
-async function probeDsnp(cli: GwClient, cfg: FileConfig, id: string): Promise<{ qualities: Quality[]; audios: Audio[]; subtitles: Subtitle[] }> {
+async function probeDsnp(cli: GwClient, cfg: FileConfig, id: string, signal?: AbortSignal): Promise<{ qualities: Quality[]; audios: Audio[]; subtitles: Subtitle[] }> {
   // One billed resolve per title (and version) per 6h; the download in the same window is not charged again.
   // The version travels in the id (mediaId|imax), so each version is probed from its own playlist.
-  const data = await cli.invoke('dsnp', 'resolve', manifestInput('dsnp', cfg, id))
+  const data = await cli.invoke('dsnp', 'resolve', manifestInput('dsnp', cfg, id), undefined, { signal })
   const sources = manifestSources(data)
   if (!sources.length) throw new Error('网关没有返回可用媒体清单')
   const source = sources[0]!

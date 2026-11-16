@@ -254,7 +254,7 @@ export class GwClient {
     action: string,
     input: Record<string, unknown>,
     extra?: Record<string, string>,
-    opts?: { timeoutMs?: number },
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<Record<string, unknown>> {
     let operation: TencentOperation | undefined
     let tracker: TencentOperations | undefined
@@ -304,6 +304,7 @@ export class GwClient {
         { provider, action, input },
         extra,
         timeoutMs,
+        opts?.signal,
       )
       const data = (env.data ?? {}) as Record<string, unknown>
       await tracker?.finish(operation, data)
@@ -378,6 +379,7 @@ export class GwClient {
     body?: unknown,
     extra?: Record<string, string>,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    signal?: AbortSignal,
   ): Promise<Envelope> {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.key}` }
     let payload: string | Uint8Array<ArrayBuffer> | undefined
@@ -391,6 +393,8 @@ export class GwClient {
     if (extra) Object.assign(headers, extra)
     const ac = new AbortController()
     const timer = setTimeout(() => ac.abort(), timeoutMs)
+    const cancel = () => ac.abort()
+    signal?.addEventListener('abort', cancel, { once: true })
     let res: Response
     try {
       res = await fetchGateway(`${this.host}${path}`, { method, headers, body: payload, signal: ac.signal }, this.proxyOf() ?? '')
@@ -399,6 +403,7 @@ export class GwClient {
       throw error
     } finally {
       clearTimeout(timer)
+      signal?.removeEventListener('abort', cancel)
     }
     const text = await res.text()
     let env: Envelope

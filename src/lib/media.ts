@@ -258,6 +258,11 @@ export function tencentPlayProbeOk(data: Record<string, unknown>): {
   if (err) {
     return { ok: false, reason: friendlyTencentPlayError(err, false) }
   }
+  // Region copyright (em=80) shares the words 限制播放 with entitlement locks.
+  // Check it first so a copyright refusal is not reported as em=93 risk.
+  if (em === '80' || em.startsWith('80.') || /版权/.test(asString(data.msg) + asString(data.message) + err)) {
+    return { ok: false, reason: '该视频在当前出口地区没有版权，暂时不能取流。请关闭 VPN 或切换到有版权的网络后重试，不要反复请求。' }
+  }
   // Episode entitlement lock: fail even if leftover formats[] exist.
   if (/^93(\.[0-9]+)?$/.test(em) || em.startsWith('93.') || (/限制播放/.test(em) && !pickURL(data))) {
     return { ok: false, reason: friendlyTencentPlayError(em || '限制播放', false) }

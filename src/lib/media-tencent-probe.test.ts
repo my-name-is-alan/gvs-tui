@@ -90,6 +90,17 @@ describe('tencentPlayProbeOk', () => {
     expect(r.reason).toContain('权益风控')
   })
 
+  test('em=80 copyright region is not reported as entitlement risk', () => {
+    const r = tencentPlayProbeOk({
+      em: 80,
+      has_url: false,
+      msg: '受版权限制该视频暂不可观看，可以看看其他内容哦',
+    })
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('没有版权')
+    expect(r.reason).not.toContain('em=93')
+  })
+
 })
 
 describe('pickTencentDownloadURL', () => {

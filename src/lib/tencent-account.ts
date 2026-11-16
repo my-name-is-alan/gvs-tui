@@ -1,10 +1,13 @@
 import type { GwClient } from './client.ts'
 
+export type TxExpiry = 'unknown' | 'valid' | 'expired'
+
 export type TxSide = {
   loggedIn: boolean
   nick: string
   vipSummary: string
   isVip: boolean
+  expiry: TxExpiry
 }
 
 export type TxAccount = {
@@ -26,22 +29,33 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v)
 }
 
+function expiryOf(v: unknown): TxExpiry {
+  return v === 'valid' || v === 'expired' ? v : 'unknown'
+}
+
 function sideFrom(raw: unknown): TxSide {
   const o = asObj(raw) || {}
   const loggedIn = o.logged_in === true || o.loggedIn === true
   const nick = str(o.nick)
   const vipSummary = str(o.vip_summary || o.vipSummary)
   const isVip = o.is_vip === true || o.isVip === true || Boolean(vipSummary)
-  return { loggedIn, nick, vipSummary, isVip }
+  return { loggedIn, nick, vipSummary, isVip, expiry: expiryOf(o.expiry) }
 }
 
 function sideLine(label: string, s: TxSide): string {
   if (!s.loggedIn) return `${label}未登录`
+  if (s.expiry === 'expired') return s.nick ? `${label}已过期 · ${s.nick}` : `${label}已过期`
   const bits = [`${label}已登录`]
   if (s.nick) bits.push(s.nick)
   if (s.vipSummary) bits.push(s.vipSummary)
   else if (s.isVip) bits.push('会员')
   return bits.join(' · ')
+}
+
+export function tencentNeedsRelogin(acc: TxAccount | null): boolean {
+  if (!acc) return false
+  const sides = [acc.tv, acc.app, acc.cookie].filter((s) => s.loggedIn)
+  return sides.length > 0 && sides.every((s) => s.expiry === 'expired')
 }
 
 export function txAccountSummary(acc: TxAccount | null): string {

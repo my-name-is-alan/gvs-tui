@@ -6,7 +6,7 @@ import { userMessage, errorCode } from './user-message.ts'
 import { youkuMediaError } from './media-output.ts'
 import { decryptYoukuTs } from './youku-ts.ts'
 import { tencentPlayInput } from './tencent-qr.ts'
-import { tencentAudioDownloadPlan, tencentAudioPlanNote, tencentCatalogProbeInput, tencentPlayQualityInput } from './quality.ts'
+import { isTencentCopyrightRegion, TENCENT_EM80_STATUS, tencentAudioDownloadPlan, tencentAudioPlanNote, tencentCatalogProbeInput, tencentPlayQualityInput } from './quality.ts'
 import { equivalentTencentRendition } from './tencent-rendition-resolution.ts'
 import { resolveHongguoDownload } from './hongguo.ts'
 import { huangguoKeyMode, resolveHuangguoDownload } from './huangguo.ts'
@@ -771,6 +771,11 @@ function logTencentDownloadHost(cdn: string, t: DlTask): void {
   }
 }
 
+function tencentNoStreamError(data: Record<string, unknown>): string {
+  if (isTencentCopyrightRegion(data)) return TENCENT_EM80_STATUS
+  return '腾讯没有可用视频地址'
+}
+
 async function dlTencent(
   cli: GwClient, cfg: FileConfig, t: DlTask, out: string, mkvmerge: string,
   emit: (s: string, p: number, l: string) => void,
@@ -824,7 +829,8 @@ async function dlTencent(
   }
   let played = await play()
   let cdn = await pick(played)
-  if (!cdn) throw new Error('腾讯没有可用视频地址')
+  if (!cdn) throw new Error(tencentNoStreamError(played))
+
   let cipher = tencentCipher(played)
   logTencentDownloadHost(cdn, t)
   // Plan audio before the video download: an episode that lacks one of the
