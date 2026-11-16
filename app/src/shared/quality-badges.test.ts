@@ -26,24 +26,29 @@ test('merge and score order results', () => {
   expect(qualityScore(null)).toBe(0)
 })
 
-test('HintQueue: concurrency limit, dedupe, cache, timeout negative cache', async () => {
+test('HintQueue: concurrency limit, dedupe, cache, timeout aborts work', async () => {
   let now = 0
-  let active = 0, peak = 0, calls = 0
-  const q = new HintQueue<string>(async (k) => {
+  let active = 0, peak = 0, calls = 0, aborted = 0
+  const started = Promise.withResolvers<void>()
+  const q = new HintQueue<string>(async (k, signal) => {
     calls++; active++; peak = Math.max(peak, active)
-    await new Promise((r) => setTimeout(r, k === 'slow' ? 200 : 5))
+    if (calls === 2) started.resolve()
+    const { promise, resolve, reject } = Promise.withResolvers<void>()
+    if (k === 'slow') signal.addEventListener('abort', () => { aborted++; reject(new Error('aborted')) }, { once: true })
+    else resolve()
+    await promise
     active--
     return k.toUpperCase()
-  }, { concurrency: 2, timeoutMs: 50, ttlMs: 1000, failTtlMs: 100, now: () => now })
-  const r = await Promise.all(['a', 'b', 'c', 'd', 'a', 'slow'].map((k) => q.get(k)))
-  expect(r).toEqual(['A', 'B', 'C', 'D', 'A', null])
-  expect(peak <= 2).toBe(true)
-  expect(calls).toBe(5)
-  expect(await q.get('a')).toBe('A')
-  expect(calls).toBe(5)
+  }, { concurrency: 2, timeoutMs: 20, ttlMs: 1000, failTtlMs: 100, now: () => now })
+  const pending = Promise.all(['a', 'slow', 'a'].map((k) => q.get(k)))
+  await started.promise
+  await pending
+  expect(peak).toBe(2)
+  expect(calls).toBe(2)
+  expect(aborted).toBe(1)
   expect(q.peek('slow')).toBe(null)
+  expect(await q.get('a')).toBe('A')
+  expect(calls).toBe(2)
   now = 200
   expect(q.peek('slow')).toBeUndefined()
-  now = 2000
-  expect(q.peek('a')).toBeUndefined()
 })

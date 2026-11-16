@@ -133,14 +133,15 @@ function probeWithAccounts(p: Provider, eps: Parameters<typeof core.probe>[1], a
 }
 
 // ---------------------------------------------------------------- 搜索结果画质
-const hints = new HintQueue<QualityHint>(async (key) => {
+const hints = new HintQueue<QualityHint>(async (key, signal) => {
   const i = key.indexOf(':')
   const provider = key.slice(0, i) as Provider
   const id = key.slice(i + 1)
-  const d = await core.detail(provider, id)
+  const d = await core.detail(provider, id, undefined, signal)
+  signal.throwIfAborted()
   const ep = d.episodes.find((e) => !e.collection || e.collection === '正片') ?? d.episodes[0]
   if (!ep) throw new Error('no episode')
-  const r = await core.probe(provider, [ep])
+  const r = await core.probe(provider, [ep], signal)
   core.forgetProbe(r.token)
   return badgesFromQualities(r.qualities, r.audios)
 }, { concurrency: 2, timeoutMs: 12_000, ttlMs: 6 * 3600_000, failTtlMs: 30 * 60_000, max: 400 })

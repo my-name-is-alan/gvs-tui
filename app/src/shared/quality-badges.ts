@@ -73,7 +73,7 @@ export class HintQueue<T> {
   private waiting: Array<() => void> = []
   private running = 0
   constructor(
-    private readonly run: (key: string) => Promise<T>,
+    private readonly run: (key: string, signal: AbortSignal) => Promise<T>,
     private readonly opts: { concurrency: number; timeoutMs: number; ttlMs: number; failTtlMs: number; now?: () => number; max?: number },
   ) {}
   private now = () => (this.opts.now ?? Date.now)()
@@ -90,9 +90,10 @@ export class HintQueue<T> {
     const f = this.inflight.get(key)
     if (f) return f
     const p = this.slot().then(async () => {
+      const ac = new AbortController()
       try {
-        let timer: ReturnType<typeof setTimeout> | undefined
-        const v = await Promise.race([this.run(key), new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), this.opts.timeoutMs) })]).finally(() => clearTimeout(timer))
+        const timer = setTimeout(() => ac.abort(), this.opts.timeoutMs)
+        const v = await this.run(key, ac.signal).finally(() => clearTimeout(timer))
         this.put(key, v)
         return v
       } catch {

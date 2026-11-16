@@ -47,7 +47,7 @@ import { selectedTencentQuality } from '@tui/tencent-quality-selection.ts'
 import { selectedIQCNQuality, restoreIQCNSourceHints } from '@tui/iqcn-quality-selection.ts'
 import { runLog } from '@tui/runlog.ts'
 import { applyTencentLogin, pollTencentDualQR, tencentTVLoginInput } from '@tui/tencent-qr.ts'
-import { fetchTencentAccount, txAccountSummary, type TxAccount } from '@tui/tencent-account.ts'
+import { fetchTencentAccount, tencentNeedsRelogin, txAccountSummary, type TxAccount } from '@tui/tencent-account.ts'
 import { tmdbSearch, tmdbSeasons } from '@tui/tmdb.ts'
 import { mediaKindFromMetadata, movieEdition } from '@tui/media-kind.ts'
 import { parseSeriesTitle, seriesSeason, tmdbSeasonOverride } from '@tui/series-title.ts'
@@ -727,10 +727,10 @@ export class Core {
     }
   }
 
-  private async invoke(p: string, action: string, input: Record<string, unknown>, skipSign = false) {
+  private async invoke(p: string, action: string, input: Record<string, unknown>, skipSign = false, signal?: AbortSignal) {
     const cli = this.client()
     try {
-      return await cli.invoke(p, action, input, cli.extra(this.cfg, p, skipSign))
+      return await cli.invoke(p, action, input, cli.extra(this.cfg, p, skipSign), signal ? { signal } : undefined)
     } catch (e) {
       // 网关只说「隧道未连接」，真正原因（比如 Key 没有隧道权限）在隧道状态里。
       const why = tunnelErrText(this.tunnelErr)
@@ -813,6 +813,7 @@ export class Core {
         }
       }
       if (p === 'tencent') {
+        if (tencentNeedsRelogin(this.txAcct)) return { provider: p, short: '已过期', summary: txAccountSummary(this.txAcct), tone: 'warn' }
         if (this.txAcct?.loggedIn) return { provider: p, short: '已登录', summary: txAccountSummary(this.txAcct), tone: 'ok' }
         return { provider: p, short: '未登录', summary: '未登录 · 扫码或粘贴 Cookie', tone: 'warn' }
       }
@@ -1354,7 +1355,7 @@ export class Core {
 
   // ---------------------------------------------------------------- 详情
 
-  async detail(provider: Provider, id: string, hint?: DetailHint): Promise<DetailView> {
+  async detail(provider: Provider, id: string, hint?: DetailHint, signal?: AbortSignal): Promise<DetailView> {
     const input: Record<string, unknown> = isManifestProvider(provider) && id.startsWith('https://') ? { url: id } : { id }
     if (provider === 'hongguo') input.seriesId = id
     else if (provider === 'youku') {
@@ -1363,7 +1364,7 @@ export class Core {
       // 详情页只用到会员/DRM/语言版本；完整多档在进入画质页时的 play 里取。
       input.tier = 'single'
     } else if (provider === 'tencent') input.cid = id
-    const data = isWebVideoProvider(provider) ? await webVideoDetail((p,a,i)=>this.invoke(p,a,i),provider,id) : isManifestProvider(provider) ? await manifestDetail((p,a,i) => this.invoke(p,a,i), provider, id) : await this.invoke(provider, 'detail', input)
+    const data = isWebVideoProvider(provider) ? await webVideoDetail((p,a,i)=>this.invoke(p,a,i,false,signal),provider,id) : isManifestProvider(provider) ? await manifestDetail((p,a,i) => this.invoke(p,a,i,false,signal), provider, id) : await this.invoke(provider, 'detail', input, false, signal)
     const eps = parseEps(data)
     // 有些老片/短剧详情接口不给海报和片名，卡片上其实已经有，拿它兜底。
     const view = buildDetail(provider, id, data, '', eps, hint)
@@ -1451,7 +1452,7 @@ export class Core {
 
   // ---------------------------------------------------------------- 画质探测
 
-  async probe(provider: Provider, episodes: EpisodeView[]): Promise<ProbeResult> {
+  async probe(provider: Provider, episodes: EpisodeView[], signal?: AbortSignal): Promise<ProbeResult> {
     const first = episodes[0]
     if (!first) throw new Error('先选至少一集')
     const seen = new Set<string>()
@@ -1469,6 +1470,7 @@ export class Core {
         tencentPlayParams: first.tencentPlayParams,
         skipSign: skipSign || undefined,
         languages: languages.length ? languages : undefined,
+        signal,
       })
     let warning = ''
     let opts: Awaited<ReturnType<typeof probeOptions>>
