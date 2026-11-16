@@ -895,6 +895,18 @@ async function probeTencent(cli: GwClient, cfg: FileConfig, vid: string, edition
     const message = asString(data.error) || asString(data.msg)
     throw new Error(message && !/^(success|ok)$/i.test(message) ? message : 'IMAX 片源暂未返回可用画质，请检查极光 TV 会话与影片权益。')
   }
+  // A complete TV probe can legitimately return no formats when every
+  // persona failed. Keep the gateway's diagnostic instead of turning this
+  // into the misleading generic "no qualities" screen.
+  if (!qualities.length && data.network_error === true) {
+    throw new Error('腾讯取流请求失败，请检查客户端隧道和网络连接。')
+  }
+  if (!qualities.length && (asString(data.em) || asString(data.code) || asString(data.msg) || asString(data.error))) {
+    const code = asString(data.em) || asString(data.code) || 'unknown'
+    // Only expose a numeric status, never raw upstream messages or URLs.
+    if (code !== '0' && /^\d+(?:\.\d+)?$/.test(code)) throw new Error(`腾讯未返回可用画质（错误码 ${code}）。`)
+    throw new Error('腾讯未返回可用画质，请查看客户端诊断日志。')
+  }
   // Empty catalog without em=93: keep static ladder fallback for old gateways.
   if (!qualities.length) return { qualities: tencentQualityList(), audios }
   return { qualities, audios }
