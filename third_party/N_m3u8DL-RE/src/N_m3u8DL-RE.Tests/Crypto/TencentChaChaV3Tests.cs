@@ -1,0 +1,13 @@
+using N_m3u8DL_RE.Crypto;
+namespace N_m3u8DL_RE.Tests.Crypto;
+public class TencentChaChaV3Tests {
+ [Theory]
+ [InlineData(0UL,"6b22a76bbeedf07f386ebceecb4fa3e2bd452a32be62ad42c721d8a4131be267f23993c2f2c811a00447dad944274bca334fb65697ca4ca0f505611f2d822e8b")]
+ [InlineData(1UL,"d0a7c0920a9c15e178cbafb452b57c332a0bd6cc651bf010065711a51fe4a2068305d7e430596ddb6895de6e256269a9713187a965955aee2393c31d94a15764")]
+ [InlineData(15UL,"48009caf7310d4d7bd67cff3c101ba331137a86cd2f525621003676250f546a0a96319648624a16265ff7f324ce9a540a649acb82e0fabd2b8a9fa2dfc24ef53")]
+ [InlineData(16UL,"b664f66501f1d7f00aca9f424061dee700470b9eb97b9763ca681a6678f8fc0b0be4ea55077ccf46e990954a5c706220a13251a52900dedb2e9e633689837a7b")]
+ [InlineData(16384UL,"cfae89e9c72965bb38c54974444a0957066c9e5391137bf97abc21f04a7b177079ea1c0bf27bd6d93fbfc714c9c1af1aae5d9f82da052d53dd1c463dc224674d")]
+ [InlineData(4294967295UL,"b937f4ef4b93137288e33093522a583d7a7b51837f0d478eecad58fc9e66b21092cebbf4972063fac01a63ffc87e9ee46ee0d978d85479a3dc4197b1bceff65c")]
+ [InlineData(4294967296UL,"39a62f69d529d876d9fe190db0eca1507242afef3640a9a31f5c1cfca0556d44c2b522e0397125cde66c0d0c92647f3388a507485e4f54c56d99932b1cb4468f")]
+ public void NativeOracle(ulong counter,string expected) { var key=Enumerable.Range(0,32).Select(x=>(byte)x).ToArray();var nonce=Enumerable.Range(0,12).Select(x=>(byte)x).ToArray();Assert.Equal(Convert.FromHexString(expected),TencentChaChaV3.Block(key,nonce,counter));}
+}

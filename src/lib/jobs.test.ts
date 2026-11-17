@@ -58,6 +58,12 @@ test('Tencent ChaCha20 drm becomes an RE custom HLS cipher', () => {
   })).toThrow(/全为零/)
 })
 
+test('Tencent SSE v3 keeps its explicit cipher method', () => {
+  expect(tencentCipher({drm:{enc:1,method:'CHACHA20_V3',content_key_hex:'ab'.repeat(32),iv_hex:'31'.repeat(12)}}))
+    .toEqual({method:'CHACHA20_V3',key:'ab'.repeat(32),iv:'31'.repeat(12)})
+  expect(() => tencentCipher({drm:{enc:1,method:'unknown',content_key_hex:'ab',iv_hex:'31'}})).toThrow('不支持的加密版本')
+})
+
 test('Tencent mirrors keep the picked URL first and never cross streams', () => {
   const data = { video: { url: 'a', urls: ['a', 'b', 'c'] } }
   expect(tencentMirrors(data, 'b')).toEqual(['b', 'a', 'c'])

@@ -10,5 +10,6 @@ public enum EncryptMethod
     CENC,
     CHACHA20,
     IQ_BBTS,
-    UNKNOWN
+    UNKNOWN,
+    CHACHA20_V3
 }

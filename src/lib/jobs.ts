@@ -165,7 +165,13 @@ export function tencentCipher(payload: Record<string, unknown>): HlsCipher | und
     const unverified = drm.playback_verified === false ? '，且网关未验证该地址可播放' : ''
     throw new Error(`腾讯该集的解密参数无效（密钥或 IV 全为零）${unverified}`)
   }
-  return { method: 'CHACHA20', key, iv }
+  const method = asString(drm.method) || 'CHACHA20'
+  if (!['CHACHA20', 'CHACHA20_V3'].includes(method)) throw new Error('腾讯返回了不支持的加密版本')
+  if (method === 'CHACHA20_V3') {
+    const bytes = (v: string) => /^[a-f\d]+$/i.test(v) && v.length % 2 === 0 ? Buffer.from(v, 'hex') : Buffer.from(v, 'base64')
+    if (bytes(key).length !== 32 || bytes(iv).length !== 12) throw new Error('腾讯 V3 解密参数长度无效')
+  }
+  return { method, key, iv }
 }
 
 /** Hex or base64 material that decodes to only 0x00. A blank key still "decrypts" into garbage ffmpeg cannot open. */

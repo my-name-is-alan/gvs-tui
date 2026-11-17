@@ -2,7 +2,7 @@
   "upstream": "https://github.com/nilaoda/N_m3u8DL-RE",
   "commit": "2f64dcbba38012021d6cb25cb35009372a7a80fc",
   "maintainer": "GVS",
-  "version": "0.6.0-gvs-iq.3",
+  "version": "0.6.0-gvs-iq.5",
   "sdk": "10.0",
   "capabilities": [
     "IQ_BBTS",
@@ -10,6 +10,7 @@
     "preserve-ts-pcr-continuity",
     "bounded-sdt-mdcm-descriptors",
     "split-sdt-reassembly",
-    "domestic-web-legacy-descriptors"
+    "domestic-web-legacy-descriptors",
+    "CHACHA20_V3"
   ]
 }

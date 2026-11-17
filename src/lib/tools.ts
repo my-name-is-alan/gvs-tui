@@ -8,7 +8,7 @@ import { moveFileSync } from './file-move.ts'
 export { tuiBinDir } from './tool-paths.ts'
 
 const M3U8_REPO = 'my-name-is-alan/gvs-tui'
-const M3U8_RELEASE = 'managed-re-v0.6.0-iq.4'
+const M3U8_RELEASE = 'managed-re-v0.6.0-iq.5'
 const MKV_REPO = 'Jesseatgao/MKVToolNix-static-builds'
 const SHAKA_REPO = 'shaka-project/shaka-packager'
 
