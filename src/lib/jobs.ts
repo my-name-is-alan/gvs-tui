@@ -166,11 +166,21 @@ export function tencentCipher(payload: Record<string, unknown>): HlsCipher | und
     throw new Error(`腾讯该集的解密参数无效（密钥或 IV 全为零）${unverified}`)
   }
   const method = asString(drm.method) || 'CHACHA20'
-  if (!['CHACHA20', 'CHACHA20_V3'].includes(method)) throw new Error('腾讯返回了不支持的加密版本')
-  if (method === 'CHACHA20_V3') {
+  if (!['CHACHA20', 'CHACHA20_V3', 'CHACHA20_V3_SDD'].includes(method)) throw new Error('腾讯返回了不支持的加密版本')
+  if (method === 'CHACHA20_V3' || method === 'CHACHA20_V3_SDD') {
     const bytes = (v: string) => /^[a-f\d]+$/i.test(v) && v.length % 2 === 0 ? Buffer.from(v, 'hex') : Buffer.from(v, 'base64')
     if (bytes(key).length !== 32 || bytes(iv).length !== 12) throw new Error('腾讯 V3 解密参数长度无效')
+    if (method === 'CHACHA20_V3_SDD') {
+      const sdd = isObj(drm.sdd) ? drm.sdd : {}
+      const innerKey = asString(sdd.content_key_hex), innerIV = asString(sdd.iv_hex)
+      if (sdd.required !== true || sdd.cipher_type !== 'chacha20_v2' || sdd.pattern !== 'A584C2CB45653B85'
+        || !/^[a-f\d]{64}$/i.test(innerKey) || !/^[a-f\d]{24}$/i.test(innerIV)
+        || cipherBytesAllZero(innerKey) || cipherBytesAllZero(innerIV)) throw new Error('腾讯 SDD 内层解密参数无效或版本不受支持')
+      // Composite material changes sourceIdentity, invalidating old outer-only segments.
+      return { method, key: Buffer.concat([bytes(key), Buffer.from(innerKey, 'hex'), Buffer.from(innerIV, 'hex')]).toString('hex'), iv }
+    }
   }
+  if (isObj(drm.sdd) && drm.sdd.required === true) throw new Error('腾讯 SDD 内层解密方式缺失')
   return { method, key, iv }
 }
 

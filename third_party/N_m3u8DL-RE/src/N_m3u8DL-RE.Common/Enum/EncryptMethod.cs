@@ -11,5 +11,6 @@ public enum EncryptMethod
     CHACHA20,
     IQ_BBTS,
     UNKNOWN,
-    CHACHA20_V3
+    CHACHA20_V3,
+    CHACHA20_V3_SDD
 }

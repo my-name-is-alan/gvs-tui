@@ -51,6 +51,13 @@ internal class SimpleDownloader : IDownloader
                     AESUtil.AES128Decrypt(dResult.ActualFilePath, key!, iv!, System.Security.Cryptography.CipherMode.ECB);
                     break;
                 }
+                case EncryptMethod.CHACHA20_V3_SDD:
+                {
+                    var bytes = await File.ReadAllBytesAsync(dResult.ActualFilePath, cancellationToken);
+                    var decoded = TencentSdd.Decrypt(bytes, segment.EncryptInfo.Key!, segment.EncryptInfo.IV!);
+                    await File.WriteAllBytesAsync(dResult.ActualFilePath, decoded, cancellationToken);
+                    break;
+                }
                 case EncryptMethod.CHACHA20_V3:
                 {
                     var bytes = await File.ReadAllBytesAsync(dResult.ActualFilePath, cancellationToken);

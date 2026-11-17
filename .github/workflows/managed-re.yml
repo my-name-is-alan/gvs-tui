@@ -16,7 +16,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "GVS RE $GITHUB_REF_NAME" --notes-file docs/release-managed-re-v0.6.0-iq.5.md
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "GVS RE $GITHUB_REF_NAME" --notes-file docs/release-managed-re-v0.6.0-iq.6.md
   build:
     needs: prepare
     strategy:
@@ -45,16 +45,16 @@ jobs:
         shell: pwsh
         run: ./scripts/build-managed-re.ps1 -Runtime '${{ matrix.rid }}' -Output '.build/managed-re/${{ matrix.rid }}'
       - name: IQ native CRC and clear-segment regression
-        run: dotnet test third_party/N_m3u8DL-RE/src/N_m3u8DL-RE.Tests/N_m3u8DL-RE.Tests.csproj -c Release --filter 'FullyQualifiedName~IqBbtsTests|FullyQualifiedName~IqMdcmDescriptorTests|FullyQualifiedName~TencentChaChaV3Tests'
+        run: dotnet test third_party/N_m3u8DL-RE/src/N_m3u8DL-RE.Tests/N_m3u8DL-RE.Tests.csproj -c Release --filter 'FullyQualifiedName~IqBbtsTests|FullyQualifiedName~IqMdcmDescriptorTests|FullyQualifiedName~TencentChaChaV3Tests|FullyQualifiedName~TencentSddTests'
       - name: Package binary
         shell: pwsh
-        run: Compress-Archive -Path '.build/managed-re/${{ matrix.rid }}/N_m3u8DL-RE*', '.build/managed-re/${{ matrix.rid }}/LICENSE.txt', '.build/managed-re/${{ matrix.rid }}/gvs-source.json', '.build/managed-re/${{ matrix.rid }}/README-GVS.md' -DestinationPath '.build/N_m3u8DL-RE_${{ matrix.rid }}_gvs-iq.5.zip'
+        run: Compress-Archive -Path '.build/managed-re/${{ matrix.rid }}/N_m3u8DL-RE*', '.build/managed-re/${{ matrix.rid }}/LICENSE.txt', '.build/managed-re/${{ matrix.rid }}/gvs-source.json', '.build/managed-re/${{ matrix.rid }}/README-GVS.md' -DestinationPath '.build/N_m3u8DL-RE_${{ matrix.rid }}_gvs-iq.6.zip'
       - name: Upload RE package to draft release
         if: startsWith(github.ref, 'refs/tags/managed-re-v')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" .build/N_m3u8DL-RE_${{ matrix.rid }}_gvs-iq.5.zip --clobber
+        run: gh release upload "$GITHUB_REF_NAME" .build/N_m3u8DL-RE_${{ matrix.rid }}_gvs-iq.6.zip --clobber
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/managed-re-v')
@@ -66,4 +66,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           test "$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | length')" -eq 6
-          gh release edit "$GITHUB_REF_NAME" --draft=false --latest=false --notes-file docs/release-managed-re-v0.6.0-iq.5.md
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest=false --notes-file docs/release-managed-re-v0.6.0-iq.6.md

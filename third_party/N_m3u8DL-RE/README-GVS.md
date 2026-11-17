@@ -32,3 +32,20 @@ cannot supply missing fields. Unsupported explicit patterns fail closed.
 IQ.3 additionally recognizes the complete domestic Web legacy a0/vector/e1/content
 layout from the reference implementation. Explicit unknown modes, incomplete
 vectors and conflicting content tags are rejected.
+
+IQ.6 adds `CHACHA20_V3_SDD` for the confirmed Tencent HEVC profile. The custom
+key is 76 bytes: outer V3 key (32), inner V2 key (32), inner nonce (12).
+The custom IV is the 12-byte outer nonce. The client builds this material from
+the gateway response; users do not need to supply a key. The outer-only V3
+method remains separate, so an older client rejects the new method explicitly.
+
+After outer decryption, the downloader reassembles video PES and Annex B NALs,
+removes ciphertext emulation prevention, and restores the confirmed sparse
+pattern. The restored bytes already contain the original HEVC emulation
+prevention and must not be escaped again. PES timestamps, audio packets and
+PCR fields are retained. The first video packet marks a discontinuity because
+video packet counts can change; continuity is rebuilt within each segment.
+Separate audio receives outer decryption only. Unsupported containers fail.
+The confirmed private `c0/tvf2` PMT video declaration becomes standard HEVC
+`24` with a new MPEG-2 section CRC, including sections split across TS packets.
+This is required for the final MKV muxer to retain the video track.

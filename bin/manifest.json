@@ -22,14 +22,16 @@
     },
     {
       "name": "N_m3u8DL-RE.exe",
-      "version": "0.6.0-gvs-iq.3",
-      "bytes": 38505589,
-      "sha256": "a8c5c32af1d9deb3b6e428e78d9d658334577aa6696060f5ac6589d818345d4a",
+      "version": "0.6.0-gvs-iq.6",
+      "bytes": 38511801,
+      "sha256": "461992a4057baca979a5bc4ccdb91b281ea141603a8aae8ae5523de8d640778a",
       "source": "third_party/N_m3u8DL-RE",
       "capabilities": [
         "IQ_BBTS",
         "native-crc-order",
-        "preserve-ts-pcr-continuity"
+        "preserve-ts-pcr-continuity",
+        "CHACHA20_V3",
+        "CHACHA20_V3_SDD"
       ]
     },
     {
