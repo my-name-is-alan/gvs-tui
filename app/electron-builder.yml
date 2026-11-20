@@ -23,6 +23,7 @@ win:
       to: bin
       filter:
         - "*.exe"
+        - "tencent-mobile42-decode.exe.sha256"
         - "!packager.exe"
         - "!gvs-tui-bridge.exe"
         - licenses/**
@@ -37,6 +38,10 @@ mac:
   extraResources:
     - from: ../.build/iqcn-local/darwin-${arch}/iqcn-local
       to: bin/iqcn-local
+    - from: ../.build/mobile42/darwin-${arch}/tencent-mobile42-decode
+      to: bin/tencent-mobile42-decode
+    - from: ../.build/mobile42/darwin-${arch}/tencent-mobile42-decode.sha256
+      to: bin/tencent-mobile42-decode.sha256
     - from: ../.build/managed-re/osx-${arch}/N_m3u8DL-RE
       to: bin/N_m3u8DL-RE
     - from: ../bin/licenses

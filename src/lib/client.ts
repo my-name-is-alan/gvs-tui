@@ -3,6 +3,7 @@ import { truncate } from './util.ts'
 import type { FileConfig } from './config.ts'
 import { fetchGateway } from './proxy.ts'
 import { runLog, summarizeInput, summarizeResult } from './runlog.ts'
+import { bindMobile42PlayInput } from './tencent-mobile42.ts'
 import { TencentOperations, type TencentOperation } from './tencent-operations.ts'
 import { TencentNativeEvents } from './tencent-native-events.ts'
 import { defaultTencentNativeEventPath, feedTencentNativeFixtures, resolveNativeCollectMode } from './tencent-native-fixture-feed.ts'
@@ -260,7 +261,8 @@ export class GwClient {
     let tracker: TencentOperations | undefined
     const cfg = this.cfgOf?.()
     const account = this.accountFor?.(provider)
-    if (provider === 'tencent' && action !== 'report' && this.tencentReportsEnabled() && (input.session_type === 'tv' || cfg?.tencentMode === 'tv')) {
+    if (provider === 'tencent' && action === 'play' && input.protocol === 'mobile42') input = bindMobile42PlayInput(input)
+    if (provider === 'tencent' && input.protocol !== 'mobile42' && action !== 'report' && this.tencentReportsEnabled() && (input.session_type === 'tv' || cfg?.tencentMode === 'tv')) {
       tracker = this.operationTracker()
       try { operation = await tracker.begin(action, input) } catch (error) {
         const risk = tencentRisk(undefined, error)
@@ -311,7 +313,7 @@ export class GwClient {
       const risk = diagnostic(data)
       if (provider === 'tencent' && risk.stop) throw new TencentRiskStop(risk)
       runLog(
-        `invoke ${provider}/${action} ${summarizeInput(input)}${headerNote ? ` hdr=${headerNote}` : ''} ${Date.now() - t0}ms ok ${summarizeResult({ ...data, code: env.code, msg: env.msg })}`,
+        `invoke ${provider}/${action} ${summarizeInput(input.protocol === 'mobile42' ? { ...input, mobile: '[private]' } : input)}${headerNote ? ` hdr=${headerNote}` : ''} ${Date.now() - t0}ms ok ${summarizeResult({ ...data, code: env.code, msg: env.msg })}`,
       )
       return data
     } catch (e) {
@@ -327,7 +329,7 @@ export class GwClient {
       const stage = details?.stage ?? '-'
       const upstreamHttp = details?.upstream_http ?? '-'
       runLog(
-        `invoke ${provider}/${action} ${summarizeInput(input)}${headerNote ? ` hdr=${headerNote}` : ''} ${Date.now() - t0}ms fail http=${http} code=${code} error_code=${errorCode} request_id=${requestId} stage=${stage} upstream_http=${upstreamHttp} ${truncate(msg, 160)}`,
+        `invoke ${provider}/${action} ${summarizeInput(input.protocol === 'mobile42' ? { ...input, mobile: '[private]' } : input)}${headerNote ? ` hdr=${headerNote}` : ''} ${Date.now() - t0}ms fail http=${http} code=${code} error_code=${errorCode} request_id=${requestId} stage=${stage} upstream_http=${upstreamHttp} ${truncate(msg, 160)}`,
       )
       throw e
     }

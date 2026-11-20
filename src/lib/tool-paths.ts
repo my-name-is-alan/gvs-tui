@@ -25,3 +25,7 @@ export function m3u8dlPath(): string {
 export function iqcnLocalPath(): string {
   return join(tuiBinDir(), process.platform === 'win32' ? 'iqcn-local.exe' : 'iqcn-local')
 }
+
+export function mobile42DecodePath(): string {
+  return join(tuiBinDir(), process.platform === 'win32' ? 'tencent-mobile42-decode.exe' : 'tencent-mobile42-decode')
+}

@@ -17,7 +17,8 @@ test('Tencent profiles route independently and never send pasted cookie', async 
   for (const mode of ['web', 'app', 'tv'] as const) {
     cfg.tencentMode = mode
     expect(cli.extra(cfg, 'tencent')).toEqual({})
-    expect(tencentPlayInput(cfg).session_type).toBe(mode)
+    if (mode === 'app') expect(() => tencentPlayInput(cfg)).toThrow('网页会话')
+    else expect(tencentPlayInput(cfg).session_type).toBe(mode)
     const calls: unknown[] = []
     await pollTencentQR(
       {
@@ -61,6 +62,20 @@ test('successful Tencent scan keeps only mode/tvid locally; cookie stays on the 
   expect(cfg.tencentTVDevice).toBe('TVDEV')
   expect(applyTencentLogin(cfg, 'app', { logged_in: false, cookie: 'nope' })).toBe(false)
   expect(cfg.tencentMode).toBe('tv')
+})
+
+test('App-authorized website QR never switches or clears the active playback identity', () => {
+  for (const selected of ['cookie', 'web', 'tv', 'app'] as const) {
+    const cfg = defaultConfig()
+    cfg.tencentMode = selected
+    cfg.tencentCookie = 'EXISTING-EXPLICIT-ACCOUNT'
+    const before = structuredClone(cfg)
+    expect(applyTencentLogin(cfg, 'app', {
+      logged_in: true, credential_type: 'web_account', native_app_credential: false,
+      cookie: 'WEBSITE-CREDENTIAL-MUST-NOT-BE-IMPORTED',
+    })).toBe(true)
+    expect(cfg).toEqual(before)
+  }
 })
 
 test('TV login input uses a preset unless the custom device identity is complete', () => {

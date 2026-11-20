@@ -11,7 +11,7 @@ import { equivalentTencentRendition } from './tencent-rendition-resolution.ts'
 import { resolveHongguoDownload } from './hongguo.ts'
 import { huangguoKeyMode, resolveHuangguoDownload } from './huangguo.ts'
 import { mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { basename, dirname, extname, join } from 'node:path'
 import type { FileConfig } from './config.ts'
 import type { GwClient } from './client.ts'
@@ -50,6 +50,7 @@ import { defaultAudioIndex, orderedMuxAudios } from './audio-selection.ts'
 import type { CompletedMedia, MediaSpecs } from './actual-version.ts'
 import { probeFinishedMedia } from './gvs-record.ts'
 import { releaseGroup } from './release-group.ts'
+import { bindMobile42PlayInput, downloadTencentMobile42, mobile42DownloadPlan } from './tencent-mobile42.ts'
 
 export type DlTask = {
   tencentPlayParams?: import('../types.ts').TencentPlayParams
@@ -111,6 +112,9 @@ export type JobEvt = {
   requiresReauth?: boolean
   /** Final event only: the user stopped the job instead of it failing. */
   stopped?: 'pause' | 'cancel'
+  /** 腾讯 mobile42 下载的真实分段进度（done/total/bytes），只在逐段回调里携带；
+   *  other providers and non-mobile42 paths leave it absent. */
+  txSegs?: { done: number; total: number; bytes?: number }
 }
 
 /** What a stop request asks for: keep the work dir (pause) or discard it (cancel). */
@@ -375,9 +379,9 @@ export async function runTask(
 ): Promise<void> {
   // Surface CDN retries in the job row instead of letting the bar sit still.
   let lastPct = 0
-  const emit = (status: string, pct: number, log: string) => {
+  const emit = (status: string, pct: number, log: string, txSegs?: { done: number; total: number; bytes?: number }) => {
     lastPct = Math.max(lastPct, Math.min(0.99, Number.isFinite(pct) ? pct : lastPct))
-    emitEvt({ id, status, pct: lastPct, log, err: '' })
+    emitEvt({ id, status, pct: lastPct, log, err: '', txSegs })
   }
   const retryNote = (attempt: number, total: number, why: string) => {
     emitEvt({ id, status: '重试', pct: lastPct, log: `第 ${attempt}/${total} 次 · ${why}`, err: '' })
@@ -794,7 +798,7 @@ function tencentNoStreamError(data: Record<string, unknown>): string {
 
 async function dlTencent(
   cli: GwClient, cfg: FileConfig, t: DlTask, out: string, mkvmerge: string,
-  emit: (s: string, p: number, l: string) => void,
+  emit: (s: string, p: number, l: string, txSegs?: { done: number; total: number; bytes?: number }) => void,
   retryNote: RetryNote,
   work: string,
   signal?: AbortSignal,
@@ -810,13 +814,14 @@ async function dlTencent(
   const versionMismatch = () => new Error('腾讯返回的实际版本与所选版本不同，已停止下载；请重新取流或选择可用版本')
   const play = async () => {
     const request = async () => {
-      const payload = await cli.invoke('tencent', 'play', { vid: t.vid, ...tencentPlayInput(cfg, t.tencentPlayParams), ...tencentPlayQualityInput(episodeChoice) }, cli.extra(cfg, 'tencent'))
+      const input = bindMobile42PlayInput({ vid: t.vid, ...tencentPlayInput(cfg, t.tencentPlayParams), ...tencentPlayQualityInput(episodeChoice) })
+      const payload = await cli.invoke('tencent', 'play', input, cli.extra(cfg, 'tencent'))
       // The gateway call has no signal of its own; stop right after it returns.
       signal?.throwIfAborted()
       return payload
     }
     let payload = await request()
-    if (pickVersion(payload).version.matchesSelection === 'different') {
+    if (payload.protocol !== 'mobile42' && pickVersion(payload).version.matchesSelection === 'different') {
       const catalog = await cli.invoke('tencent', 'play', tencentCatalogProbeInput(cfg, t.vid, t.tencentPlayParams), cli.extra(cfg, 'tencent'))
       signal?.throwIfAborted()
       const resolved = equivalentTencentRendition(episodeChoice, catalog.formats)
@@ -844,10 +849,13 @@ async function dlTencent(
     return cdn
   }
   let played = await play()
-  let cdn = await pick(played)
-  if (!cdn) throw new Error(tencentNoStreamError(played))
-
-  let cipher = tencentCipher(played)
+  const mobile42 = played.protocol === 'mobile42'
+  if (mobile42) mobile42DownloadPlan(played, t.vid)
+  const mobileRow = mobile42 && Array.isArray(played.media) && isObj(played.media[0]) ? played.media[0] : undefined
+  let cdn = mobileRow ? asString(mobileRow.url) : await pick(played)
+  if (!cdn) throw new Error(mobile42 ? '腾讯没有可用视频地址' : tencentNoStreamError(played))
+  let cipher = mobile42 ? undefined : tencentCipher(played)
+  if (mobileRow) onVersion?.(tencentActualVersion({ video: { ...mobileRow, defn: mobileRow.quality } }, cdn, 'default', tencentChoiceSelection(episodeChoice), t.vid))
   logTencentDownloadHost(cdn, t)
   // Plan audio before the video download: an episode that lacks one of the
   // picked tracks downgrades to the tracks it has instead of failing at 65%.
@@ -858,7 +866,7 @@ async function dlTencent(
     emit('取链', 0.08, note)
   }
   const safe = t.vid.replace(/[^\w.-]+/g, '_')
-  const raw = join(work, `.${safe}.bin`)
+  const raw = join(work, mobile42 ? `.${safe}.mobile42-${randomUUID()}.bin` : `.${safe}.bin`)
   const temps = [raw]
   let done = false
   const ffmpeg = await ensureFFmpeg()
@@ -869,7 +877,12 @@ async function dlTencent(
   }
   try {
     try {
-      await downloadProgress(cdn, raw, referer('tencent'), transferProgress(), retryNote, cfg.threads, cipher, undefined, signal)
+      if (mobile42) {
+        await downloadTencentMobile42(played, t.vid, raw, work, cfg.threads, (bytes, index, total) => {
+          cli.observeTencentTransfer(bytes, 0)
+          emit('本地下载与处理', 0.1 + 0.45 * index / total, `分片 ${index}/${total} · ${human(bytes)}`, { done: index, total, bytes })
+        }, signal)
+      } else await downloadProgress(cdn, raw, referer('tencent'), transferProgress(), retryNote, cfg.threads, cipher, undefined, signal)
     } catch (e) {
       signal?.throwIfAborted()
       if (!(e instanceof CdnDenied)) throw e

@@ -366,6 +366,8 @@ export interface GvsApi {
   youkuRenew(): Promise<string>
   tencentQrStart(): Promise<QRStart>
   tencentQrPoll(): Promise<QRPoll>
+  tencentNativeSmsStart(phone: string, area?: string): Promise<{ sent: boolean; message: string }>
+  tencentNativeSmsSubmit(code: string): Promise<{ done: boolean; message: string }>
   qrCancel(): Promise<void>
   updateState(): Promise<UpdateState>
   checkUpdate(): Promise<UpdateState>

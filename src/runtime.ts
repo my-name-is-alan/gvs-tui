@@ -43,7 +43,10 @@ import {
   nextJobID,
   patchJob,
   type DlTask,
+  type JobEvt,
 } from './lib/jobs.ts'
+import { nextTencentDownloadReport, type TxDownloadReportState } from './lib/tencent-download-report.ts'
+import { nextTencentPlayEvent, type TxPlayEventState } from './lib/tencent-play-events.ts'
 import { moviePlayables, probeOptions, qualityChoiceLabel, youkuEditionsFromDetail, youkuMoviePick, tencentPlayQualityInput} from './lib/quality.ts'
 import { selectedTencentQuality } from './lib/tencent-quality-selection.ts'
 import { selectedIQCNQuality } from './lib/iqcn-quality-selection.ts'
@@ -267,7 +270,11 @@ export class Runtime {
     this.hostInput = this.cfg.host
     this.keyInput = this.cfg.key
     this.hub = new JobHub((e) => {
+      const row = this.jobs.find((j) => j.id === e.id)
+      const wasQueued = row?.status === '排队'
       patchJob(this.jobs, e)
+      this.maybeReportTencentDownload(e)
+      this.maybeReportTencentPlayEvent(e, wasQueued)
       const line = [e.status, e.err || e.log, e.done ? e.note : ''].filter(Boolean).join(' · ')
       const history = this.logs.get(e.id) ?? []
       if (line && history.at(-1) !== line) {
@@ -1998,7 +2005,7 @@ export class Runtime {
       this.qrTencent = null
       this.qrTencentDual = true
       this.qrDualDone = { app: false, tv: false }
-      this.qrHint = '同时扫两张码：腾讯视频 App（左/先打开）+ 云视听极光 TV；会话各自独立保存'
+      this.qrHint = '用腾讯视频 App 扫两张码：左侧网页授权 + 右侧极光 TV；不会签发手机 App 票据'
       try {
         const paths = await this.work(() => startTencentDualQR(this.cli!, this.cfg))
         this.qrPngPaths = [paths.appPath, paths.tvPath]
@@ -2751,6 +2758,9 @@ export class Runtime {
         pct: 0,
         log: '',
         err: '',
+        vid: t.vid,
+        provider: t.provider,
+        duration: t.duration,
       })
       if (!this.simulated) this.hub.enqueue({ ...this.cfg }, this.cli, id, t)
     }
@@ -2761,6 +2771,70 @@ export class Runtime {
     this.scene = 'jobs'
     this.say(`已加入 ${tasks.length} 个任务`, 'ok')
     this.emit()
+  }
+
+  // ---------------------------------------------------------------- 腾讯下载进度上报
+  // 随下载进度把真实观察报给网关 report_type=download（飞天 mode-2 事件），
+  // 与 Electron 端 core.ts 同一套语义与 shared 节流函数。
+  private readonly txReport = { seq: new Map<string, number>(), last: new Map<string, { done: number; total: number; bytes: number; at: number }>() } as TxDownloadReportState
+  /** 网关显式关闭下载上报（GVS_TX_DOWNLOAD_REPORT=0）时记住一次，之后静默。 */
+  private txReportDisabled = false
+
+  private maybeReportTencentDownload(e: JobEvt): void {
+    if (!this.cli || e.stopped || this.txReportDisabled) return
+    const row = this.jobs.find((j) => j.id === e.id)
+    if (!row || row.provider !== 'tencent' || !row.vid) return
+    const observation = nextTencentDownloadReport(this.txReport, row.vid, e.actualVersion?.actual?.stream ?? '', e)
+    if (!observation) return
+    void this.cli.invoke('tencent', 'report', { report_type: 'download', observation: JSON.stringify(observation) })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/GVS_TX_DOWNLOAD_REPORT/.test(msg)) {
+          if (!this.txReportDisabled) runLog(`tencent download report disabled by gateway: ${msg}`)
+          this.txReportDisabled = true
+          return
+        }
+        runLog(`tencent download report: ${msg}`)
+      })
+  }
+
+  // ---------------------------------------------------------------- 腾讯播放三事件上报
+  // 起播/心跳/完播随下载生命周期触发（与 Electron 端 core.ts 同语义）；位置=已下载时长。
+  private readonly txPlayEvent = new Map<string, TxPlayEventState>()
+  private txPlayEventDisabled = false
+
+  private maybeReportTencentPlayEvent(e: JobEvt, wasQueued: boolean): void {
+    if (!this.cli || e.stopped || this.txPlayEventDisabled) return
+    const row = this.jobs.find((j) => j.id === e.id)
+    if (!row || row.provider !== 'tencent' || !row.vid) return
+    const durationMs = Math.round((row.duration || 0) * 1000)
+    if (durationMs <= 0) return
+    let phase: 'start' | 'progress' | 'complete' | 'failed' | undefined
+    if (!e.done && wasQueued) phase = 'start'
+    else if (!e.done && e.txSegs) phase = 'progress'
+    else if (e.done === true && !e.err) phase = 'complete'
+    else if (e.done === true && e.err) phase = 'failed'
+    if (!phase) return
+    const state = this.txPlayEvent.get(row.vid) ?? { startSent: false, lastHeartbeatMs: 0, endSent: false }
+    this.txPlayEvent.set(row.vid, state)
+    const observation = nextTencentPlayEvent(state, row.vid, e.actualVersion?.actual?.stream ?? '', {
+      phase,
+      done: e.txSegs?.done ?? 0,
+      total: e.txSegs?.total ?? 0,
+      durationMs,
+      now: Date.now(),
+    })
+    if (!observation) return
+    void this.cli.invoke('tencent', 'report', { report_type: 'play_event', observation: JSON.stringify(observation) })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/GVS_TX_PLAY_EVENT/.test(msg)) {
+          if (!this.txPlayEventDisabled) runLog(`tencent play event disabled by gateway: ${msg}`)
+          this.txPlayEventDisabled = true
+          return
+        }
+        runLog(`tencent play event: ${msg}`)
+      })
   }
 
   private async downloadDouyin(
@@ -3236,14 +3310,14 @@ export class Runtime {
           applyTencentLogin(this.cfg, 'tv', data.tv)
           this.cfg.tencentMode = 'tv'
           this.persistConfig()
-          this.say('App 与 TV 双扫均已登录；会话已写入网关存储，默认播放切到极光 TV', 'ok')
+          this.say('网页授权与 TV 登录均完成；默认播放切到极光 TV，手机 App 票据未改变', 'ok')
           void this.refreshTencentAccount(false)
           this.scene = 'settings'
           this.qrTencentDual = false
           this.stopQR()
         } else if (this.qrDualDone.app || this.qrDualDone.tv) {
-          const done = this.qrDualDone.app ? 'App' : 'TV'
-          const wait = this.qrDualDone.app ? 'TV' : 'App'
+          const done = this.qrDualDone.app ? '网页授权' : 'TV'
+          const wait = this.qrDualDone.app ? 'TV' : '网页授权'
           this.say(`${done} 已登录 · 仍等待 ${wait} 扫码确认`, 'info')
         } else {
           this.say('等待 App / TV 双扫确认', 'info')

@@ -11,15 +11,26 @@ export type TencentDualMode = 'app' | 'tv'
 
 export const tencentLabels = {
   web: '腾讯网页 QQ 扫码',
-  app: '腾讯 App 扫码',
+  app: '腾讯 App 授权网页登录',
   tv: '腾讯极光 TV 扫码',
 } as const
 
 export function tencentPlayInput(cfg: FileConfig, edition?: TencentPlayParams): Record<string, string> {
+  if (cfg.tencentMobile42) {
+    const profile = cfg.tencentMobile42
+    if (cfg.tencentMode !== 'app' || edition?.edition === 'imax' || !['app_sync', 'gateway'].includes(profile.accountSource) ||
+      !profile.context || typeof profile.context !== 'object' || Array.isArray(profile.context)) throw new Error('腾讯 mobile42 需要独立 App 档案，不能与 TV/IMAX 混用')
+    const account = profile.context.Account
+    if (!account || typeof account !== 'object' || Array.isArray(account) ||
+      Object.keys(account).some(key => key.toLowerCase() === 'cookie')) throw new Error('腾讯 mobile42 配置不能携带 Cookie')
+    const mobile = JSON.stringify(profile.context)
+    if (Buffer.byteLength(mobile) > 128 * 1024) throw new Error('腾讯 mobile42 上下文过大')
+    return { protocol: 'mobile42', session_type: 'app', account_source: profile.accountSource, mobile }
+  }
   if (edition?.edition === 'imax') return { edition: 'imax', defn: 'imax', session_type: 'tv', ...(edition.cid ? { cid: edition.cid } : {}) }
   const mode = cfg.tencentMode
   if (mode === 'web') return { session_type: 'web', tier: 'h5' }
-  if (mode === 'app') return { session_type: 'app', tier: 'phone' }
+  if (mode === 'app') throw new Error('腾讯 App 扫码取得的是网页会话，不能用于手机取流；请先配置真实 App 会话同步，或手动选择已验证的播放会话')
   if (mode === 'tv') return { session_type: 'tv' }
   return {}
 }
@@ -103,6 +114,9 @@ export async function startTencentDualQR(
  */
 export function applyTencentLogin(cfg: FileConfig, mode: TencentMode, data: Record<string, unknown>): boolean {
   if (data.logged_in !== true) return false
+  // This QR authorizes WebAccount/Login. Keep the user's active playback
+  // source: a website grant cannot select or replace a native phone profile.
+  if (mode === 'app') return true
   cfg.tencentCookie = ''
   cfg.tencentMode = mode
   if (mode === 'tv') {

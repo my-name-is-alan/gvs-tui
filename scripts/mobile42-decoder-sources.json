@@ -1,0 +1,12 @@
+{
+  "go.mod": "f5d6f30c4f8594a3d3d77a8d9de05a4d6ac39cc414fe31ac535264cdc935b851",
+  "go.sum": "2c2788f5dc70221b5be657e6140474957ba5e78a93d915452ae65264c0f85c33",
+  "cmd/tencent-mobile42-decode/main.go": "b5e7c0bbe9fcbfbfc6625853b925a3967f106fbea2ba91aaac011c0299ce59da",
+  "internal/provider/tencent/mobile42media/context.go": "4c8369f78ffbc6e8e3554c1a6a450241e8e0fa4455962bd2f6fcd52cd3ce82bd",
+  "internal/provider/tencent/mobile42media/mpegts.go": "266991faaacb259ba9daa5253a3c49f6478d5581e1c054c075cb0046ca767420",
+  "internal/provider/tencent/mobile42media/playlist.go": "f8ee63c4503aca5edab651260ad368b316352c7ad307dbab44279f670fd4f779",
+  "internal/provider/tencent/mobile42media/sdd.go": "243e252d67f974819158849a650a2766e71b9aa3b5e061276b2307b4491662af",
+  "internal/provider/tencent/mobile42media/sdd_v2.go": "f6a9c08d4584cb0368d52730d56d4b942b858aa83aadd0c33a5e3bbc0751250a",
+  "internal/provider/tencent/mobile42media/sse.go": "30642b143fcaa4c9e9ecaf4d356bea1bd0aa46fe11fd77fe055d492a3cd85496",
+  "internal/provider/tencent/mobile42media/transport_v3.go": "812fd624a810ff20c9e5e93440f3ea0f581b3f041b8ae21068d20e460ff4ffc1"
+}

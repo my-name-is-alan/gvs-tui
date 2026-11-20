@@ -11,11 +11,12 @@ const electron = () => ({ app: {
 } })
 mock.module('electron', electron)
 mock.module(join(import.meta.dir, '../../app/node_modules/electron'), electron)
-const { iqcnLocalPath, m3u8dlPath, tuiBinDir } = await import('../../app/src/main/shims/tool-paths.ts')
+const { iqcnLocalPath, mobile42DecodePath, m3u8dlPath, tuiBinDir } = await import('../../app/src/main/shims/tool-paths.ts')
 
 test('development managed downloader and IQCN helper use the checkout tools', () => {
   state.isPackaged = false
   expect(iqcnLocalPath()).toBe(join('/fixture/gvs/bin', process.platform === 'win32' ? 'iqcn-local.exe' : 'iqcn-local'))
+  expect(mobile42DecodePath()).toBe(join('/fixture/gvs/bin', process.platform === 'win32' ? 'tencent-mobile42-decode.exe' : 'tencent-mobile42-decode'))
   expect(m3u8dlPath()).toBe(join('/fixture/gvs/bin', process.platform === 'win32' ? 'N_m3u8DL-RE.exe' : 'N_m3u8DL-RE'))
 })
 
@@ -25,6 +26,7 @@ test('packaged downloader and IQCN helper use resources instead of stale writabl
   state.isPackaged = true
   try {
     expect(iqcnLocalPath()).toBe(join('/fixture/resources/bin', process.platform === 'win32' ? 'iqcn-local.exe' : 'iqcn-local'))
+    expect(mobile42DecodePath()).toBe(join('/fixture/resources/bin', process.platform === 'win32' ? 'tencent-mobile42-decode.exe' : 'tencent-mobile42-decode'))
     expect(m3u8dlPath()).toBe(join('/fixture/resources/bin', process.platform === 'win32' ? 'N_m3u8DL-RE.exe' : 'N_m3u8DL-RE'))
     expect(tuiBinDir()).toBe(join(process.platform === 'win32' ? '/fixture/resources' : '/fixture/user-data', 'bin'))
   } finally {

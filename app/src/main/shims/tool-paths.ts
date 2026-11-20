@@ -26,3 +26,8 @@ export function iqcnLocalPath(): string {
   const dir = app.isPackaged ? join(process.resourcesPath, 'bin') : tuiBinDir()
   return join(dir, process.platform === 'win32' ? 'iqcn-local.exe' : 'iqcn-local')
 }
+
+export function mobile42DecodePath(): string {
+  const dir = app.isPackaged ? join(process.resourcesPath, 'bin') : tuiBinDir()
+  return join(dir, process.platform === 'win32' ? 'tencent-mobile42-decode.exe' : 'tencent-mobile42-decode')
+}

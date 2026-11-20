@@ -22,6 +22,8 @@ export type FileConfig = {
   /** @deprecated yk_sign 由网关按 API key 绑定；字段仅作启动迁移读取，成功推送后清空。 */
   youkuSign: string
   tencentMode?: "cookie" | "web" | "app" | "tv"
+  /** Explicit operator-provided handset context. No Cookie; credentials remain on the gateway. */
+  tencentMobile42?: { accountSource: 'app_sync' | 'gateway'; context: Record<string, unknown> }
   /** Bind TV operations and record real client metrics locally on the gateway. */
   tencentObservations?: boolean
   /** Actual native producer JSONL; read only in the TUI/Electron main process. */

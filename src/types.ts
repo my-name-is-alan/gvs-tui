@@ -3,7 +3,7 @@ import type { TencentPlayParams } from './lib/tencent-edition-types'
 export type { TencentPlayParams } from './lib/tencent-edition-types'
 import type { CompletedMedia } from './lib/actual-version'
 
-export type Job = { id: number; title: string; status: string; pct: number; log: string; err: string; note?: string; phase?: string; completedMedia?: CompletedMedia }
+export type Job = { id: number; title: string; status: string; pct: number; log: string; err: string; note?: string; phase?: string; completedMedia?: CompletedMedia; /** 平台视频 ID（腾讯下载/播放事件上报用） */ vid?: string; /** 平台标识（腾讯下载/播放事件上报用） */ provider?: string; /** 媒体总时长秒（腾讯播放事件 position 计算用） */ duration?: number }
 export type Row = {
   title: string
   id: string

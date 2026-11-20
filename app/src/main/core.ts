@@ -23,6 +23,7 @@ import { YoukuPlaybackError } from '@tui/youku-playback.ts'
 import { clampThreads, loadConfig, normalizeOutDir, saveConfig, type FileConfig } from '@tui/config.ts'
 import { makePkce } from '@shared/cr-sso'
 import { openCrunchyrollLogin, CR_SSO_PARTITION } from './cr-sso-window'
+import { openTencentCaptchaWindow } from './tencent-captcha-window'
 import type { CrLoginResult } from '@shared/api'
 import { hasLocalCredentials, migrateLocalCredentials, pushLocalCredential } from '@tui/vault-migrate.ts'
 import { fallbackSections } from '@tui/discovery.ts'
@@ -39,6 +40,8 @@ import {
   type JobEvt,
 } from '@tui/jobs.ts'
 import { extractTencentLinks, extractYoukuVideoId, extractIQLink, extractIQCNLink } from '@tui/link.ts'
+import { nextTencentDownloadReport, type TxDownloadReportState } from '@tui/tencent-download-report.ts'
+import { nextTencentPlayEvent, type TxPlayEventState } from '@tui/tencent-play-events.ts'
 import { youkuSpokenLangKey } from '@tui/media.ts'
 import { completedFilename, filename, folder, tierHeight, dots } from '@tui/name.ts'
 import { previewFilename, usesMeasuredNaming } from '@tui/completed-naming.ts'
@@ -324,6 +327,8 @@ export class Core {
   private readonly hub: JobHub
   private probeToken = 0
   private readonly probes = new Map<number, { provider: Provider; qualities: Quality[]; audios: Audio[]; subtitles?: Subtitle[] }>()
+  private pendingSmsMobile: string | undefined
+  private pendingSmsArea = '+86'
   private qr: { kind: 'youku'; ticket: string; loginToken: string } | { kind: 'tencent'; done: { app: boolean; tv: boolean } } | { kind: 'iqcn' } | { kind: 'bilibili' } | null = null
 
   constructor(private readonly emit: Emit) {
@@ -1050,11 +1055,50 @@ export class Core {
     // 不用 startTencentDualQR：它会把 PNG 写盘并用系统看图打开，桌面端直接显示。
     return {
       images: [
-        { title: '腾讯视频 App', image: img(appData) },
+        { title: 'App 授权网页登录', image: img(appData) },
         { title: '云视听极光 TV', image: img(tvData) },
       ],
-      hint: '两个码都要扫：先用腾讯视频 App 扫左边，再扫右边',
+      hint: '用腾讯视频 App 扫两张码：左侧授予网页会话，右侧授予 TV 会话；不会签发手机 App 票据',
     }
+  }
+
+  /** 原生手机号登录：弹出官方图形验证窗口（用户本人过验）→ 网关发码。 */
+  async tencentNativeSmsStart(phone: string, area = '+86'): Promise<{ sent: boolean; message: string }> {
+    if (!this.has('tencent')) throw new Error('当前 Key 没有腾讯权限')
+    const mobile = phone.replace(/\s+/g, '')
+    if (!/^\+?\d{6,20}$/.test(mobile)) throw new Error('手机号格式不对')
+    this.emit.state()
+    const cap = openTencentCaptchaWindow((m) => runLog(m))
+    const r = await cap.result
+    if (r.errCode !== 0 || !r.ticket) {
+      return { sent: false, message: r.errCode === -3 ? '验证窗口已关闭' : '图形验证未完成，请重试' }
+    }
+    const cli = this.client()
+    const data = await cli.invoke('tencent', 'login', {
+      method: 'sms', state: 'send', mobile, area,
+      captcha_ticket: r.ticket, captcha_code: r.code,
+    })
+    this.pendingSmsMobile = mobile
+    this.pendingSmsArea = area
+    return { sent: asBool(data.sent), message: asString(data.hint) || '验证码已发送' }
+  }
+
+  /** 原生手机号登录：提交短信验证码，网关换取原生 App 票据。 */
+  async tencentNativeSmsSubmit(code: string): Promise<{ done: boolean; message: string }> {
+    const mobile = this.pendingSmsMobile
+    if (!mobile) throw new Error('请先获取验证码')
+    const vcode = code.replace(/\s+/g, '')
+    if (!/^\d{4,8}$/.test(vcode)) throw new Error('验证码格式不对')
+    const cli = this.client()
+    const data = await cli.invoke('tencent', 'login', {
+      method: 'sms', state: 'login', mobile, code: vcode,
+    })
+    if (asBool(data.logged_in)) {
+      this.pendingSmsMobile = undefined
+      void this.refreshTencent()
+      return { done: true, message: '原生手机号登录成功，票据已保存' }
+    }
+    return { done: false, message: asString(data.hint) || '登录未完成' }
   }
 
   async tencentQrPoll(): Promise<QRPoll> {
@@ -1074,9 +1118,9 @@ export class Core {
       saveConfig(this.cfg)
       this.qr = null
       void this.refreshTencent()
-      return { done: true, message: '腾讯 App 与 TV 均已登录', tone: 'ok' }
+      return { done: true, message: '网页授权与 TV 登录均完成；手机 App 票据未改变', tone: 'ok' }
     }
-    if (done.app || done.tv) return { done: false, message: `${done.app ? 'App' : 'TV'} 已登录，等待另一个码`, tone: 'muted' }
+    if (done.app || done.tv) return { done: false, message: `${done.app ? '网页授权' : 'TV 登录'} 已完成，等待另一个码`, tone: 'muted' }
     return { done: false, message: '等待扫码…', tone: 'muted' }
   }
 
@@ -1752,9 +1796,90 @@ export class Core {
     } catch (err) {
       runLog(`lifecycle hook failed: ${err instanceof Error ? err.message : err}`)
     }
+    this.maybeReportTencentDownload(rec, v, e)
+    this.maybeReportTencentPlayEvent(rec, v, e, before)
     this.pushJobs()
     // 进度可以合并，状态变化要立刻落盘。
     this.persist(e.done === true)
+  }
+
+  // ---------------------------------------------------------------- 腾讯下载进度上报
+  // 随下载进度把真实观察报给网关 report_type=download（飞天 mode-2 事件）。
+  // 节流与观察构建在 shared 纯函数里（tencent-download-report.ts），这里只做
+  // 身份过滤与 fire-and-forget 发送；flowid 由网关从播放会话补齐。
+  private readonly txReport = { seq: new Map<string, number>(), last: new Map<string, { done: number; total: number; bytes: number; at: number }>() } as TxDownloadReportState
+  /** 网关显式关闭下载上报（GVS_TX_DOWNLOAD_REPORT=0）时记住一次，之后静默。 */
+  private txReportDisabled = false
+
+  private maybeReportTencentDownload(rec: JobRecord, v: JobView, e: JobEvt): void {
+    if (v.provider !== 'tencent' || !v.vid || this.txReportDisabled) return
+    const observation = nextTencentDownloadReport(this.txReport, v.vid, v.actualVersion?.actual?.stream ?? '', e)
+    if (!observation) return
+    void this.reportTencentDownload(rec, observation)
+  }
+
+  private async reportTencentDownload(rec: JobRecord, observation: Record<string, unknown>): Promise<void> {
+    try {
+      await this.jobClient(rec).invoke('tencent', 'report', {
+        report_type: 'download',
+        observation: JSON.stringify(observation),
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/GVS_TX_DOWNLOAD_REPORT/.test(msg)) {
+        if (!this.txReportDisabled) runLog(`tencent download report disabled by gateway: ${msg}`)
+        this.txReportDisabled = true
+        return
+      }
+      runLog(`tencent download report: ${msg}`)
+    }
+  }
+
+  // ---------------------------------------------------------------- 腾讯播放三事件上报
+  // 起播/心跳/完播（dt_video_start/heartbeat/end）随下载生命周期触发：start=下载开始、
+  // heartbeat=进度（位置=已下载时长）、end=完成（Normal）或失败（Error）。值与下载上报
+  // 同一来源，不虚构观看；节流在 shared 纯函数里（tencent-play-events.ts）。
+  private readonly txPlayEvent = new Map<string, TxPlayEventState>()
+  private txPlayEventDisabled = false
+
+  private maybeReportTencentPlayEvent(rec: JobRecord, v: JobView, e: JobEvt, before: JobView['state']): void {
+    if (v.provider !== 'tencent' || !v.vid || this.txPlayEventDisabled) return
+    const durationMs = Math.round((rec.task.duration || 0) * 1000)
+    if (durationMs <= 0) return
+    let phase: 'start' | 'progress' | 'complete' | 'failed' | undefined
+    if (!e.done && before === 'queued') phase = 'start'
+    else if (!e.done && e.txSegs) phase = 'progress'
+    else if (e.done === true && !e.stopped && !e.err) phase = 'complete'
+    else if (e.done === true && !e.stopped && e.err) phase = 'failed'
+    if (!phase) return
+    const state = this.txPlayEvent.get(v.vid) ?? { startSent: false, lastHeartbeatMs: 0, endSent: false }
+    this.txPlayEvent.set(v.vid, state)
+    const observation = nextTencentPlayEvent(state, v.vid, v.actualVersion?.actual?.stream ?? '', {
+      phase,
+      done: e.txSegs?.done ?? 0,
+      total: e.txSegs?.total ?? 0,
+      durationMs,
+      now: Date.now(),
+    })
+    if (!observation) return
+    void this.reportTencentPlayEvent(rec, observation)
+  }
+
+  private async reportTencentPlayEvent(rec: JobRecord, observation: Record<string, unknown>): Promise<void> {
+    try {
+      await this.jobClient(rec).invoke('tencent', 'report', {
+        report_type: 'play_event',
+        observation: JSON.stringify(observation),
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/GVS_TX_PLAY_EVENT/.test(msg)) {
+        if (!this.txPlayEventDisabled) runLog(`tencent play event disabled by gateway: ${msg}`)
+        this.txPlayEventDisabled = true
+        return
+      }
+      runLog(`tencent play event: ${msg}`)
+    }
   }
 
   /** 下载开始 / 完成回调（历史库、钩子、ed2k） */

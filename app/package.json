@@ -7,11 +7,11 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "node ../scripts/build-iqcn-local.mjs && electron-vite build",
+    "build": "node ../scripts/build-iqcn-local.mjs && node ../scripts/build-mobile42-local.mjs && electron-vite build",
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "start": "electron-vite preview",
-    "dist:win": "node ../scripts/build-iqcn-local.mjs && electron-vite build && electron-builder --win",
-    "dist:mac": "node ../scripts/build-iqcn-local.mjs --platform=darwin --arch=arm64 --output=.build/iqcn-local/darwin-arm64/iqcn-local && node ../scripts/build-iqcn-local.mjs --platform=darwin --arch=x64 --output=.build/iqcn-local/darwin-x64/iqcn-local && electron-vite build && electron-builder --mac"
+    "dist:win": "node ../scripts/build-iqcn-local.mjs && node ../scripts/build-mobile42-local.mjs --platform=win32 --arch=x64 && electron-vite build && electron-builder --win",
+    "dist:mac": "node ../scripts/build-iqcn-local.mjs --platform=darwin --arch=arm64 --output=.build/iqcn-local/darwin-arm64/iqcn-local && node ../scripts/build-iqcn-local.mjs --platform=darwin --arch=x64 --output=.build/iqcn-local/darwin-x64/iqcn-local && node ../scripts/build-mobile42-local.mjs --platform=darwin --arch=arm64 --output=.build/mobile42/darwin-arm64/tencent-mobile42-decode && node ../scripts/build-mobile42-local.mjs --platform=darwin --arch=x64 --output=.build/mobile42/darwin-x64/tencent-mobile42-decode && electron-vite build && electron-builder --mac"
   },
   "dependencies": {
     "@tabler/icons-vue": "^3.49.0",

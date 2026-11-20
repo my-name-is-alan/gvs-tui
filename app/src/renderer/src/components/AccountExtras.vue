@@ -16,6 +16,46 @@ watch(() => [props.provider, s.value.iqProfile] as const, () => {
   form.value = { tencentCookie: '', douyinCookie: '', iqCookie: '', iqProfile: s.value.iqProfile }
 }, { immediate: true })
 
+// 腾讯原生手机号登录：发码前弹官方图形验证窗口（主进程处理），用户本人过验后网关发短信。
+const txSmsArea = ref('+86')
+const txSmsPhone = ref('')
+const txSmsCode = ref('')
+const smsBusy = ref(false)
+const smsNote = ref('')
+const validPhone = computed(() => /^\+?\d{6,20}$/.test(txSmsPhone.value.trim()))
+
+async function smsSend() {
+  smsBusy.value = true
+  smsNote.value = ''
+  try {
+    const r = await gvs('tencentNativeSmsStart', txSmsPhone.value.trim(), txSmsArea.value)
+    smsNote.value = r.sent ? '验证码已发送，请查收短信' : (r.message || '未发送')
+  } catch (e) {
+    smsNote.value = errText(e)
+  } finally {
+    smsBusy.value = false
+  }
+}
+async function smsSubmit() {
+  smsBusy.value = true
+  smsNote.value = ''
+  try {
+    const r = await gvs('tencentNativeSmsSubmit', txSmsCode.value.trim())
+    if (r.done) {
+      txSmsPhone.value = ''
+      txSmsCode.value = ''
+      smsNote.value = ''
+      toast('腾讯手机号登录成功', 'ok')
+    } else {
+      smsNote.value = r.message || '登录未完成'
+    }
+  } catch (e) {
+    smsNote.value = errText(e)
+  } finally {
+    smsBusy.value = false
+  }
+}
+
 async function save(patch: SettingsPatch, what: string) {
   saving.value = what
   try {
@@ -51,6 +91,25 @@ async function renew() {
       <button type="button" class="btn sm" @click="store.qr = 'tencent'"><Icon name="qr" :size="15" />双扫码</button>
       <button type="button" class="btn sm" @click="diagnosticsOpen = true">风控处理日志</button>
     </div>
+    <details>
+      <summary>手机号登录（原生短信）</summary>
+      <p>用本人手机号收短信登录，取原生 App 票据；发码前会弹官方图形验证窗口，需本人过验。</p>
+      <div class="controls">
+        <select v-model="txSmsArea" class="input" aria-label="手机区号" style="width: 88px">
+          <option value="+86">+86</option>
+          <option value="+852">+852</option>
+          <option value="+853">+853</option>
+          <option value="+886">+886</option>
+        </select>
+        <input v-model="txSmsPhone" class="input" inputmode="tel" autocomplete="off" placeholder="手机号" aria-label="本人手机号" />
+        <button type="button" class="btn sm" :disabled="smsBusy || !validPhone" @click="smsSend">获取验证码</button>
+      </div>
+      <div class="controls">
+        <input v-model="txSmsCode" class="input" inputmode="numeric" maxlength="8" autocomplete="one-time-code" placeholder="短信验证码" aria-label="短信验证码" />
+        <button type="button" class="btn sm" :disabled="smsBusy || !/^\d{4,8}$/.test(txSmsCode)" @click="smsSubmit">登录</button>
+      </div>
+      <p v-if="smsNote">{{ smsNote }}</p>
+    </details>
     <details>
       <summary>粘贴网页 Cookie</summary>
       <textarea v-model="form.tencentCookie" class="input" spellcheck="false" placeholder="粘贴腾讯视频网页 Cookie" />

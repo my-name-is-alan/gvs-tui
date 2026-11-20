@@ -40,3 +40,4 @@ tui.json
 
 # local trace from GVS_TRACE (name may carry a trailing space)
 .trace.log*
+tmp-bench/
