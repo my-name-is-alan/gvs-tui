@@ -102,6 +102,33 @@ jobs:
           bun test src/lib/iqcn-audio.test.ts
           bun test src/lib/iq-subtitles.test.ts src/lib/iqcn-subtitles.test.ts
           bun test src/lib/jobs-hub.test.ts --test-name-pattern "Douyin passes configured concurrency"
+      # mobile42 decoder 的源码在私有网关仓库（公开仓库不放二进制/算法）。
+      # 用 GATEWAY_PAT（fine-grained: get_video_streaming 的 Contents: Read）把它
+      # checkout 到 workspace，GVS_GATEWAY_SOURCE 指过去后由 pin 校验 + 现编译。
+      - name: Checkout private gateway (mobile42 decoder source)
+        uses: actions/checkout@v4
+        with:
+          repository: my-name-is-alan/get_video_streaming
+          token: ${{ secrets.GATEWAY_PAT }}
+          path: get_video_streaming
+      - name: Build shared mobile42 decoder (macOS arm64/x64)
+        if: runner.os == 'macOS'
+        working-directory: .
+        env:
+          GVS_GATEWAY_SOURCE: ${{ github.workspace }}/get_video_streaming
+        run: |
+          node scripts/build-mobile42-local.mjs --platform=darwin --arch=arm64 --output=.build/mobile42/darwin-arm64/tencent-mobile42-decode
+          node scripts/build-mobile42-local.mjs --platform=darwin --arch=x64 --output=.build/mobile42/darwin-x64/tencent-mobile42-decode
+      - name: Build shared mobile42 decoder (Windows x64)
+        if: runner.os == 'Windows'
+        working-directory: .
+        env:
+          GVS_GATEWAY_SOURCE: ${{ github.workspace }}/get_video_streaming
+        run: node scripts/build-mobile42-local.mjs --platform=win32 --arch=x64 --output=bin/tencent-mobile42-decode.exe
+      - name: Verify packaged decoder present
+        if: runner.os == 'Windows'
+        shell: bash
+        run: test -f bin/tencent-mobile42-decode.exe && test -f bin/tencent-mobile42-decode.exe.sha256
       - run: bun x electron-vite build
       - name: Verify Migu manifest transport in Electron (Windows)
         if: runner.os == 'Windows'
