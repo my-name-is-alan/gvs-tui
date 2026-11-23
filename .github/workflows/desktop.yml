@@ -63,9 +63,6 @@ jobs:
           repository: my-name-is-alan/get_video_streaming
           token: ${{ secrets.GATEWAY_PAT }}
           path: get_video_streaming
-      - name: Pin gateway checkout line endings
-        shell: bash
-        run: git -C get_video_streaming config core.autocrlf false && git -C get_video_streaming status --short | head -3
       - uses: actions/setup-go@v5
         with:
           go-version-file: get_video_streaming/go.mod
