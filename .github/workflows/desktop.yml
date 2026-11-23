@@ -130,12 +130,14 @@ jobs:
         run: node scripts/build-mobile42-local.mjs --platform=win32 --arch=x64 --output=bin/tencent-mobile42-decode.exe
       - name: Verify packaged decoder present
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
         run: |
-          echo "== bin/ contents =="
-          ls -la bin/ 2>/dev/null | head -20 || true
-          test -f bin/tencent-mobile42-decode.exe
-          test -f bin/tencent-mobile42-decode.exe.sha256
+          $exe = Join-Path $PWD 'bin/tencent-mobile42-decode.exe'
+          $sum = "$exe.sha256"
+          Get-ChildItem (Join-Path $PWD 'bin') -ErrorAction SilentlyContinue | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+          if (-not (Test-Path -LiteralPath $exe)) { throw "decoder exe missing: $exe" }
+          if (-not (Test-Path -LiteralPath $sum)) { throw "decoder sha256 missing: $sum" }
+          Write-Host "decoder present: $exe"
       - run: bun x electron-vite build
       - name: Verify Migu manifest transport in Electron (Windows)
         if: runner.os == 'Windows'
