@@ -64,7 +64,9 @@ export function mobile42DownloadPlan(data: Record<string, unknown>, vid: string)
     if (bytes.length !== size || bytes.toString('base64') !== text) throw new Error(BAD_PLAN)
   }
   const manifest = asString(data.manifest)
-  if (!manifest || Buffer.byteLength(manifest) > 1 << 20) throw new Error(BAD_PLAN)
+  // 4 MiB: the 4K/maxplus rungs ship 820+ segments with long CDN URLs and
+  // exceed the earlier 1 MiB ceiling (同一个内容手机端 suhd manifest 实测 1.22 MiB)。
+  if (!manifest || Buffer.byteLength(manifest) > 4 << 20) throw new Error(BAD_PLAN)
   let header = false, ended = false, pending = false, declared = false, duration = 0, protectedKey = ''
   const urls: string[] = []
   for (const raw of manifest.split(/\r?\n/)) {

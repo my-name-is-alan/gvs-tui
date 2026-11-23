@@ -98,7 +98,7 @@ const SETTINGS = [
   { label: 'TMDB 代理', value: '默认网络 · 回车配置独立代理' },
   { label: '优酷扫码', value: '扫码把登录态写进本机' },
   { label: '优酷登录', value: '可续期 · 上次续期 3 分钟前 · 酷友福克纳君的杏花 · uid 2223055214990 · 非 VIP' },
-  { label: '腾讯双扫码', value: 'App + 极光 TV' },
+  { label: '腾讯 TV 扫码', value: '仅极光 TV（App 走手机号登录）' },
   { label: '腾讯 Cookie', value: '空 · 回车粘贴' },
   { label: '腾讯登录', value: '演示账号 · uid 12345678 · SVIP' },
   { label: '腾讯 caption=all', value: '关' },

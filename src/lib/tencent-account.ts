@@ -59,7 +59,7 @@ export function tencentNeedsRelogin(acc: TxAccount | null): boolean {
 }
 
 export function txAccountSummary(acc: TxAccount | null): string {
-  if (!acc || !acc.loggedIn) return '未登录 · 双扫码或粘贴 Cookie'
+  if (!acc || !acc.loggedIn) return '未登录 · 手机号登录或粘贴 Cookie'
   const parts: string[] = []
   if (acc.tv.loggedIn) parts.push(sideLine('TV', acc.tv))
   if (acc.app.loggedIn) parts.push(sideLine('App', acc.app))

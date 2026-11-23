@@ -11,7 +11,7 @@ import { PROVIDER_IDS, supportsSearch, supportsTmdb, isManifestProvider } from '
 import { needsTunnel } from './lib/tunnel-policy.ts'
 import { parseEpisodes as parseEps, episodeCollections } from './lib/episodes.ts'
 import { parseSeriesTitle, seriesSeason, tmdbSeasonOverride } from './lib/series-title.ts'
-import { startTencentDualQR, pollTencentQR, pollTencentDualQR, applyTencentLogin, tencentLabels, tencentPlayInput, type TencentMode } from './lib/tencent-qr.ts'
+import { startTencentQR, startTencentDualQR, pollTencentQR, pollTencentDualQR, applyTencentLogin, tencentLabels, tencentPlayInput, type TencentMode } from './lib/tencent-qr.ts'
 import { fetchTencentAccount, txAccountSummary, type TxAccount } from './lib/tencent-account.ts'
 import { Discovery, discoveryRows } from './lib/discovery'
 import { Navigation, moveCursor, moveJobCursor } from './lib/navigation'
@@ -586,7 +586,7 @@ export class Runtime {
     f.push('文件名单集标题')
     if (this.providers().some(supportsTmdb)) f.push('TMDB Key', 'TMDB 代理')
     if (this.has('youku')) f.push('优酷扫码', '优酷登录')
-    if (this.has('tencent')) f.push('腾讯双扫码', '腾讯 Cookie', '腾讯登录')
+    if (this.has('tencent')) f.push('腾讯 TV 扫码', '腾讯 Cookie', '腾讯登录')
     if (this.has('tencent')) {
       f.push('腾讯 caption=all', '腾讯探测原画', '腾讯 encode=all')
     }
@@ -621,7 +621,8 @@ export class Runtime {
     if (f === '腾讯诊断日志') return tencentDiagnosticPath()
     if (f.startsWith('Hami ') || f.startsWith('mewatch ')) return '回车操作 · 账号材料不保存到本机配置'
     if ((Object.values(tencentLabels) as string[]).includes(f)) return '独立扫码 · 不覆盖其他 Cookie'
-    if (f === '腾讯双扫码') return '默认 · App + 极光 TV 同时出码并轮询'
+    if (f === '腾讯 TV 扫码') return '默认 · 极光 TV 官方扫码（手机号登录/App 档案优先）'
+    if (f === '腾讯 App 授权') return '高级 · App 网页授权码（换号/重建网页会话）'
     if (f === '腾讯登录') return this.txAcct ? txAccountSummary(this.txAcct) : '回车刷新账号信息'
     if (f === '腾讯 TV 设备 ID') return this.cfg.tencentTVDevice ? '已配置' : '未配置'
     if (f === '腾讯 TV QUA') return this.cfg.tencentTVQUA ? '已配置' : '未配置'
@@ -1943,7 +1944,7 @@ export class Runtime {
         'Key',
         '优酷登录',
         '优酷扫码',
-        '腾讯 Cookie', '腾讯双扫码', '腾讯登录',
+        '腾讯 Cookie', '腾讯 TV 扫码', '腾讯登录',
         '抖音 Cookie',
       ].includes(f)
     ) {
@@ -2000,21 +2001,26 @@ export class Runtime {
       this.emit()
       return
     }
-    if (f === '腾讯双扫码' && this.cli) {
+    if ((f === '腾讯 TV 扫码' || f === '腾讯 App 授权') && this.cli) {
+      // 手机号登录 / 已有 App 档案优先；扫码仅为换号兜底。App 网页授权码
+      // 已从默认路径降级为高级项（不会签发手机 App 票据，只建立网页会话）。
+      const mode: TencentMode = f === '腾讯 TV 扫码' ? 'tv' : 'app'
       this.stopQR()
-      this.qrTencent = null
-      this.qrTencentDual = true
-      this.qrDualDone = { app: false, tv: false }
-      this.qrHint = '用腾讯视频 App 扫两张码：左侧网页授权 + 右侧极光 TV；不会签发手机 App 票据'
+      this.qrTencent = mode
+      this.qrTencentDual = false
+      this.qrHint =
+        mode === 'tv'
+          ? '极光 TV 官方扫码登录；已有 App 档案或手机号登录时无需操作'
+          : '高级：单独出 App 网页授权码（换号/重建网页会话用；手机 App 票据不变）'
       try {
-        const paths = await this.work(() => startTencentDualQR(this.cli!, this.cfg))
-        this.qrPngPaths = [paths.appPath, paths.tvPath]
+        const path = await this.work(() => startTencentQR(this.cli!, this.cfg, mode))
+        this.qrPngPaths = [path]
         this.qrAscii = ''
         this.scene = 'qr'
-        this.say('App 与 TV 二维码已保存本机并尝试打开；先扫任意一张均可', 'info')
+        this.say('二维码已保存本机并尝试打开；登录态写入网关存储', 'info')
         this.startQRPoll()
       } catch (e) {
-        this.qrTencentDual = false
+        this.qrTencent = null
         this.say(e instanceof Error ? e.message : String(e), 'err')
       }
       this.emit()

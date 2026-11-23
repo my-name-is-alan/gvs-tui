@@ -56,7 +56,7 @@ import { mediaKindFromMetadata, movieEdition } from '@tui/media-kind.ts'
 import { parseSeriesTitle, seriesSeason, tmdbSeasonOverride } from '@tui/series-title.ts'
 import { ensureTools, lookBundledFFmpeg, lookMP4Box, lookMkvmerge, lookM3u8dl } from '@tui/tools.ts'
 import { runTunnel } from '@tui/tunnel.ts'
-import { anyInt, asString, isObj } from '@tui/util.ts'
+import { anyInt, asBool, asString, isObj } from '@tui/util.ts'
 import { pollYoukuQR } from '@tui/youku-qr.ts'
 import {
   accountSummary,
@@ -1041,24 +1041,16 @@ export class Core {
   }
 
   async tencentQrStart(): Promise<QRStart> {
+    // App 端已改为原生手机号短信登录（取手机 App 票据），扫码只服务 TV 端。
+    // 只出一个 TV 码，避免用户再被"双扫码"误导去扫网页会话码。
     const cli = this.client()
-    const [appData, tvData] = await Promise.all([
-      cli.invoke('tencent', 'login', { method: 'app', session_type: 'app', force: '1' }),
-      cli.invoke('tencent', 'login', { method: 'tv', session_type: 'tv', force: '1', ...tencentTVLoginInput(this.cfg) }),
-    ])
-    const img = (d: Record<string, unknown>) => {
-      const b64 = asString(d.qr_png_base64)
-      if (!b64) throw new Error('网关没有返回二维码图片，请更新网关')
-      return `data:image/png;base64,${b64}`
-    }
-    this.qr = { kind: 'tencent', done: { app: false, tv: false } }
-    // 不用 startTencentDualQR：它会把 PNG 写盘并用系统看图打开，桌面端直接显示。
+    const tvData = await cli.invoke('tencent', 'login', { method: 'tv', session_type: 'tv', force: '1', ...tencentTVLoginInput(this.cfg) })
+    const b64 = asString(tvData.qr_png_base64)
+    if (!b64) throw new Error('网关没有返回二维码图片，请更新网关')
+    this.qr = { kind: 'tencent', done: { app: true, tv: false } }
     return {
-      images: [
-        { title: 'App 授权网页登录', image: img(appData) },
-        { title: '云视听极光 TV', image: img(tvData) },
-      ],
-      hint: '用腾讯视频 App 扫两张码：左侧授予网页会话，右侧授予 TV 会话；不会签发手机 App 票据',
+      images: [{ title: '云视听极光 TV', image: `data:image/png;base64,${b64}` }],
+      hint: '用腾讯视频 App 或云视听极光扫这个码授权 TV 会话；手机 App 端请改用「手机号登录（原生短信）」',
     }
   }
 

@@ -86,9 +86,9 @@ async function renew() {
   </div>
 
   <div v-else-if="provider === 'tencent'" class="blk">
-    <p>推荐双扫码（微信 + QQ 任一）登录；也可粘贴网页 Cookie，推送到网关托管，本机不保存。</p>
+    <p>手机 App 端用「手机号登录（原生短信）」取 App 票据；只有 <b>TV 端</b>需要扫码。也可粘贴网页 Cookie，推送到网关托管，本机不保存。</p>
     <div class="controls">
-      <button type="button" class="btn sm" @click="store.qr = 'tencent'"><Icon name="qr" :size="15" />双扫码</button>
+      <button type="button" class="btn sm" @click="store.qr = 'tencent'"><Icon name="qr" :size="15" />TV 扫码</button>
       <button type="button" class="btn sm" @click="diagnosticsOpen = true">风控处理日志</button>
     </div>
     <details>
