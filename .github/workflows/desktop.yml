@@ -127,14 +127,15 @@ jobs:
         env:
           GVS_GATEWAY_SOURCE: ${{ github.workspace }}/get_video_streaming
           GOPROXY: https://proxy.golang.org,direct
-        run: node scripts/build-mobile42-local.mjs --platform=win32 --arch=x64 --output=bin/tencent-mobile42-decode.exe
+        run: node scripts/build-mobile42-local.mjs --platform=win32 --arch=x64 --output="${{ github.workspace }}/bin/tencent-mobile42-decode.exe"
       - name: Verify packaged decoder present
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $exe = Join-Path $PWD 'bin/tencent-mobile42-decode.exe'
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'bin'
+          $exe = Join-Path $dir 'tencent-mobile42-decode.exe'
           $sum = "$exe.sha256"
-          Get-ChildItem (Join-Path $PWD 'bin') -ErrorAction SilentlyContinue | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+          Get-ChildItem $dir -ErrorAction SilentlyContinue | Select-Object Name, Length | Format-Table | Out-String | Write-Host
           if (-not (Test-Path -LiteralPath $exe)) { throw "decoder exe missing: $exe" }
           if (-not (Test-Path -LiteralPath $sum)) { throw "decoder sha256 missing: $sum" }
           Write-Host "decoder present: $exe"
