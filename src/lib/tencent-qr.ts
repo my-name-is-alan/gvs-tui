@@ -32,6 +32,10 @@ export function tencentPlayInput(cfg: FileConfig, edition?: TencentPlayParams): 
   if (mode === 'web') return { session_type: 'web', tier: 'h5' }
   if (mode === 'app') throw new Error('腾讯 App 扫码取得的是网页会话，不能用于手机取流；请先配置真实 App 会话同步，或手动选择已验证的播放会话')
   if (mode === 'tv') return { session_type: 'tv' }
+  // mode 为空（老配置/外部登录）时，只要绑定过 TV 设备（tvid），就默认按 TV 会话播放。
+  // 否则播放会落到默认 tier=tv(5770603)，杜比视界会被服务端静默降成 4K SDR。
+  // cookie 模式仍走 Tx-Cookie 头，不在这里覆盖。
+  if (mode !== 'cookie' && (cfg.tencentTVDevice || '').trim()) return { session_type: 'tv' }
   return {}
 }
 
