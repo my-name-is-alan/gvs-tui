@@ -6,7 +6,7 @@ import { userMessage, errorCode } from './user-message.ts'
 import { youkuMediaError } from './media-output.ts'
 import { decryptYoukuTs } from './youku-ts.ts'
 import { tencentPlayInput } from './tencent-qr.ts'
-import { isTencentCopyrightRegion, TENCENT_EM80_STATUS, tencentAudioDownloadPlan, tencentAudioPlanNote, tencentCatalogProbeInput, tencentPlayQualityInput } from './quality.ts'
+import { isTencentCopyrightRegion, tencentCopyrightMessage, tencentAudioDownloadPlan, tencentAudioPlanNote, tencentCatalogProbeInput, tencentPlayQualityInput } from './quality.ts'
 import { equivalentTencentRendition } from './tencent-rendition-resolution.ts'
 import { resolveHongguoDownload } from './hongguo.ts'
 import { huangguoKeyMode, resolveHuangguoDownload } from './huangguo.ts'
@@ -792,7 +792,7 @@ function logTencentDownloadHost(cdn: string, t: DlTask): void {
 }
 
 function tencentNoStreamError(data: Record<string, unknown>): string {
-  if (isTencentCopyrightRegion(data)) return TENCENT_EM80_STATUS
+  if (isTencentCopyrightRegion(data)) return tencentCopyrightMessage(data)
   return '腾讯没有可用视频地址'
 }
 

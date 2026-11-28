@@ -90,15 +90,34 @@ describe('tencentPlayProbeOk', () => {
     expect(r.reason).toContain('权益风控')
   })
 
-  test('em=80 copyright region is not reported as entitlement risk', () => {
+  test('em=80/80.9 content copyright refusal is not reported as entitlement risk or VPN advice', () => {
     const r = tencentPlayProbeOk({
       em: 80,
+      code: '80.9',
+      exem: 9,
+      exinfo: '中国-重庆市--电信',
+      em_stop: 'region_restrict',
       has_url: false,
       msg: '受版权限制该视频暂不可观看，可以看看其他内容哦',
     })
     expect(r.ok).toBe(false)
-    expect(r.reason).toContain('没有版权')
+    expect(r.reason).toContain('em=80/80.9')
+    expect(r.reason).toContain('受版权限制')
+    expect(r.reason).toContain('上游识别出口：中国-重庆市--电信')
     expect(r.reason).not.toContain('em=93')
+    expect(r.reason).not.toContain('关闭 VPN')
+  })
+
+  test('em=80.1 regional copyright refusal does not recommend switching VPN', () => {
+    const r = tencentPlayProbeOk({
+      em: 80,
+      code: '80.1',
+      has_url: false,
+      msg: '您所在区域暂无此内容版权',
+    })
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('没有版权')
+    expect(r.reason).not.toContain('关闭 VPN')
   })
 
 })

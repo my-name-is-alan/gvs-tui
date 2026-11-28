@@ -258,10 +258,15 @@ export function tencentPlayProbeOk(data: Record<string, unknown>): {
   if (err) {
     return { ok: false, reason: friendlyTencentPlayError(err, false) }
   }
-  // Region copyright (em=80) shares the words 限制播放 with entitlement locks.
+  // Region / terminal copyright (em=80) shares the words 限制播放 with entitlement locks.
   // Check it first so a copyright refusal is not reported as em=93 risk.
-  if (em === '80' || em.startsWith('80.') || /版权/.test(asString(data.msg) + asString(data.message) + err)) {
-    return { ok: false, reason: '该视频在当前出口地区没有版权，暂时不能取流。请关闭 VPN 或切换到有版权的网络后重试，不要反复请求。' }
+  if (
+    em === '80' ||
+    em.startsWith('80.') ||
+    asString(data.em_stop).trim() === 'region_restrict' ||
+    /版权/.test(asString(data.msg) + asString(data.message) + err)
+  ) {
+    return { ok: false, reason: tencentCopyrightMessage(data) }
   }
   // Episode entitlement lock: fail even if leftover formats[] exist.
   if (/^93(\.[0-9]+)?$/.test(em) || em.startsWith('93.') || (/限制播放/.test(em) && !pickURL(data))) {
@@ -288,6 +293,21 @@ export function tencentPlayProbeOk(data: Record<string, unknown>): {
   }
   if (em) return { ok: false, reason: friendlyTencentPlayError(em, false) }
   return { ok: false, reason: '选定画质没有返回可用视频地址' }
+}
+
+export function tencentCopyrightMessage(data: Record<string, unknown>): string {
+  const code = asString(data.code).trim()
+  const exem = asString(data.exem).trim()
+  const exinfo = asString(data.exinfo).trim()
+  const msg = asString(data.msg) || asString(data.message) || asString(data.error)
+  const tag = code && code !== '80' ? `em=80/${code}` : exem === '9' ? 'em=80/80.9' : 'em=80'
+  const regionNote = exinfo ? `（上游识别出口：${exinfo}）` : ''
+  const isTerminalContent =
+    code === '80.9' || exem === '9' || (/版权/.test(msg) && !/区域|地区/.test(msg))
+  if (isTerminalContent) {
+    return `该视频在当前播放端受版权限制（${tag}），暂时不能取流${regionNote}；这通常是单集未获当前端授权（如 TV 端无版权而手机端可播），非账号风控。请勿反复重试或切换出口撞同一内容。`
+  }
+  return `该视频在当前出口地区或播放端没有版权授权（${tag}），暂时不能取流${regionNote}（内容级结果，非账号风控）。请勿反复请求或为绕过限制切换出口撞同一内容。`
 }
 
 function friendlyTencentPlayError(raw: string, network: boolean): string {

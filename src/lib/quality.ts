@@ -7,8 +7,8 @@ import { parseEpisodes } from './episodes.ts'
 import type { FileConfig } from './config.ts'
 import { ReloginRequired, type GwClient } from './client.ts'
 import { anyInt, asBool, asString, isObj } from './util.ts'
-import { youkuSpokenLangKey } from './media.ts'
-import { hongguoItem, pickHongguo } from './media.ts'
+import { youkuSpokenLangKey, hongguoItem, pickHongguo, tencentCopyrightMessage } from './media.ts'
+export { tencentCopyrightMessage } from './media.ts'
 import { hongguoResolveInput } from './hongguo.ts'
 import { huangguoResolveInput, huangguoStreamOptions } from './huangguo.ts'
 import { tencentPlayInput } from './tencent-qr.ts'
@@ -815,14 +815,22 @@ export function sortTencentQualities(rows: Quality[]): Quality[] {
 export const TENCENT_EM93_STATUS =
   '该集触发权益风控(em=93)，已停止本次请求；恢复时间未知，请按官方提示处理，勿反复重试。'
 
-/** Official getvinfo em=80 / 80.1: the title has no license in the exit region. */
+/** Official getvinfo em=80 / 80.x: content/terminal or exit-region copyright refusal. */
 export const TENCENT_EM80_STATUS =
-  '该视频在当前出口地区没有版权，暂时不能取流。请关闭 VPN 或切换到有版权的网络后重试，不要反复请求。'
+  '该视频在当前出口地区或播放端没有版权授权（em=80），暂时不能取流（内容级结果，非账号风控）。请勿反复请求或为绕过限制切换出口撞同一内容。'
 
 export function isTencentCopyrightRegion(data: Record<string, unknown>): boolean {
   const em = asString(data.em).trim()
   const code = asString(data.code).trim()
-  if (em === '80' || em.startsWith('80.') || code === '80' || code.startsWith('80.')) return true
+  if (
+    em === '80' ||
+    em.startsWith('80.') ||
+    code === '80' ||
+    code.startsWith('80.') ||
+    asString(data.em_stop).trim() === 'region_restrict'
+  ) {
+    return true
+  }
   const msg = asString(data.msg) || asString(data.message) || asString(data.error)
   return /版权/.test(msg) && /区域|地区|VPN/.test(msg)
 }
@@ -877,8 +885,10 @@ async function probeTencent(cli: GwClient, cfg: FileConfig, vid: string, edition
   const data = await cli.invoke('tencent', 'play', input, cli.extra(cfg, 'tencent'), { signal })
   if (isTencentCopyrightRegion(data)) {
     const short = asString(data.msg) || asString(data.message) || asString(data.error)
-    runLog(`tencent probe em80 em=${asString(data.em) || asString(data.code) || '80'} msg=${short.slice(0, 80)}`)
-    throw new Error(TENCENT_EM80_STATUS)
+    runLog(
+      `tencent probe em80 em=${asString(data.em) || '80'} code=${asString(data.code) || '-'} exem=${asString(data.exem) || '-'} stop=${asString(data.em_stop) || '-'} region=${asString(data.exinfo) || '-'} msg=${short.slice(0, 80)}`,
+    )
+    throw new Error(tencentCopyrightMessage(data))
   }
   if (isTencentEm93(data)) {
     const em = asString(data.em) || asString(data.code) || '93'
